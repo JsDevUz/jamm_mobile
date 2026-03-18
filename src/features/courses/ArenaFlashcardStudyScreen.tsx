@@ -625,8 +625,8 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
     outputRange: [0.95, 1, 0.95],
   });
   const classicFlipRotate = classicFlipProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "180deg"],
+    inputRange: [0, 0.5, 1],
+    outputRange: ["0deg", "90deg", "0deg"],
   });
 
   const goBackToList = useCallback(() => {
@@ -1137,11 +1137,6 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                                     classicRenderedBack
                                       ? styles.classicCardFaceBack
                                       : styles.classicCardFaceFront,
-                                    {
-                                      transform: [
-                                        { rotateY: classicRenderedBack ? "180deg" : "0deg" },
-                                      ],
-                                    },
                                   ]}
                                 >
                                   <View style={styles.classicCardToolbar}>
@@ -1183,11 +1178,15 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                                 styles.classicActionHint,
                                 styles.classicActionHintLeft,
                                 {
-                                  opacity: classicDragAmount < 0 ? classicSwipeProgress : 0,
+                                  opacity: classicDragAmount > 0 ? classicSwipeProgress : 0,
                                 },
                               ]}
                             >
-                              <Text style={styles.classicActionHintText}>Topdim</Text>
+                              <Text
+                                style={[styles.classicActionHintText, styles.classicActionHintTextDanger]}
+                              >
+                                Topolmadim
+                              </Text>
                             </View>
                             <View
                               pointerEvents="none"
@@ -1195,11 +1194,15 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                                 styles.classicActionHint,
                                 styles.classicActionHintRight,
                                 {
-                                  opacity: classicDragAmount > 0 ? classicSwipeProgress : 0,
+                                  opacity: classicDragAmount < 0 ? classicSwipeProgress : 0,
                                 },
                               ]}
                             >
-                              <Text style={styles.classicActionHintText}>Topolmadim</Text>
+                              <Text
+                                style={[styles.classicActionHintText, styles.classicActionHintTextSuccess]}
+                              >
+                                Topdim
+                              </Text>
                             </View>
                           </Pressable>
                         </Animated.View>
@@ -2138,6 +2141,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#1E2633",
     transform: [{ rotateY: "180deg" }],
   },
+  classicCardFaceHidden: {
+    opacity: 0,
+  },
   classicCardToolbar: {
     height: 54,
     paddingHorizontal: 16,
@@ -2205,18 +2211,23 @@ const styles = StyleSheet.create({
   },
   classicActionHintLeft: {
     left: 18,
-    backgroundColor: "rgba(67, 181, 129, 0.2)",
-    borderColor: "rgba(67, 181, 129, 0.36)",
-  },
-  classicActionHintRight: {
-    right: 18,
     backgroundColor: "rgba(240, 71, 71, 0.18)",
     borderColor: "rgba(240, 71, 71, 0.34)",
   },
+  classicActionHintRight: {
+    right: 18,
+    backgroundColor: "rgba(67, 181, 129, 0.2)",
+    borderColor: "rgba(67, 181, 129, 0.36)",
+  },
   classicActionHintText: {
-    color: Colors.text,
     fontSize: 12,
     fontWeight: "900",
+  },
+  classicActionHintTextDanger: {
+    color: "#F87171",
+  },
+  classicActionHintTextSuccess: {
+    color: "#4ADE80",
   },
   classicHelperText: {
     color: "#A8ADB7",

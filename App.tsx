@@ -42,14 +42,14 @@ import { GroupMeetRoute } from "./src/features/calls/GroupMeetRoute";
 import { PrivateMeetRoute } from "./src/features/calls/PrivateMeetRoute";
 import { FeedScreen } from "./src/features/feed/FeedScreen";
 import { ProfileScreen } from "./src/features/profile/ProfileScreen";
-import { ArticlesScreen } from "./src/features/articles/ArticlesScreen";
+import { ArticleDetailScreen, ArticlesScreen } from "./src/features/articles/ArticlesScreen";
 import { ArenaFlashcardListScreen } from "./src/features/courses/ArenaFlashcardListScreen";
 import { ArenaFlashcardStudyScreen } from "./src/features/courses/ArenaFlashcardStudyScreen";
 import { ArenaMnemonicsScreen } from "./src/features/courses/ArenaMnemonicsScreen";
 import { ArenaSentenceBuilderListScreen } from "./src/features/courses/ArenaSentenceBuilderListScreen";
 import { ArenaQuizListScreen } from "./src/features/courses/ArenaQuizListScreen";
 import { ArenaTestPlayerScreen } from "./src/features/courses/ArenaTestPlayerScreen";
-import { CoursesScreen } from "./src/features/courses/CoursesScreen";
+import { CourseDetailScreen, CoursesScreen } from "./src/features/courses/CoursesScreen";
 import type { MainTabsParamList, RootStackParamList } from "./src/navigation/types";
 import { bootstrapPushNotifications } from "./src/lib/notifications";
 import { realtime } from "./src/lib/realtime";
@@ -223,6 +223,16 @@ function RootNavigator() {
             name="MainTabs"
             component={MainTabsNavigator}
             options={{ animation: "none" }}
+          />
+          <Stack.Screen
+            name="ArticleDetail"
+            component={ArticleDetailScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="CourseDetail"
+            component={CourseDetailScreen}
+            options={{ animation: "slide_from_right" }}
           />
           <Stack.Screen
             name="ChatRoom"
@@ -973,17 +983,24 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
   }, []);
 
   const openArticlesTab = useCallback((articleId?: string) => {
-    navigationRef.navigate(
-      "MainTabs",
-      {
-        screen: "Articles",
-        params: articleId ? { articleId } : undefined,
-      } as never,
-    );
+    if (articleId) {
+      navigationRef.navigate("ArticleDetail", { articleId });
+      return;
+    }
+
+    navigationRef.navigate("MainTabs", { screen: "Articles" } as never);
   }, []);
 
   const openCoursesTab = useCallback(
     (params?: MainTabsParamList["Courses"]) => {
+      if (params?.courseId) {
+        navigationRef.navigate("CourseDetail", {
+          courseId: params.courseId,
+          lessonId: params.lessonId || undefined,
+        });
+        return;
+      }
+
       navigationRef.navigate(
         "MainTabs",
         {

@@ -27,7 +27,7 @@ import {
   Lock,
   MoreHorizontal,
   Pencil,
-  Play,
+  PlayCircle,
   Plus,
   Rocket,
   Sparkles,
@@ -969,8 +969,8 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
 
         <View style={styles.cardFooter}>
           <View style={styles.startHint}>
-            <Play size={14} color={Colors.primary} />
-            <Text style={styles.startHintText}>Boshlash uchun bosing</Text>
+            <PlayCircle size={14} color={Colors.mutedText} />
+            <Text style={styles.startHintText}>Boshlash uchun kartani bosing</Text>
           </View>
         </View>
       </Pressable>
@@ -1327,13 +1327,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   startHint: {
+    marginTop: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
   startHintText: {
-    color: Colors.primary,
-    fontSize: 13,
+    color: Colors.mutedText,
+    fontSize: 12,
     fontWeight: "700",
   },
   emptyState: {

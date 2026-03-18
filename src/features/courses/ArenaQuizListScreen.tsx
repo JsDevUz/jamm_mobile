@@ -21,7 +21,7 @@ import {
   Link2,
   MoreHorizontal,
   Pencil,
-  Play,
+  PlayCircle,
   Plus,
   Trash2,
 } from "lucide-react-native";
@@ -284,7 +284,7 @@ export function ArenaQuizListScreen({ navigation }: Props) {
         <Text style={styles.cardMeta}>Tuzuvchi: {owner}</Text>
 
         <View style={styles.cardHint}>
-          <Play size={13} color={Colors.mutedText} />
+          <PlayCircle size={14} color={Colors.mutedText} />
           <Text style={styles.cardHintText}>Boshlash uchun kartani bosing</Text>
         </View>
       </Pressable>
@@ -614,10 +614,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   cardHint: {
+    marginTop: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingTop: 6,
   },
   cardHintText: {
     color: Colors.mutedText,

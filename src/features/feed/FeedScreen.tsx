@@ -1194,6 +1194,7 @@ function FeedPostCard({
   onOpenImage,
   onEdit,
   onDelete,
+  onOpenAuthorProfile,
 }: {
   post: FeedPost;
   currentUserId: string;
@@ -1203,6 +1204,7 @@ function FeedPostCard({
   onOpenImage: (images: FeedImage[], initialIndex: number) => void;
   onEdit: (post: FeedPost) => void;
   onDelete: (post: FeedPost) => void;
+  onOpenAuthorProfile: (post: FeedPost) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1217,15 +1219,19 @@ function FeedPostCard({
   return (
     <View style={styles.postCard}>
       <View style={styles.postTopRow}>
-        <Avatar label={authorName} uri={post.author?.avatar} size={25} />
+        <Pressable onPress={() => onOpenAuthorProfile(post)} hitSlop={6}>
+          <Avatar label={authorName} uri={post.author?.avatar} size={25} />
+        </Pressable>
         <View style={styles.postMeta}>
           <View style={styles.postHeader}>
             <View style={styles.postHeaderMain}>
-              <UserDisplayName
-                user={post.author}
-                fallback={authorName}
-                textStyle={styles.postAuthor}
-              />
+              <Pressable onPress={() => onOpenAuthorProfile(post)} hitSlop={6}>
+                <UserDisplayName
+                  user={post.author}
+                  fallback={authorName}
+                  textStyle={styles.postAuthor}
+                />
+              </Pressable>
               <Text style={styles.postHeaderDot}>·</Text>
               <Text style={styles.postUsername}>
                 @{post.author?.username || "user"}
@@ -1669,6 +1675,32 @@ export function FeedScreen({ navigation }: Props) {
     ]);
   };
 
+  const handleOpenAuthorProfile = useCallback(
+    (post: FeedPost) => {
+      const authorId = String(post.author?._id || post.author?.id || "").trim();
+      const authorJammId = String(post.author?.jammId || "").trim();
+
+      if (!authorId && !authorJammId) {
+        return;
+      }
+
+      const isOwnProfile =
+        (authorId && authorId === currentUserId) ||
+        String(post.author?.jammId || "") === String(currentUser?.jammId || "");
+
+      if (isOwnProfile) {
+        navigation.navigate("Profile");
+        return;
+      }
+
+      navigation.navigate("Profile", {
+        userId: authorId || undefined,
+        jammId: authorJammId || undefined,
+      });
+    },
+    [currentUser?.jammId, currentUserId, navigation],
+  );
+
   const handleCommentCountChange = (postId: string, nextCount: number) => {
     updatePostAcrossFeeds(postId, (current) => ({
       ...current,
@@ -1855,6 +1887,7 @@ export function FeedScreen({ navigation }: Props) {
           onOpenImage={handleOpenLightbox}
           onEdit={setEditingPost}
           onDelete={handleDeletePost}
+          onOpenAuthorProfile={handleOpenAuthorProfile}
         />
       )}
     />
@@ -2061,7 +2094,7 @@ export function FeedScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.surface,
   },
   container: {
     flex: 1,

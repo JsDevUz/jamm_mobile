@@ -10,6 +10,7 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Keyboard,
   KeyboardAvoidingView,
   Linking,
@@ -24,7 +25,13 @@ import {
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerStateChangeEvent,
+} from "react-native-gesture-handler";
 import {
   ArrowLeft,
   Bold,
@@ -54,13 +61,14 @@ import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
+import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
 import {
   APP_LIMITS,
   countWords,
   getTierLimit,
 } from "../../constants/appLimits";
 import { articlesApi } from "../../lib/api";
-import type { MainTabScreenProps } from "../../navigation/types";
+import type { MainTabScreenProps, RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import type {
@@ -71,6 +79,14 @@ import type {
 import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Articles">;
+type ArticleDetailProps = NativeStackScreenProps<RootStackParamList, "ArticleDetail">;
+type SharedProps = {
+  navigation: Props["navigation"] | ArticleDetailProps["navigation"];
+  routeParams?: {
+    articleId?: string | null;
+  };
+  detailOnly?: boolean;
+};
 
 type EditorMode = "write" | "preview" | "split";
 
@@ -456,158 +472,265 @@ function ArticleCommentsModal({
   onCommentsCountChange: (count: number) => void;
 }) {
   const currentUser = useAuthStore((state) => state.user);
+  const currentUserId = String(
+    getEntityId(currentUser) || currentUser?.jammId || "",
+  ).trim();
   const [comments, setComments] = useState<ArticleComment[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [text, setText] = useState("");
+  const [editingComment, setEditingComment] = useState<{
+    commentId: string;
+    nickname: string;
+    kind: "comment" | "reply";
+  } | null>(null);
   const [replyingTo, setReplyingTo] = useState<{
     commentId: string;
     nickname: string;
   } | null>(null);
+
+  const isCurrentUsersComment = useCallback(
+    (
+      user?: {
+        _id?: string;
+        id?: string;
+        jammId?: string | number;
+        username?: string;
+      } | null,
+    ) => {
+      const commentUserId = String(getEntityId(user) || user?.jammId || "").trim();
+      if (commentUserId && currentUserId && commentUserId === currentUserId) {
+        return true;
+      }
+
+      const currentUsername = String(currentUser?.username || "").trim().toLowerCase();
+      const commentUsername = String(user?.username || "").trim().toLowerCase();
+      return Boolean(currentUsername && commentUsername && currentUsername === commentUsername);
+    },
+    [currentUser?.username, currentUserId],
+  );
+
+  const loadComments = useCallback(
+    async (nextPage = 1) => {
+      if (!article?._id) {
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const response = await articlesApi.getComments(article._id, nextPage, 10);
+        setComments((previous) =>
+          nextPage === 1 ? response.data || [] : [...previous, ...(response.data || [])],
+        );
+        setPage(nextPage);
+        setHasMore(nextPage < (response.totalPages || 1));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [article?._id],
+  );
 
   useEffect(() => {
     if (!visible || !article?._id) {
       return;
     }
 
-    const load = async () => {
-      setLoading(true);
-      try {
-        const response = await articlesApi.getComments(article._id, 1, 10);
-        setComments(response.data || []);
-        setPage(1);
-        setHasMore(1 < (response.totalPages || 1));
-      } finally {
-        setLoading(false);
-      }
-    };
+    setText("");
+    setEditingComment(null);
+    setReplyingTo(null);
+    void loadComments(1);
+  }, [article?._id, loadComments, visible]);
 
-    void load();
-  }, [article?._id, visible]);
+  const handleCloseComments = useCallback(() => {
+    Keyboard.dismiss();
+    setEditingComment(null);
+    setReplyingTo(null);
+    setText("");
+    onClose();
+  }, [onClose]);
+
+  const startReply = useCallback((commentId: string, nickname: string) => {
+    setEditingComment(null);
+    setReplyingTo({
+      commentId,
+      nickname,
+    });
+    setText("");
+  }, []);
+
+  const startEdit = useCallback(
+    (
+      item: {
+        _id: string;
+        content: string;
+      },
+      nickname: string,
+      kind: "comment" | "reply",
+    ) => {
+      setReplyingTo(null);
+      setEditingComment({
+        commentId: item._id,
+        nickname,
+        kind,
+      });
+      setText(item.content || "");
+    },
+    [],
+  );
 
   const loadMore = async () => {
     if (!article?._id || !hasMore || loading) {
       return;
     }
 
-    setLoading(true);
-    try {
-      const nextPage = page + 1;
-      const response = await articlesApi.getComments(article._id, nextPage, 10);
-      setComments((prev) => [...prev, ...(response.data || [])]);
-      setPage(nextPage);
-      setHasMore(nextPage < (response.totalPages || 1));
-    } finally {
-      setLoading(false);
-    }
+    await loadComments(page + 1);
   };
 
+  const handleDeleteComment = useCallback(
+    (commentId: string) => {
+      if (!article?._id) {
+        return;
+      }
+
+      Alert.alert("Izohni o'chirish", "Bu amalni ortga qaytarib bo'lmaydi.", [
+        { text: "Bekor qilish", style: "cancel" },
+        {
+          text: "O'chirish",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              try {
+                const response = await articlesApi.deleteComment(article._id, commentId);
+                if (editingComment?.commentId === commentId) {
+                  setEditingComment(null);
+                  setText("");
+                }
+                if (replyingTo?.commentId === commentId) {
+                  setReplyingTo(null);
+                }
+                onCommentsCountChange(response.comments);
+                await loadComments(1);
+              } catch (error) {
+                Alert.alert(
+                  "Izoh o'chirilmadi",
+                  error instanceof Error ? error.message : "Qaytadan urinib ko'ring.",
+                );
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [
+      article?._id,
+      editingComment?.commentId,
+      loadComments,
+      onCommentsCountChange,
+      replyingTo?.commentId,
+    ],
+  );
+
   const handleSubmit = async () => {
-    if (!article?._id || !text.trim() || sending) return;
+    if (!article?._id || !text.trim() || sending) {
+      return;
+    }
 
     setSending(true);
     try {
       let nextCount = article.comments || 0;
 
-      if (replyingTo) {
-        await articlesApi.addReply(
+      if (editingComment) {
+        await articlesApi.updateComment(article._id, editingComment.commentId, text.trim());
+      } else if (replyingTo) {
+        const response = await articlesApi.addReply(
           article._id,
           replyingTo.commentId,
           text.trim(),
           replyingTo.nickname,
         );
-        nextCount += 1;
+        nextCount = response.comments || nextCount + 1;
       } else {
         const response = await articlesApi.addComment(article._id, text.trim());
         nextCount = response.comments || nextCount + 1;
       }
 
-      const refreshed = await articlesApi.getComments(article._id, 1, 10);
-      setComments(refreshed.data || []);
-      setPage(1);
-      setHasMore(1 < (refreshed.totalPages || 1));
       onCommentsCountChange(nextCount);
-      setReplyingTo(null);
       setText("");
+      setEditingComment(null);
+      setReplyingTo(null);
+      await loadComments(1);
     } finally {
       setSending(false);
     }
   };
 
-  const renderReply = (reply: ArticleCommentReply) => (
-    <View key={reply._id} style={styles.replyRow}>
-      <Avatar
-        label={reply.user?.nickname || reply.user?.username || "U"}
-        uri={reply.user?.avatar}
-        size={30}
-      />
-      <View style={styles.commentCard}>
-        <View style={styles.commentBubble}>
-          <View style={styles.commentAuthorRow}>
-            <UserDisplayName
-              user={reply.user}
-              fallback={reply.user?.nickname || reply.user?.username || "User"}
-              size="sm"
-              textStyle={styles.commentAuthor}
-            />
-            <Text style={styles.commentMeta}>{timeAgo(reply.createdAt)}</Text>
-          </View>
-          <Text style={styles.commentText}>{reply.content}</Text>
-        </View>
-      </View>
-    </View>
-  );
-
   return (
     <DraggableBottomSheet
       visible={visible}
       title="Article izohlari"
-      onClose={onClose}
+      onClose={handleCloseComments}
       minHeight={540}
-      initialHeightRatio={0.82}
+      initialHeightRatio={0.94}
       footer={
         <View style={styles.commentsInputWrap}>
+          {editingComment ? (
+            <View style={styles.replyingBar}>
+              <Text style={styles.replyingText}>
+                Tahrirlash: @{editingComment.nickname}
+              </Text>
+              <Pressable
+                onPress={() => {
+                  setEditingComment(null);
+                  setText("");
+                }}
+              >
+                <X size={14} color={Colors.mutedText} />
+              </Pressable>
+            </View>
+          ) : null}
           {replyingTo ? (
             <View style={styles.replyingBar}>
               <Text style={styles.replyingText} numberOfLines={1}>
-                {replyingTo.nickname} ga javob
+                Javob: @{replyingTo.nickname}
               </Text>
               <Pressable onPress={() => setReplyingTo(null)}>
                 <X size={14} color={Colors.mutedText} />
               </Pressable>
             </View>
           ) : null}
-          <View style={styles.commentsForm}>
-            <Avatar
-              label={currentUser?.nickname || currentUser?.username || "U"}
-              uri={currentUser?.avatar}
-              size={34}
+          <View style={styles.commentComposerRow}>
+            <TextInput
+              value={text}
+              onChangeText={setText}
+              placeholder={
+                editingComment
+                  ? editingComment.kind === "reply"
+                    ? "Javobni tahrirlash..."
+                    : "Izohni tahrirlash..."
+                  : replyingTo
+                    ? `@${replyingTo.nickname} ga javob...`
+                    : "Izoh yozing..."
+              }
+              placeholderTextColor={Colors.mutedText}
+              style={styles.commentInput}
             />
-            <View style={styles.commentComposer}>
-              <TextInput
-                value={text}
-                onChangeText={setText}
-                placeholder="Izoh yozing..."
-                placeholderTextColor={Colors.subtleText}
-                style={styles.commentInput}
-              />
-              <Pressable
-                style={[
-                  styles.sendFab,
-                  (!text.trim() || sending) && styles.sendFabDisabled,
-                ]}
-                disabled={!text.trim() || sending}
-                onPress={() => void handleSubmit()}
-              >
-                {sending ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Send size={16} color="#fff" />
-                )}
-              </Pressable>
-            </View>
+            <Pressable
+              style={[
+                styles.commentSendButton,
+                (!text.trim() || sending) && styles.sendFabDisabled,
+              ]}
+              disabled={!text.trim() || sending}
+              onPress={() => void handleSubmit()}
+            >
+              {sending ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Send size={16} color="#fff" />
+              )}
+            </Pressable>
           </View>
         </View>
       }
@@ -617,69 +740,119 @@ function ArticleCommentsModal({
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.commentsBodyContent}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       >
-            {loading && comments.length === 0 ? (
-              <View style={styles.loaderState}>
-                <ActivityIndicator color={Colors.primary} />
-              </View>
-            ) : comments.length === 0 ? (
-              <View style={styles.commentsEmpty}>
-                <Text style={styles.commentsEmptyText}>Hali izoh yo'q</Text>
-              </View>
-            ) : (
-              <>
-                {comments.map((comment) => (
-                  <View key={comment._id} style={styles.commentRow}>
-                    <Avatar
-                      label={comment.user?.nickname || comment.user?.username || "U"}
-                      uri={comment.user?.avatar}
-                      size={38}
-                    />
-                    <View style={styles.commentCard}>
-                      <View style={styles.commentBubble}>
-                        <View style={styles.commentAuthorRow}>
-                          <UserDisplayName
-                            user={comment.user}
-                            fallback={comment.user?.nickname || comment.user?.username || "User"}
-                            size="sm"
-                            textStyle={styles.commentAuthor}
-                          />
-                          <Text style={styles.commentMeta}>{timeAgo(comment.createdAt)}</Text>
-                        </View>
-                        <Text style={styles.commentText}>{comment.content}</Text>
-                      </View>
-                      <Pressable
-                        style={styles.replyButton}
-                        onPress={() =>
-                          setReplyingTo({
-                            commentId: comment._id,
-                            nickname:
-                              comment.user?.nickname ||
-                              comment.user?.username ||
-                              "User",
-                          })
-                        }
-                      >
-                        <Text style={styles.replyButtonText}>Javob yozish</Text>
+        {loading && comments.length === 0 ? (
+          <Text style={styles.commentsEmptyText}>Yuklanmoqda...</Text>
+        ) : comments.length === 0 ? (
+          <Text style={styles.commentsEmptyText}>Hozircha izoh yo'q</Text>
+        ) : (
+          <>
+            {comments.map((comment) => {
+              const name = comment.user?.nickname || comment.user?.username || "User";
+              const isOwnComment = isCurrentUsersComment(comment.user);
+
+              return (
+                <View key={comment._id} style={styles.commentRow}>
+                  <Avatar label={name} uri={comment.user?.avatar} size={36} shape="circle" />
+                  <View style={styles.commentBody}>
+                    <View style={styles.commentBubble}>
+                      <UserDisplayName
+                        user={comment.user}
+                        fallback={name}
+                        size="sm"
+                        textStyle={styles.commentAuthor}
+                      />
+                      <Text style={styles.commentText}>{comment.content}</Text>
+                    </View>
+                    <View style={styles.commentMetaRow}>
+                      <Text style={styles.commentMeta}>{timeAgo(comment.createdAt)}</Text>
+                      <Pressable onPress={() => startReply(comment._id, name)}>
+                        <Text style={styles.replyButtonText}>Javob</Text>
                       </Pressable>
-                      {comment.replies?.length ? (
-                        <View style={styles.repliesWrap}>
-                          {comment.replies.map(renderReply)}
-                        </View>
+                      {isOwnComment ? (
+                        <>
+                          <Pressable onPress={() => startEdit(comment, name, "comment")}>
+                            <Text style={styles.commentActionText}>Tahrirlash</Text>
+                          </Pressable>
+                          <Pressable onPress={() => handleDeleteComment(comment._id)}>
+                            <Text
+                              style={[
+                                styles.commentActionText,
+                                styles.commentActionTextDanger,
+                              ]}
+                            >
+                              O'chirish
+                            </Text>
+                          </Pressable>
+                        </>
                       ) : null}
                     </View>
-                  </View>
-                ))}
 
-                {hasMore ? (
-                  <Pressable style={styles.loadMoreButton} onPress={() => void loadMore()}>
-                    <Text style={styles.loadMoreText}>
-                      {loading ? "Yuklanmoqda..." : "Ko'proq izohlar"}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </>
-            )}
+                    {comment.replies?.map((reply: ArticleCommentReply) => {
+                      const replyName =
+                        reply.user?.nickname || reply.user?.username || "User";
+                      const isOwnReply = isCurrentUsersComment(reply.user);
+
+                      return (
+                        <View key={reply._id} style={styles.replyRow}>
+                          <Avatar
+                            label={replyName}
+                            uri={reply.user?.avatar}
+                            size={28}
+                            shape="circle"
+                          />
+                          <View style={styles.replyBody}>
+                            <View style={styles.replyBubble}>
+                              <UserDisplayName
+                                user={reply.user}
+                                fallback={replyName}
+                                size="sm"
+                                textStyle={styles.commentAuthor}
+                              />
+                              <Text style={styles.commentText}>
+                                {reply.replyToUser ? `@${reply.replyToUser} ` : ""}
+                                {reply.content}
+                              </Text>
+                            </View>
+                            <View style={styles.replyMetaRow}>
+                              <Text style={styles.commentMeta}>{timeAgo(reply.createdAt)}</Text>
+                              {isOwnReply ? (
+                                <>
+                                  <Pressable onPress={() => startEdit(reply, replyName, "reply")}>
+                                    <Text style={styles.commentActionText}>Tahrirlash</Text>
+                                  </Pressable>
+                                  <Pressable onPress={() => handleDeleteComment(reply._id)}>
+                                    <Text
+                                      style={[
+                                        styles.commentActionText,
+                                        styles.commentActionTextDanger,
+                                      ]}
+                                    >
+                                      O'chirish
+                                    </Text>
+                                  </Pressable>
+                                </>
+                              ) : null}
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              );
+            })}
+
+            {hasMore ? (
+              <Pressable style={styles.loadMoreButton} onPress={() => void loadMore()}>
+                <Text style={styles.loadMoreText}>
+                  {loading ? "Yuklanmoqda..." : "Ko'proq izohlar"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </>
+        )}
       </ScrollView>
     </DraggableBottomSheet>
   );
@@ -1297,16 +1470,24 @@ function ArticleEditorModal({
   );
 }
 
-export function ArticlesScreen({ navigation, route }: Props) {
+function ArticlesScreenContent({
+  navigation,
+  routeParams,
+  detailOnly = false,
+}: SharedProps) {
+  const { width: screenWidth } = useWindowDimensions();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
   const [query, setQuery] = useState("");
-  const [selectedArticleIdentifier, setSelectedArticleIdentifier] = useState<string | null>(null);
+  const [selectedArticleIdentifier, setSelectedArticleIdentifier] = useState<string | null>(() =>
+    detailOnly ? String(routeParams?.articleId || "").trim() || null : null,
+  );
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingArticle, setEditingArticle] = useState<ArticleSummary | null>(null);
   const viewedRef = useRef(new Set<string>());
+  const articleDetailTranslateX = useRef(new Animated.Value(0)).current;
 
   const articlesQuery = useQuery({
     queryKey: ["articles"],
@@ -1350,7 +1531,12 @@ export function ArticlesScreen({ navigation, route }: Props) {
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["articles"] });
       await queryClient.invalidateQueries({ queryKey: ["profile-articles", currentUserId] });
-      setSelectedArticleIdentifier(created.slug || created._id);
+      const identifier = created.slug || created._id;
+      if (detailOnly) {
+        setSelectedArticleIdentifier(identifier);
+        return;
+      }
+      (navigation as any).navigate("ArticleDetail", { articleId: identifier });
     },
   });
 
@@ -1375,7 +1561,12 @@ export function ArticlesScreen({ navigation, route }: Props) {
       await queryClient.invalidateQueries({
         queryKey: ["article-content", selectedArticleIdentifier],
       });
-      setSelectedArticleIdentifier(updated.slug || updated._id);
+      const identifier = updated.slug || updated._id;
+      if (detailOnly) {
+        setSelectedArticleIdentifier(identifier);
+        return;
+      }
+      (navigation as any).navigate("ArticleDetail", { articleId: identifier });
     },
   });
 
@@ -1384,19 +1575,28 @@ export function ArticlesScreen({ navigation, route }: Props) {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["articles"] });
       await queryClient.invalidateQueries({ queryKey: ["profile-articles", currentUserId] });
+      if (detailOnly) {
+        (navigation as any).goBack();
+        return;
+      }
       setSelectedArticleIdentifier(null);
     },
   });
 
   useEffect(() => {
-    const deepLinkedArticleId = String(route.params?.articleId || "").trim();
+    const deepLinkedArticleId = String(routeParams?.articleId || "").trim();
     if (!deepLinkedArticleId) {
       return;
     }
 
-    setSelectedArticleIdentifier(deepLinkedArticleId);
-    navigation.setParams({ articleId: undefined });
-  }, [navigation, route.params?.articleId]);
+    if (detailOnly) {
+      setSelectedArticleIdentifier(deepLinkedArticleId);
+      return;
+    }
+
+    (navigation as any).navigate("ArticleDetail", { articleId: deepLinkedArticleId });
+    (navigation as any).setParams({ articleId: undefined });
+  }, [detailOnly, navigation, routeParams?.articleId]);
 
   useEffect(() => {
     const currentArticle = selectedArticleQuery.data;
@@ -1451,8 +1651,81 @@ export function ArticlesScreen({ navigation, route }: Props) {
 
   const handleOpenArticle = async (identifier: string) => {
     await Haptics.selectionAsync();
-    setSelectedArticleIdentifier(identifier);
+    if (detailOnly) {
+      setSelectedArticleIdentifier(identifier);
+      return;
+    }
+    (navigation as any).navigate("ArticleDetail", { articleId: identifier });
   };
+
+  const handleCloseArticleDetail = useCallback(() => {
+    articleDetailTranslateX.stopAnimation();
+    articleDetailTranslateX.setValue(0);
+    if (detailOnly) {
+      (navigation as any).goBack();
+      return;
+    }
+    setSelectedArticleIdentifier(null);
+  }, [articleDetailTranslateX, detailOnly, navigation]);
+
+  const animateArticleDetailBack = useCallback(() => {
+    Animated.spring(articleDetailTranslateX, {
+      toValue: 0,
+      damping: 22,
+      stiffness: 260,
+      mass: 0.8,
+      useNativeDriver: true,
+    }).start();
+  }, [articleDetailTranslateX]);
+
+  const handleArticleSwipeGesture = useCallback(
+    (event: { nativeEvent: { translationX: number } }) => {
+      articleDetailTranslateX.setValue(Math.max(0, event.nativeEvent.translationX));
+    },
+    [articleDetailTranslateX],
+  );
+
+  const handleArticleSwipeBack = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      const { state, oldState, translationX, velocityX } = event.nativeEvent;
+
+      if (state === State.BEGAN) {
+        articleDetailTranslateX.stopAnimation();
+        return;
+      }
+
+      if (oldState !== State.ACTIVE) {
+        if (state === State.CANCELLED || state === State.FAILED) {
+          animateArticleDetailBack();
+        }
+        return;
+      }
+
+      const shouldClose = translationX > screenWidth * 0.22 || velocityX > 700;
+      if (!shouldClose) {
+        animateArticleDetailBack();
+        return;
+      }
+
+      Animated.timing(articleDetailTranslateX, {
+        toValue: screenWidth,
+        duration: 180,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (!finished) {
+          articleDetailTranslateX.setValue(0);
+          return;
+        }
+        handleCloseArticleDetail();
+      });
+    },
+    [
+      animateArticleDetailBack,
+      articleDetailTranslateX,
+      handleCloseArticleDetail,
+      screenWidth,
+    ],
+  );
 
   const handleDeleteArticle = () => {
     if (!currentArticle) return;
@@ -1500,168 +1773,157 @@ export function ArticlesScreen({ navigation, route }: Props) {
     }
   };
 
-  if (selectedArticleIdentifier) {
-    return (
-      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-        <View style={styles.readerContainer}>
-          <View style={styles.readerHeader}>
-            <Pressable
-              style={styles.readerHeaderButton}
-              onPress={() => setSelectedArticleIdentifier(null)}
-            >
-              <ArrowLeft size={18} color={Colors.text} />
-            </Pressable>
-            <Text style={styles.readerHeaderTitle} numberOfLines={1}>
-              {currentArticle?.title || "Article"}
-            </Text>
-            <View style={styles.readerHeaderActions}>
-              {isOwnArticle ? (
-                <>
-                  <Pressable
-                    style={styles.readerHeaderButton}
-                    onPress={() => {
-                      setEditingArticle(currentArticle);
-                      setEditorOpen(true);
-                    }}
-                  >
-                    <Pencil size={17} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.readerHeaderButton} onPress={handleDeleteArticle}>
-                    <Trash2 size={17} color={Colors.danger} />
-                  </Pressable>
-                </>
-              ) : null}
-            </View>
+  const detailOverlay = selectedArticleIdentifier ? (
+    <Animated.View
+      style={[
+        styles.readerOverlay,
+        { transform: [{ translateX: articleDetailTranslateX }] },
+      ]}
+    >
+      <PanGestureHandler
+        enabled={Platform.OS !== "web" && !detailOnly}
+        activeOffsetX={24}
+        failOffsetY={[-16, 16]}
+        shouldCancelWhenOutside={false}
+        onGestureEvent={handleArticleSwipeGesture}
+        onHandlerStateChange={handleArticleSwipeBack}
+      >
+        <Animated.View style={styles.readerSwipeEdge} />
+      </PanGestureHandler>
+      <SafeAreaView style={styles.readerOverlaySafeArea} edges={["top", "left", "right"]}>
+        <View style={styles.readerHeader}>
+          <Pressable
+            style={styles.readerHeaderButton}
+            onPress={handleCloseArticleDetail}
+          >
+            <ArrowLeft size={18} color={Colors.text} />
+          </Pressable>
+          <Text style={styles.readerHeaderTitle} numberOfLines={1}>
+            {currentArticle?.title || "Article"}
+          </Text>
+          <View style={styles.readerHeaderActions}>
+            {isOwnArticle ? (
+              <>
+                <Pressable
+                  style={styles.readerHeaderButton}
+                  onPress={() => {
+                    setEditingArticle(currentArticle);
+                    setEditorOpen(true);
+                  }}
+                >
+                  <Pencil size={17} color={Colors.text} />
+                </Pressable>
+                <Pressable style={styles.readerHeaderButton} onPress={handleDeleteArticle}>
+                  <Trash2 size={17} color={Colors.danger} />
+                </Pressable>
+              </>
+            ) : null}
           </View>
-
-          {selectedArticleQuery.isLoading || selectedArticleContentQuery.isLoading ? (
-            <View style={styles.loaderState}>
-              <ActivityIndicator color={Colors.primary} />
-            </View>
-          ) : !currentArticle ? (
-            <View style={styles.loaderState}>
-              <Text style={styles.emptyText}>Maqola topilmadi</Text>
-            </View>
-          ) : (
-            <ScrollView
-              style={styles.readerScroll}
-              contentContainerStyle={styles.readerContent}
-              showsVerticalScrollIndicator={false}
-            >
-              {currentArticle.coverImage ? (
-                <PersistentCachedImage
-                  remoteUri={currentArticle.coverImage}
-                  style={styles.readerCover}
-                  requireManualDownload
-                />
-              ) : null}
-
-              <Text style={styles.readerTitle}>{currentArticle.title}</Text>
-              {currentArticle.excerpt ? (
-                <Text style={styles.readerExcerpt}>{currentArticle.excerpt}</Text>
-              ) : null}
-
-              <View style={styles.readerMeta}>
-                <UserDisplayName
-                  user={currentArticle.author}
-                  fallback={
-                    currentArticle.author?.nickname ||
-                    currentArticle.author?.username ||
-                    "Author"
-                  }
-                  size="sm"
-                  textStyle={styles.readerAuthor}
-                />
-                <Text style={styles.readerMetaDot}>·</Text>
-                <Text style={styles.readerMetaText}>
-                  {new Date(
-                    currentArticle.publishedAt || currentArticle.createdAt || Date.now(),
-                  ).toLocaleDateString("uz-UZ", {
-                    day: "numeric",
-                    month: "short",
-                    year: "numeric",
-                  })}
-                </Text>
-              </View>
-
-              <View style={styles.readerActions}>
-                <Pressable
-                  style={[
-                    styles.readerActionButton,
-                    currentArticle.liked && styles.readerActionButtonActive,
-                  ]}
-                  onPress={() => likeMutation.mutate(currentArticle.slug || currentArticle._id)}
-                >
-                  <Heart
-                    size={16}
-                    color={currentArticle.liked ? Colors.danger : Colors.text}
-                    fill={currentArticle.liked ? Colors.danger : "transparent"}
-                  />
-                  <Text
-                    style={[
-                      styles.readerActionText,
-                      currentArticle.liked && styles.readerActionTextActive,
-                    ]}
-                  >
-                    {currentArticle.likes}
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  style={styles.readerActionButton}
-                  onPress={() => setCommentsOpen(true)}
-                >
-                  <MessageCircle size={16} color={Colors.text} />
-                  <Text style={styles.readerActionText}>{currentArticle.comments}</Text>
-                </Pressable>
-
-                <View style={styles.readerActionButton}>
-                  <Eye size={16} color={Colors.text} />
-                  <Text style={styles.readerActionText}>{currentArticle.views}</Text>
-                </View>
-              </View>
-
-              <View style={styles.readerDivider} />
-              <ArticleMarkdownRenderer
-                content={selectedArticleContentQuery.data?.content || ""}
-              />
-            </ScrollView>
-          )}
         </View>
 
-        <ArticleCommentsModal
-          visible={commentsOpen}
-          article={currentArticle}
-          onClose={() => setCommentsOpen(false)}
-          onCommentsCountChange={(count) => {
-            queryClient.setQueryData<ArticleSummary | undefined>(
-              ["article", selectedArticleIdentifier],
-              (previous) => (previous ? { ...previous, comments: count } : previous),
-            );
-            void queryClient.invalidateQueries({ queryKey: ["articles"] });
-          }}
-        />
+        {selectedArticleQuery.isLoading || selectedArticleContentQuery.isLoading ? (
+          <View style={styles.loaderState}>
+            <ActivityIndicator color={Colors.primary} />
+          </View>
+        ) : !currentArticle ? (
+          <View style={styles.loaderState}>
+            <Text style={styles.emptyText}>Maqola topilmadi</Text>
+          </View>
+        ) : (
+          <ScrollView
+            style={styles.readerScroll}
+            contentContainerStyle={styles.readerContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {currentArticle.coverImage ? (
+              <PersistentCachedImage
+                remoteUri={currentArticle.coverImage}
+                style={styles.readerCover}
+                requireManualDownload
+              />
+            ) : null}
 
-        <ArticleEditorModal
-          visible={editorOpen}
-          articleWordLimit={articleWordLimit}
-          initialArticle={
-            editingArticle
-              ? {
-                  title: editingArticle.title || "",
-                  excerpt: editingArticle.excerpt || "",
-                  markdown: selectedArticleContentQuery.data?.content || "",
-                  coverImage: editingArticle.coverImage || "",
-                  tags: editingArticle.tags || [],
+            <Text style={styles.readerTitle}>{currentArticle.title}</Text>
+            {currentArticle.excerpt ? (
+              <Text style={styles.readerExcerpt}>{currentArticle.excerpt}</Text>
+            ) : null}
+
+            <View style={styles.readerMeta}>
+              <UserDisplayName
+                user={currentArticle.author}
+                fallback={
+                  currentArticle.author?.nickname ||
+                  currentArticle.author?.username ||
+                  "Author"
                 }
-              : null
-          }
-          onClose={() => {
-            setEditorOpen(false);
-            setEditingArticle(null);
-          }}
-          onSubmit={handleSubmitArticle}
-        />
+                size="sm"
+                textStyle={styles.readerAuthor}
+              />
+              <Text style={styles.readerMetaDot}>·</Text>
+              <Text style={styles.readerMetaText}>
+                {new Date(
+                  currentArticle.publishedAt || currentArticle.createdAt || Date.now(),
+                ).toLocaleDateString("uz-UZ", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                })}
+              </Text>
+            </View>
+
+            <View style={styles.readerActions}>
+              <Pressable
+                style={[
+                  styles.readerActionButton,
+                  currentArticle.liked && styles.readerActionButtonActive,
+                ]}
+                onPress={() => likeMutation.mutate(currentArticle.slug || currentArticle._id)}
+              >
+                <Heart
+                  size={16}
+                  color={currentArticle.liked ? Colors.danger : Colors.text}
+                  fill={currentArticle.liked ? Colors.danger : "transparent"}
+                />
+                <Text
+                  style={[
+                    styles.readerActionText,
+                    currentArticle.liked && styles.readerActionTextActive,
+                  ]}
+                >
+                  {currentArticle.likes}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                style={styles.readerActionButton}
+                onPress={() => setCommentsOpen(true)}
+              >
+                <MessageCircle size={16} color={Colors.text} />
+                <Text style={styles.readerActionText}>{currentArticle.comments}</Text>
+              </Pressable>
+
+              <View style={styles.readerActionButton}>
+                <Eye size={16} color={Colors.text} />
+                <Text style={styles.readerActionText}>{currentArticle.views}</Text>
+              </View>
+            </View>
+
+            <View style={styles.readerDivider} />
+            <ArticleMarkdownRenderer
+              content={selectedArticleContentQuery.data?.content || ""}
+            />
+          </ScrollView>
+        )}
+      </SafeAreaView>
+    </Animated.View>
+  ) : null;
+
+  if (detailOnly) {
+    return detailOverlay ?? (
+      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+        <View style={styles.loaderState}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
       </SafeAreaView>
     );
   }
@@ -1669,18 +1931,11 @@ export function ArticlesScreen({ navigation, route }: Props) {
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
-        <View style={styles.listHeader}>
-          <View style={styles.headerSearchWrap}>
-            <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Maqola qidirish..."
-              placeholderTextColor={Colors.subtleText}
-              style={styles.searchInput}
-            />
-          </View>
-          <View style={styles.listHeaderActions}>
+        <SearchHeaderBar
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Maqola qidirish..."
+          rightSlot={
             <Pressable
               style={styles.addButton}
               onPress={() => {
@@ -1690,8 +1945,8 @@ export function ArticlesScreen({ navigation, route }: Props) {
             >
               <Plus size={18} color={Colors.text} />
             </Pressable>
-          </View>
-        </View>
+          }
+        />
 
         <ScrollView
           style={styles.listScroll}
@@ -1758,13 +2013,34 @@ export function ArticlesScreen({ navigation, route }: Props) {
             })
           )}
         </ScrollView>
-
       </View>
+      <ArticleCommentsModal
+        visible={commentsOpen}
+        article={currentArticle}
+        onClose={() => setCommentsOpen(false)}
+        onCommentsCountChange={(count) => {
+          queryClient.setQueryData<ArticleSummary | undefined>(
+            ["article", selectedArticleIdentifier],
+            (previous) => (previous ? { ...previous, comments: count } : previous),
+          );
+          void queryClient.invalidateQueries({ queryKey: ["articles"] });
+        }}
+      />
 
       <ArticleEditorModal
         visible={editorOpen}
         articleWordLimit={articleWordLimit}
-        initialArticle={null}
+        initialArticle={
+          editingArticle
+            ? {
+                title: editingArticle.title || "",
+                excerpt: editingArticle.excerpt || "",
+                markdown: selectedArticleContentQuery.data?.content || "",
+                coverImage: editingArticle.coverImage || "",
+                tags: editingArticle.tags || [],
+              }
+            : null
+        }
         onClose={() => {
           setEditorOpen(false);
           setEditingArticle(null);
@@ -1775,10 +2051,24 @@ export function ArticlesScreen({ navigation, route }: Props) {
   );
 }
 
+export function ArticlesScreen({ navigation, route }: Props) {
+  return <ArticlesScreenContent navigation={navigation} routeParams={route.params} />;
+}
+
+export function ArticleDetailScreen({ navigation, route }: ArticleDetailProps) {
+  return (
+    <ArticlesScreenContent
+      navigation={navigation as any}
+      routeParams={route.params}
+      detailOnly
+    />
+  );
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.surface,
   },
   container: {
     flex: 1,
@@ -1859,10 +2149,9 @@ const styles = StyleSheet.create({
   articleItem: {
     flexDirection: "row",
     gap: 12,
-    borderRadius: 16,
-    borderWidth: 1,
+    borderBottomWidth: 1,
     borderColor: Colors.border,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.background,
     padding: 12,
   },
   articleThumb: {
@@ -1908,9 +2197,22 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 8,
   },
-  readerContainer: {
+  readerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: Colors.background,
+    zIndex: 10,
+  },
+  readerOverlaySafeArea: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  readerSwipeEdge: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 28,
+    zIndex: 5,
   },
   readerHeader: {
     minHeight: 56,
@@ -2161,40 +2463,30 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   commentsBodyContent: {
-    padding: 18,
-    paddingBottom: 24,
-  },
-  commentsEmpty: {
-    minHeight: 220,
-    alignItems: "center",
-    justifyContent: "center",
+    padding: 16,
+    paddingBottom: 128,
+    gap: 14,
   },
   commentsEmptyText: {
-    color: Colors.mutedText,
+    color: Colors.subtleText,
     fontSize: 14,
+    textAlign: "center",
+    paddingVertical: 24,
   },
   commentRow: {
     flexDirection: "row",
-    gap: 12,
-    marginBottom: 18,
+    gap: 10,
   },
-  commentCard: {
+  commentBody: {
     flex: 1,
-    minWidth: 0,
+    gap: 6,
   },
   commentBubble: {
-    backgroundColor: Colors.background,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  commentAuthorRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 4,
+    backgroundColor: Colors.input,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4,
   },
   commentAuthor: {
     color: Colors.text,
@@ -2202,98 +2494,108 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   commentMeta: {
-    color: Colors.mutedText,
+    color: Colors.subtleText,
     fontSize: 12,
   },
   commentText: {
-    color: Colors.mutedText,
-    fontSize: 14,
-    lineHeight: 21,
+    color: Colors.text,
+    lineHeight: 20,
   },
-  replyButton: {
-    marginTop: 8,
-    alignSelf: "flex-start",
+  commentMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    flexWrap: "wrap",
   },
   replyButtonText: {
     color: Colors.primary,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
   },
-  repliesWrap: {
-    marginTop: 10,
-    marginLeft: 8,
-    paddingLeft: 12,
-    borderLeftWidth: 2,
-    borderLeftColor: Colors.border,
-    gap: 10,
+  commentActionText: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  commentActionTextDanger: {
+    color: Colors.danger,
   },
   replyRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
+    marginTop: 4,
+    marginLeft: 8,
+  },
+  replyBody: {
+    flex: 1,
+  },
+  replyBubble: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  replyMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    flexWrap: "wrap",
+    marginTop: 4,
+    marginLeft: 4,
   },
   loadMoreButton: {
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: Colors.input,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 6,
+    alignSelf: "center",
+    paddingVertical: 8,
   },
   loadMoreText: {
-    color: Colors.text,
-    fontSize: 13,
-    fontWeight: "700",
+    color: Colors.primary,
+    fontSize: 14,
+    fontWeight: "600",
   },
   commentsInputWrap: {
     borderTopWidth: 1,
     borderTopColor: Colors.border,
-    padding: 14,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 16,
+    gap: 10,
     backgroundColor: Colors.surface,
   },
   replyingBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: 12,
-    backgroundColor: Colors.hover,
-    marginBottom: 10,
+    backgroundColor: Colors.input,
   },
   replyingText: {
-    flex: 1,
     color: Colors.mutedText,
     fontSize: 13,
   },
-  commentsForm: {
+  commentComposerRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-  },
-  commentComposer: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 999,
-    backgroundColor: Colors.input,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: 14,
-    paddingRight: 6,
-    gap: 8,
   },
   commentInput: {
     flex: 1,
     color: Colors.text,
     fontSize: 14,
-    minHeight: 40,
+    minHeight: 44,
+    maxHeight: 120,
+    borderRadius: 14,
+    backgroundColor: Colors.input,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
   },
-  sendFab: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  commentSendButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",

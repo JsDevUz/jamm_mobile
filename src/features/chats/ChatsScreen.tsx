@@ -24,10 +24,10 @@ import { Plus, Video } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
-import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { CreateMeetDialog } from "../calls/CreateMeetDialog";
 import { CreateGroupDialog } from "./GroupDialogs";
+import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
 import { chatsApi, meetsApi } from "../../lib/api";
 import { loadCachedChats, saveCachedChats } from "../../lib/chat-cache";
 import { buildJoinUrl } from "../../config/env";
@@ -606,30 +606,22 @@ export function ChatsScreen({ navigation }: Props) {
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
-        <View style={styles.topHeader}>
-          <View style={styles.searchShell}>
-            <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Qidirish"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.searchInput}
-            />
-          </View>
-
-          <View style={styles.headerActions}>
-          {activeTab === "group" ? (
-            <Pressable style={styles.actionButton} onPress={() => setCreateGroupOpen(true)}>
-              <Plus size={18} color={Colors.text} />
-            </Pressable>
-          ) : (
-            <Pressable style={styles.actionButton} onPress={handleOpenMeet}>
-              <Video size={18} color={Colors.text} />
-            </Pressable>
-          )}
-        </View>
-      </View>
+        <SearchHeaderBar
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="Qidirish"
+          rightSlot={
+            activeTab === "group" ? (
+              <Pressable style={styles.actionButton} onPress={() => setCreateGroupOpen(true)}>
+                <Plus size={18} color={Colors.text} />
+              </Pressable>
+            ) : (
+              <Pressable style={styles.actionButton} onPress={handleOpenMeet}>
+                <Video size={18} color={Colors.text} />
+              </Pressable>
+            )
+          }
+        />
 
         <View
           style={styles.segmentedControl}
@@ -752,7 +744,7 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.background,
   },
   topHeader: {
     flexDirection: "row",
@@ -796,6 +788,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
     position: "relative",
   },
   contentArea: {

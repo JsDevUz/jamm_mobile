@@ -723,10 +723,45 @@ export const articlesApi = {
     content: string,
     replyToUser?: string,
   ) =>
-    request<ArticleComment>(`/articles/${identifier}/comments/${commentId}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ content, replyToUser }),
-    }),
+    request<{ replies?: number; comments?: number }>(
+      `/articles/${identifier}/comments/${commentId}/reply`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content, replyToUser }),
+      },
+    ),
+  updateComment: (identifier: string, commentId: string, content: string) =>
+    requestWithFallback<{ updated: boolean }>([
+      {
+        path: `/articles/${identifier}/comments/${commentId}`,
+        init: {
+          method: "PATCH",
+          body: JSON.stringify({ content }),
+        },
+      },
+      {
+        path: `/articles/${identifier}/comments/${commentId}/update`,
+        init: {
+          method: "POST",
+          body: JSON.stringify({ content }),
+        },
+      },
+    ]),
+  deleteComment: (identifier: string, commentId: string) =>
+    requestWithFallback<{ comments: number }>([
+      {
+        path: `/articles/${identifier}/comments/${commentId}`,
+        init: {
+          method: "DELETE",
+        },
+      },
+      {
+        path: `/articles/${identifier}/comments/${commentId}/delete`,
+        init: {
+          method: "POST",
+        },
+      },
+    ]),
   createArticle: (payload: {
     title: string;
     markdown: string;

@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -16,8 +15,7 @@ import {
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import DateTimePicker, {
-} from "@react-native-community/datetimepicker";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useVideoPlayer, VideoView } from "expo-video";
@@ -53,7 +51,6 @@ import {
   ListVideo,
   Trash2,
   Type as TypeIcon,
-  Upload,
   Users,
   X,
 } from "lucide-react-native";
@@ -67,7 +64,7 @@ import {
   State,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
@@ -80,9 +77,28 @@ import {
   removeOfflineLessonPlayback,
   type OfflineLessonPlayback,
 } from "../../lib/secure-course-video-cache";
-import type { MainTabScreenProps } from "../../navigation/types";
+import type { MainTabScreenProps, RootStackParamList } from "../../navigation/types";
+import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
+import { LinkedTestModal } from "./modals/LinkedTestModal";
+import { MaterialEditorModal } from "./modals/MaterialEditorModal";
+import { HomeworkEditorModal } from "./modals/HomeworkEditorModal";
+import { HomeworkSubmitModal } from "./modals/HomeworkSubmitModal";
+import { InlineSentenceBuilderModal, type SentenceBuilderDeck } from "./modals/InlineSentenceBuilderModal";
+import { InlineTestPlayerModal } from "./modals/InlineTestPlayerModal";
+import { LessonEditorModal } from "./modals/LessonEditorModal";
+import { EnrollmentSection } from "./sections/EnrollmentSection";
+import { AdminAttendanceSection } from "./sections/AdminAttendanceSection";
+import { AdminGradingSection } from "./sections/AdminGradingSection";
+import { AdminHomeworkSection } from "./sections/AdminHomeworkSection";
+import { AdminMaterialsSection } from "./sections/AdminMaterialsSection";
+import { AdminMembersSection } from "./sections/AdminMembersSection";
+import { AdminTestsSection } from "./sections/AdminTestsSection";
+import { CourseAdminPane, type CourseAdminTab } from "./sections/CourseAdminPane";
+import { LessonMaterialsSection } from "./sections/LessonMaterialsSection";
+import { LessonInfoSection } from "./sections/LessonInfoSection";
+import { StudentExtrasSection } from "./sections/StudentExtrasSection";
 import type {
   Course,
   CourseComment,
@@ -99,92 +115,14 @@ import type { ArenaTestPayload } from "../../types/arena";
 import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Courses">;
+type CourseDetailProps = NativeStackScreenProps<RootStackParamList, "CourseDetail">;
 type CourseViewMode = "courses" | "arena";
-type LessonMediaMode = "upload" | "url";
-type CourseAdminTab = "tests" | "homework" | "attendance" | "grading" | "members";
-type HomeworkType = "text" | "audio" | "video" | "pdf" | "photo";
 
 type ArenaItem = {
   key: string;
   title: string;
   description: string;
   icon: typeof BookOpen;
-};
-
-const HOMEWORK_TYPE_OPTIONS: Array<{
-  value: HomeworkType;
-  label: string;
-  hint: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}> = [
-  {
-    value: "text",
-    label: "Text",
-    hint: "Talaba matn yoki havola bilan javob yuboradi.",
-    icon: "document-text-outline",
-  },
-  {
-    value: "audio",
-    label: "Audio",
-    hint: "Talaba audio yozuv yoki fayl yuklaydi.",
-    icon: "mic-outline",
-  },
-  {
-    value: "video",
-    label: "Video",
-    hint: "Talaba video fayl yoki havola yuboradi.",
-    icon: "videocam-outline",
-  },
-  {
-    value: "pdf",
-    label: "PDF",
-    hint: "Talaba PDF hujjat yoki link yuklaydi.",
-    icon: "document-attach-outline",
-  },
-  {
-    value: "photo",
-    label: "Photo",
-    hint: "Talaba rasm yoki surat yuboradi.",
-    icon: "image-outline",
-  },
-];
-
-const HOMEWORK_FILE_CONFIG: Partial<
-  Record<
-    HomeworkType,
-    {
-      extensions: string;
-      maxBytes: number;
-    }
-  >
-> = {
-  audio: {
-    extensions: "MP3, WAV, M4A, AAC, OGG",
-    maxBytes: APP_LIMITS.homeworkAudioBytes,
-  },
-  video: {
-    extensions: "MP4, MOV, WEBM, MKV, M4V",
-    maxBytes: APP_LIMITS.homeworkVideoBytes,
-  },
-  pdf: {
-    extensions: "PDF",
-    maxBytes: APP_LIMITS.homeworkPdfBytes,
-  },
-  photo: {
-    extensions: "JPG, JPEG, PNG, WEBP, GIF",
-    maxBytes: APP_LIMITS.homeworkPhotoBytes,
-  },
-};
-
-type SentenceBuilderQuestion = {
-  prompt?: string;
-  poolTokens?: string[];
-};
-
-type SentenceBuilderDeck = {
-  _id?: string;
-  title?: string;
-  items?: SentenceBuilderQuestion[];
 };
 
 const ARENA_ITEMS: ArenaItem[] = [
@@ -222,6 +160,7 @@ const ARENA_ITEMS: ArenaItem[] = [
 
 const COURSE_CATEGORIES = ["IT", "Design", "Language", "Business", "Science"];
 const DEFAULT_COURSE_GRADIENT = ["#667eea", "#764ba2"] as const;
+const VIDEO_PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
 
 function timeAgo(value?: string | null) {
   if (!value) return "";
@@ -277,43 +216,6 @@ function formatFileSize(bytes?: number | null) {
   if (!value) return "0 KB";
   if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function toLocalDateTimeValue(date: Date) {
-  const pad = (value: number) => String(value).padStart(2, "0");
-
-  return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
-  ].join("-") + `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function parseLocalDateTimeValue(value?: string | null) {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return null;
-  }
-
-  return parsed;
-}
-
-function formatHomeworkDeadlineLabel(value?: string | null) {
-  const parsed = parseLocalDateTimeValue(value);
-  if (!parsed) {
-    return "Deadline tanlanmagan";
-  }
-
-  return parsed.toLocaleString("uz-UZ", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function formatAccessType(value?: string | null) {
@@ -805,1593 +707,36 @@ function CreateCourseModal({
   );
 }
 
-function LessonEditorModal({
-  visible,
-  courseId,
-  lesson,
-  onClose,
-  onSaved,
-}: {
-  visible: boolean;
-  courseId: string | null;
-  lesson?: CourseLesson | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [mode, setMode] = useState<LessonMediaMode>("upload");
-  const [videoUrl, setVideoUrl] = useState("");
-  const [selectedFile, setSelectedFile] = useState<{
-    uri: string;
-    name: string;
-    size: number;
-  } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
-
-  useEffect(() => {
-    if (!visible) {
-      setTitle("");
-      setDescription("");
-      setMode("upload");
-      setVideoUrl("");
-      setSelectedFile(null);
-      setSaving(false);
-      setUploading(false);
-      return;
-    }
-
-    setTitle(lesson?.title || "");
-    setDescription(lesson?.description || "");
-    if (lesson?.videoUrl && !lesson?.fileUrl) {
-      setMode("url");
-      setVideoUrl(lesson.videoUrl);
-      setSelectedFile(null);
-    } else if (lesson?.fileUrl || lesson?.mediaItems?.[0]?.fileUrl) {
-      const media = lesson.mediaItems?.[0];
-      setMode("upload");
-      setVideoUrl("");
-      setSelectedFile({
-        uri: media?.fileUrl || lesson.fileUrl || "",
-        name: media?.fileName || lesson.fileName || lesson.title || "video",
-        size: Number(media?.fileSize || lesson.fileSize || 0),
-      });
-    } else {
-      setMode("upload");
-      setVideoUrl("");
-      setSelectedFile(null);
-    }
-  }, [lesson, visible]);
-
-  const handlePickVideo = async () => {
-    const file = await pickDocument("video/*");
-    if (!file?.uri) return;
-    setSelectedFile({
-      uri: file.uri,
-      name: file.name || "lesson-video",
-      size: Number(file.size || 0),
-    });
-  };
-
-  const handleSave = async (publish = false) => {
-    if (!courseId || !title.trim() || saving) return;
-    if (publish && mode === "upload" && !selectedFile?.uri) return;
-    if (publish && mode === "url" && !videoUrl.trim()) return;
-
-    setSaving(true);
-    try {
-      let payload: Parameters<typeof coursesApi.addLesson>[1] = {
-        title: title.trim(),
-        description: description.trim(),
-        type: mode === "url" ? "video" : "file",
-        status: publish ? "published" : "draft",
-      };
-
-      if (mode === "url") {
-        payload.videoUrl = videoUrl.trim();
-      } else if (selectedFile?.uri) {
-        setUploading(true);
-        const uploaded = await coursesApi.uploadMedia(selectedFile.uri);
-        payload = {
-          ...payload,
-          fileUrl: uploaded.fileUrl || uploaded.url || "",
-          videoUrl: uploaded.streamType === "hls" ? uploaded.url || "" : "",
-          fileName: uploaded.fileName || selectedFile.name,
-          fileSize: Number(uploaded.fileSize || selectedFile.size || 0),
-          durationSeconds: Number(uploaded.durationSeconds || 0),
-          streamType: uploaded.streamType || "direct",
-          mediaItems: [
-            {
-              title: title.trim(),
-              videoUrl: uploaded.streamType === "hls" ? uploaded.url || "" : "",
-              fileUrl: uploaded.fileUrl || uploaded.url || "",
-              fileName: uploaded.fileName || selectedFile.name,
-              fileSize: Number(uploaded.fileSize || selectedFile.size || 0),
-              durationSeconds: Number(uploaded.durationSeconds || 0),
-              streamType: uploaded.streamType || "direct",
-              hlsKeyAsset: uploaded.hlsKeyAsset || "",
-            },
-          ],
-          hlsKeyAsset: uploaded.hlsKeyAsset || "",
-        };
-      }
-
-      if (lesson?._id || lesson?.urlSlug) {
-        const lessonId = lesson._id || lesson.urlSlug || "";
-        await coursesApi.updateLesson(courseId, lessonId, payload);
-        if (publish && lesson.status === "draft") {
-          await coursesApi.publishLesson(courseId, lessonId);
-        }
-      } else {
-        await coursesApi.addLesson(courseId, payload);
-      }
-
-      await onSaved();
-      onClose();
-    } catch (error) {
-      Alert.alert("Dars saqlanmadi", error instanceof Error ? error.message : "Noma'lum xatolik");
-    } finally {
-      setUploading(false);
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>
-              {lesson ? "Darsni tahrirlash" : "Yangi dars"}
-            </Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.createContent} showsVerticalScrollIndicator={false}>
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Dars sarlavhasi"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Dars tavsifi"
-              placeholderTextColor={Colors.subtleText}
-              style={[styles.fieldInput, styles.textArea]}
-              multiline
-            />
-
-            <View style={styles.accessRow}>
-              {[
-                { id: "upload", label: "Fayl" },
-                { id: "url", label: "URL" },
-              ].map((option) => (
-                <Pressable
-                  key={option.id}
-                  style={[styles.accessChip, mode === option.id && styles.accessChipActive]}
-                  onPress={() => setMode(option.id as LessonMediaMode)}
-                >
-                  <Text
-                    style={[
-                      styles.accessChipText,
-                      mode === option.id && styles.accessChipTextActive,
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {mode === "url" ? (
-              <TextInput
-                value={videoUrl}
-                onChangeText={setVideoUrl}
-                placeholder="https://..."
-                placeholderTextColor={Colors.subtleText}
-                style={styles.fieldInput}
-              />
-            ) : (
-              <Pressable style={styles.mediaPicker} onPress={() => void handlePickVideo()}>
-                <Upload size={16} color={Colors.primary} />
-                <Text style={styles.mediaPickerText}>
-                  {selectedFile ? selectedFile.name : "Video tanlash"}
-                </Text>
-              </Pressable>
-            )}
-
-            {selectedFile ? (
-              <View style={styles.fileInfoCard}>
-                <Text style={styles.fileInfoTitle}>{selectedFile.name}</Text>
-                <Text style={styles.fileInfoMeta}>{formatFileSize(selectedFile.size)}</Text>
-              </View>
-            ) : null}
-          </ScrollView>
-
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.secondaryAccentButton, (!title.trim() || saving) && styles.sendButtonDisabled]}
-              disabled={!title.trim() || saving}
-              onPress={() => void handleSave(false)}
-            >
-              <Text style={styles.secondaryAccentButtonText}>
-                {saving && !uploading ? "Saqlanmoqda..." : "Draft"}
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                (!title.trim() || saving || uploading) && styles.sendButtonDisabled,
-              ]}
-              disabled={!title.trim() || saving || uploading}
-              onPress={() => void handleSave(true)}
-            >
-              {saving || uploading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>Publish</Text>
-              )}
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-function MaterialEditorModal({
-  visible,
-  courseId,
-  lessonId,
-  onClose,
-  onSaved,
-}: {
-  visible: boolean;
-  courseId: string | null;
-  lessonId: string | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const [title, setTitle] = useState("");
-  const [file, setFile] = useState<{ uri: string; name: string; size: number } | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!visible) {
-      setTitle("");
-      setFile(null);
-      setSaving(false);
-    }
-  }, [visible]);
-
-  const pickPdf = async () => {
-    const selected = await pickDocument("application/pdf");
-    if (!selected?.uri) return;
-    setFile({
-      uri: selected.uri,
-      name: selected.name || "material.pdf",
-      size: Number(selected.size || 0),
-    });
-  };
-
-  const handleSave = async () => {
-    if (!courseId || !lessonId || !title.trim() || !file?.uri || saving) return;
-    setSaving(true);
-    try {
-      const uploaded = await coursesApi.uploadMedia(file.uri);
-      await coursesApi.upsertLessonMaterial(courseId, lessonId, {
-        title: title.trim(),
-        fileUrl: uploaded.fileUrl || uploaded.url || "",
-        fileName: uploaded.fileName || file.name,
-        fileSize: Number(uploaded.fileSize || file.size || 0),
-      });
-      await onSaved();
-      onClose();
-    } catch (error) {
-      Alert.alert("Material saqlanmadi", error instanceof Error ? error.message : "Noma'lum xatolik");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalKeyboardAvoid}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <Pressable style={styles.modalOverlay} onPress={onClose}>
-          <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
-            <View style={styles.createHeader}>
-              <Text style={styles.createTitle}>Material qo'shish</Text>
-              <Pressable style={styles.iconCircle} onPress={onClose}>
-                <X size={18} color={Colors.mutedText} />
-              </Pressable>
-            </View>
-            <View style={styles.createContent}>
-              <TextInput
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Material nomi"
-                placeholderTextColor={Colors.subtleText}
-                style={styles.fieldInput}
-              />
-              <Pressable style={styles.mediaPicker} onPress={() => void pickPdf()}>
-                <FileText size={16} color={Colors.primary} />
-                <Text style={styles.mediaPickerText}>{file ? file.name : "PDF tanlash"}</Text>
-              </Pressable>
-            </View>
-            <View style={styles.createFooter}>
-              <Pressable style={styles.secondaryButton} onPress={onClose}>
-                <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.primaryButton, (!title.trim() || !file || saving) && styles.sendButtonDisabled]}
-                disabled={!title.trim() || !file || saving}
-                onPress={() => void handleSave()}
-              >
-                {saving ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>Saqlash</Text>
-                )}
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
-function LinkedTestModal({
-  visible,
-  courseId,
-  lessonId,
-  onClose,
-  onSaved,
-}: {
-  visible: boolean;
-  courseId: string | null;
-  lessonId: string | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const [url, setUrl] = useState("");
-  const [minimumScore, setMinimumScore] = useState("60");
-  const [required, setRequired] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!visible) {
-      setUrl("");
-      setMinimumScore("60");
-      setRequired(true);
-      setSaving(false);
-    }
-  }, [visible]);
-
-  const handleSave = async () => {
-    if (!courseId || !lessonId || !url.trim() || saving) return;
-    setSaving(true);
-    try {
-      await coursesApi.upsertLessonLinkedTest(courseId, lessonId, {
-        url: url.trim(),
-        minimumScore: Number(minimumScore || 60),
-        requiredToUnlock: required,
-      });
-      await onSaved();
-      onClose();
-    } catch (error) {
-      Alert.alert("Test ulanmagan", error instanceof Error ? error.message : "Noma'lum xatolik");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalKeyboardAvoid}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <Pressable style={styles.modalOverlay} onPress={onClose}>
-          <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
-            <View style={styles.createHeader}>
-              <Text style={styles.createTitle}>Arena mashqi qo'shish</Text>
-              <Pressable style={styles.iconCircle} onPress={onClose}>
-                <X size={18} color={Colors.mutedText} />
-              </Pressable>
-            </View>
-            <View style={styles.createContent}>
-              <TextInput
-                value={url}
-                onChangeText={setUrl}
-                placeholder="Arena test yoki sentence-builder URL"
-                placeholderTextColor={Colors.subtleText}
-                style={styles.fieldInput}
-              />
-              <TextInput
-                value={minimumScore}
-                onChangeText={setMinimumScore}
-                placeholder="Minimum score"
-                placeholderTextColor={Colors.subtleText}
-                keyboardType="number-pad"
-                style={styles.fieldInput}
-              />
-              <Pressable style={styles.inlineToggle} onPress={() => setRequired((value) => !value)}>
-                <View style={[styles.checkbox, required && styles.checkboxActive]} />
-                <Text style={styles.inlineToggleText}>Keyingi darsni ochish uchun majburiy</Text>
-              </Pressable>
-            </View>
-            <View style={styles.createFooter}>
-              <Pressable style={styles.secondaryButton} onPress={onClose}>
-                <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.primaryButton, (!url.trim() || saving) && styles.sendButtonDisabled]}
-                disabled={!url.trim() || saving}
-                onPress={() => void handleSave()}
-              >
-                {saving ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>Saqlash</Text>
-                )}
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
-function HomeworkEditorModal({
-  visible,
-  courseId,
-  lessonId,
-  onClose,
-  onSaved,
-}: {
-  visible: boolean;
-  courseId: string | null;
-  lessonId: string | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [deadline, setDeadline] = useState("");
-  const [maxScore, setMaxScore] = useState("100");
-  const [type, setType] = useState<HomeworkType>("text");
-  const [saving, setSaving] = useState(false);
-  const [showDeadlinePickerModal, setShowDeadlinePickerModal] = useState(false);
-  const [deadlineDraft, setDeadlineDraft] = useState<Date>(new Date());
-
-  const selectedTypeOption = useMemo(
-    () => HOMEWORK_TYPE_OPTIONS.find((option) => option.value === type) || HOMEWORK_TYPE_OPTIONS[0],
-    [type],
-  );
-  const selectedFileConfig = HOMEWORK_FILE_CONFIG[type];
-
-  useEffect(() => {
-    if (!visible) {
-      setTitle("");
-      setDescription("");
-      setDeadline("");
-      setMaxScore("100");
-      setType("text");
-      setSaving(false);
-      setShowDeadlinePickerModal(false);
-      setDeadlineDraft(new Date());
-    }
-  }, [visible]);
-
-  const openDeadlinePicker = useCallback(() => {
-    const baseDate = parseLocalDateTimeValue(deadline) || new Date();
-    setDeadlineDraft(baseDate);
-    setShowDeadlinePickerModal(true);
-  }, [deadline]);
-
-  const applyDeadlineDraft = useCallback(() => {
-    setDeadline(toLocalDateTimeValue(deadlineDraft));
-    setShowDeadlinePickerModal(false);
-  }, [deadlineDraft]);
-
-  const clearDeadline = useCallback(() => {
-    setDeadline("");
-    setShowDeadlinePickerModal(false);
-  }, []);
-
-  const handleSave = async () => {
-    if (!courseId || !lessonId || !title.trim() || saving) return;
-    setSaving(true);
-    try {
-      await coursesApi.upsertLessonHomework(courseId, lessonId, {
-        enabled: true,
-        title: title.trim(),
-        description: description.trim(),
-        type,
-        deadline: deadline.trim() || undefined,
-        maxScore: Number(maxScore || 100),
-      });
-      await onSaved();
-      onClose();
-    } catch (error) {
-      Alert.alert("Homework saqlanmadi", error instanceof Error ? error.message : "Noma'lum xatolik");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <>
-      <DraggableBottomSheet
-        visible={visible}
-        title={title.trim() ? "Homeworkni tahrirlash" : "Homework qo'shish"}
-        onClose={onClose}
-        minHeight={560}
-        initialHeightRatio={0.86}
-        overlay={
-          Platform.OS !== "web" && showDeadlinePickerModal ? (
-            <View style={styles.homeworkPickerOverlay}>
-              <Pressable
-                style={styles.homeworkPickerBackdrop}
-                onPress={() => setShowDeadlinePickerModal(false)}
-              />
-              <View style={styles.deadlinePickerModalCard}>
-                <View style={styles.createHeader}>
-                  <Text style={styles.createTitle}>Deadline tanlash</Text>
-                  <Pressable
-                    style={styles.iconCircle}
-                    onPress={() => setShowDeadlinePickerModal(false)}
-                  >
-                    <X size={18} color={Colors.mutedText} />
-                  </Pressable>
-                </View>
-
-                <View style={styles.deadlinePickerModalBody}>
-                  <Text style={styles.deadlinePickerModalLabel}>Sana</Text>
-                  <View style={styles.deadlinePickerCard}>
-                    <DateTimePicker
-                      value={deadlineDraft}
-                      mode="date"
-                      display={Platform.OS === "ios" ? "spinner" : "spinner"}
-                      onChange={(_event, selectedDate) => {
-                        if (!selectedDate) {
-                          return;
-                        }
-
-                        setDeadlineDraft((prev) => {
-                          const next = new Date(prev);
-                          next.setFullYear(
-                            selectedDate.getFullYear(),
-                            selectedDate.getMonth(),
-                            selectedDate.getDate(),
-                          );
-                          return next;
-                        });
-                      }}
-                    />
-                  </View>
-
-                  <Text style={styles.deadlinePickerModalLabel}>Vaqt</Text>
-                  <View style={styles.deadlinePickerCard}>
-                    <DateTimePicker
-                      value={deadlineDraft}
-                      mode="time"
-                      display="spinner"
-                      is24Hour
-                      onChange={(_event, selectedDate) => {
-                        if (!selectedDate) {
-                          return;
-                        }
-
-                        setDeadlineDraft((prev) => {
-                          const next = new Date(prev);
-                          next.setHours(selectedDate.getHours(), selectedDate.getMinutes(), 0, 0);
-                          return next;
-                        });
-                      }}
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.deadlinePickerActions}>
-                  <Pressable style={styles.deadlinePickerGhostButton} onPress={clearDeadline}>
-                    <Text style={styles.deadlinePickerGhostText}>Tozalash</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.deadlinePickerGhostButton}
-                    onPress={() => setShowDeadlinePickerModal(false)}
-                  >
-                    <Text style={styles.deadlinePickerGhostText}>Bekor qilish</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.deadlinePickerPrimaryButton}
-                    onPress={applyDeadlineDraft}
-                  >
-                    <Text style={styles.deadlinePickerPrimaryText}>Tayyor</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          ) : null
-        }
-        footer={
-          showDeadlinePickerModal ? null : (
-          <View style={styles.homeworkEditorFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, (!title.trim() || saving) && styles.sendButtonDisabled]}
-              disabled={!title.trim() || saving}
-              onPress={() => void handleSave()}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>Saqlash</Text>
-              )}
-            </Pressable>
-          </View>
-          )
-        }
-      >
-        <View style={styles.homeworkEditorBody}>
-          <ScrollView
-            style={styles.homeworkEditorScroll}
-            contentContainerStyle={styles.homeworkEditorContent}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            <View style={styles.homeworkEditorIntro}>
-              <Text style={styles.homeworkEditorIntroTitle}>
-                Topshiriq turi, deadline va maksimal balni belgilang.
-              </Text>
-              <Text style={styles.homeworkEditorIntroText}>
-                Frontenddagi homework editor oqimiga yaqinlashtirilgan sheet.
-              </Text>
-            </View>
-
-            <View style={styles.homeworkEditorField}>
-              <Text style={styles.homeworkEditorLabel}>Sarlavha</Text>
-              <TextInput
-                value={title}
-                onChangeText={setTitle}
-                placeholder="Topshiriq sarlavhasi"
-                placeholderTextColor={Colors.subtleText}
-                style={styles.fieldInput}
-              />
-            </View>
-
-            <View style={styles.homeworkEditorField}>
-              <Text style={styles.homeworkEditorLabel}>Tavsif</Text>
-              <TextInput
-                value={description}
-                onChangeText={setDescription}
-                placeholder="Topshiriq tavsifi"
-                placeholderTextColor={Colors.subtleText}
-                style={[styles.fieldInput, styles.textArea]}
-                multiline
-              />
-            </View>
-
-            <View style={styles.homeworkEditorField}>
-              <Text style={styles.homeworkEditorLabel}>Topshiriq turi</Text>
-              <View style={styles.homeworkTypeList}>
-                {HOMEWORK_TYPE_OPTIONS.map((option) => {
-                  const isActive = type === option.value;
-
-                  return (
-                    <Pressable
-                      key={option.value}
-                      style={[
-                        styles.homeworkTypeCard,
-                        isActive && styles.homeworkTypeCardActive,
-                      ]}
-                      onPress={() => setType(option.value)}
-                    >
-                      <View
-                        style={[
-                          styles.homeworkTypeIconWrap,
-                          isActive && styles.homeworkTypeIconWrapActive,
-                        ]}
-                      >
-                        <Ionicons
-                          name={option.icon}
-                          size={18}
-                          color={isActive ? "#fff" : Colors.primary}
-                        />
-                      </View>
-                      <View style={styles.homeworkTypeCopy}>
-                        <Text
-                          style={[
-                            styles.homeworkTypeTitle,
-                            isActive && styles.homeworkTypeTitleActive,
-                          ]}
-                        >
-                          {option.label}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.homeworkTypeHint,
-                            isActive && styles.homeworkTypeHintActive,
-                          ]}
-                        >
-                          {option.hint}
-                        </Text>
-                      </View>
-                      {isActive ? <CheckCircle2 size={18} color={Colors.primary} /> : null}
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={styles.homeworkUploadHintCard}>
-              <View style={styles.homeworkUploadHintHeader}>
-                <View style={styles.homeworkUploadHintIcon}>
-                  <Upload size={18} color={Colors.primary} />
-                </View>
-                <View style={styles.homeworkUploadHintCopy}>
-                  <Text style={styles.homeworkUploadHintTitle}>
-                    {selectedTypeOption.label} topshirish oqimi
-                  </Text>
-                  <Text style={styles.homeworkUploadHintText}>
-                    {selectedTypeOption.hint}
-                  </Text>
-                </View>
-              </View>
-              {selectedFileConfig ? (
-                <>
-                  <View style={styles.homeworkUploadHintMetaRow}>
-                    <Text style={styles.homeworkUploadHintMetaLabel}>Formatlar</Text>
-                    <Text style={styles.homeworkUploadHintMetaValue}>
-                      {selectedFileConfig.extensions}
-                    </Text>
-                  </View>
-                  <View style={styles.homeworkUploadHintMetaRow}>
-                    <Text style={styles.homeworkUploadHintMetaLabel}>Limit</Text>
-                    <Text style={styles.homeworkUploadHintMetaValue}>
-                      {formatFileSize(selectedFileConfig.maxBytes)} gacha
-                    </Text>
-                  </View>
-                </>
-              ) : (
-                <Text style={styles.homeworkUploadHintText}>
-                  Bu turda talaba matn yoki link bilan javob yuboradi.
-                </Text>
-              )}
-            </View>
-
-            <View style={styles.homeworkEditorRow}>
-              <View style={[styles.homeworkEditorField, styles.homeworkEditorHalfField]}>
-                <Text style={styles.homeworkEditorLabel}>Deadline</Text>
-                {Platform.OS === "web" ? (
-                  <TextInput
-                    value={deadline}
-                    onChangeText={setDeadline}
-                    placeholder="2026-03-30T18:00"
-                    placeholderTextColor={Colors.subtleText}
-                    style={styles.fieldInput}
-                  />
-                ) : (
-                  <>
-                    <Pressable style={styles.deadlineFieldButton} onPress={openDeadlinePicker}>
-                      <View style={styles.deadlineFieldLeft}>
-                        <View style={styles.deadlineFieldIcon}>
-                          <Clock3 size={16} color={Colors.primary} />
-                        </View>
-                        <View style={styles.deadlineFieldCopy}>
-                          <Text style={styles.deadlineFieldLabel}>Sana va vaqt</Text>
-                          <Text
-                            style={[
-                              styles.deadlineFieldValue,
-                              !deadline && styles.deadlineFieldValuePlaceholder,
-                            ]}
-                          >
-                            {formatHomeworkDeadlineLabel(deadline)}
-                          </Text>
-                        </View>
-                      </View>
-                      <ChevronDown size={16} color={Colors.mutedText} />
-                    </Pressable>
-                    {deadline ? (
-                      <Pressable style={styles.deadlineClearButton} onPress={clearDeadline}>
-                        <Text style={styles.deadlineClearButtonText}>Tozalash</Text>
-                      </Pressable>
-                    ) : null}
-                  </>
-                )}
-              </View>
-
-              <View style={[styles.homeworkEditorField, styles.homeworkEditorHalfField]}>
-                <Text style={styles.homeworkEditorLabel}>Max ball</Text>
-                <TextInput
-                  value={maxScore}
-                  onChangeText={setMaxScore}
-                  placeholder="100"
-                  placeholderTextColor={Colors.subtleText}
-                  keyboardType="number-pad"
-                  style={styles.fieldInput}
-                />
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-      </DraggableBottomSheet>
-    </>
-  );
-}
-
-function HomeworkSubmitModal({
-  visible,
-  courseId,
-  lessonId,
-  assignment,
-  onClose,
-  onSaved,
-}: {
-  visible: boolean;
-  courseId: string | null;
-  lessonId: string | null;
-  assignment: CourseHomeworkAssignment | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const [text, setText] = useState("");
-  const [link, setLink] = useState("");
-  const [file, setFile] = useState<{ uri: string; name: string; size: number } | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!visible) {
-      setText("");
-      setLink("");
-      setFile(null);
-      setSaving(false);
-      return;
-    }
-
-    setText(assignment?.selfSubmission?.text || "");
-    setLink(assignment?.selfSubmission?.link || "");
-    if (assignment?.selfSubmission?.fileUrl) {
-      setFile({
-        uri: assignment.selfSubmission.fileUrl,
-        name: assignment.selfSubmission.fileName || "submission",
-        size: Number(assignment.selfSubmission.fileSize || 0),
-      });
-    } else {
-      setFile(null);
-    }
-  }, [assignment, visible]);
-
-  const pickSubmissionFile = async () => {
-    const mime =
-      assignment?.type === "pdf"
-        ? "application/pdf"
-        : assignment?.type === "photo"
-          ? "image/*"
-          : assignment?.type === "audio"
-            ? "audio/*"
-            : assignment?.type === "video"
-              ? "video/*"
-              : "*/*";
-    const selected = await pickDocument(mime);
-    if (!selected?.uri) return;
-    setFile({
-      uri: selected.uri,
-      name: selected.name || "submission",
-      size: Number(selected.size || 0),
-    });
-  };
-
-  const handleSubmit = async () => {
-    if (!courseId || !lessonId || !assignment?.assignmentId || saving) return;
-    setSaving(true);
-    try {
-      let payload: Parameters<typeof coursesApi.submitLessonHomework>[3] = {
-        text: text.trim() || undefined,
-        link: link.trim() || undefined,
-      };
-
-      if (file?.uri && !file.uri.startsWith("http")) {
-        const uploaded = await coursesApi.uploadMedia(file.uri);
-        payload = {
-          ...payload,
-          fileUrl: uploaded.fileUrl || uploaded.url || "",
-          fileName: uploaded.fileName || file.name,
-          fileSize: Number(uploaded.fileSize || file.size || 0),
-          streamType: uploaded.streamType || "direct",
-          hlsKeyAsset: uploaded.hlsKeyAsset || "",
-        };
-      }
-
-      await coursesApi.submitLessonHomework(courseId, lessonId, assignment.assignmentId, payload);
-      await onSaved();
-      onClose();
-    } catch (error) {
-      Alert.alert("Topshiriq yuborilmadi", error instanceof Error ? error.message : "Noma'lum xatolik");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>{assignment?.title || "Homework topshirish"}</Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-          <ScrollView contentContainerStyle={styles.createContent} showsVerticalScrollIndicator={false}>
-            <Text style={styles.sectionHint}>{assignment?.description || "Topshiriqni yuboring."}</Text>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              placeholder="Matnli javob"
-              placeholderTextColor={Colors.subtleText}
-              style={[styles.fieldInput, styles.textArea]}
-              multiline
-            />
-            <TextInput
-              value={link}
-              onChangeText={setLink}
-              placeholder="Havola"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            {assignment?.type !== "text" ? (
-              <Pressable style={styles.mediaPicker} onPress={() => void pickSubmissionFile()}>
-                <Upload size={16} color={Colors.primary} />
-                <Text style={styles.mediaPickerText}>
-                  {file ? file.name : "Fayl tanlash"}
-                </Text>
-              </Pressable>
-            ) : null}
-          </ScrollView>
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, saving && styles.sendButtonDisabled]}
-              disabled={saving}
-              onPress={() => void handleSubmit()}
-            >
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Yuborish</Text>}
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-function InlineTestPlayerModal({
-  visible,
-  test,
-  linkedTest,
-  loading,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean;
-  test: ArenaTestPayload | null;
-  linkedTest: CourseLinkedTest | null;
-  loading: boolean;
-  onClose: () => void;
-  onSubmit: (payload: { answers: number[] }) => Promise<Record<string, unknown> | null>;
-}) {
-  const questions = useMemo(() => test?.questions || [], [test?.questions]);
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [singleAnswers, setSingleAnswers] = useState<number[]>([]);
-  const [listAnswers, setListAnswers] = useState<Record<number, number>>({});
-  const [timeLeft, setTimeLeft] = useState(0);
-  const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
-
-  const displayMode = test?.displayMode === "list" ? "list" : "single";
-  const currentQuestion = questions[currentIdx];
-
-  useEffect(() => {
-    if (!visible) {
-      setCurrentIdx(0);
-      setSingleAnswers([]);
-      setListAnswers({});
-      setSubmitting(false);
-      setResult(null);
-      setTimeLeft(0);
-      return;
-    }
-
-    setCurrentIdx(0);
-    setSingleAnswers([]);
-    setListAnswers({});
-    setSubmitting(false);
-    setResult(null);
-    setTimeLeft(Math.max(0, Number(test?.timeLimit || linkedTest?.timeLimit || 0) * 60));
-  }, [linkedTest?.timeLimit, test?.timeLimit, visible]);
-
-  useEffect(() => {
-    if (!visible || !timeLeft || result || submitting) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => Math.max(0, prev - 1));
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [result, submitting, timeLeft, visible]);
-
-  useEffect(() => {
-    if (!visible || timeLeft !== 0 || result || submitting) {
-      return;
-    }
-
-    const answers = questions.map((_, index) =>
-      displayMode === "list" ? listAnswers[index] ?? -1 : singleAnswers[index] ?? -1,
-    );
-    void (async () => {
-      setSubmitting(true);
-      try {
-        setResult(await onSubmit({ answers }));
-      } finally {
-        setSubmitting(false);
-      }
-    })();
-  }, [displayMode, listAnswers, onSubmit, questions, result, singleAnswers, submitting, timeLeft, visible]);
-
-  const selectOption = (questionIndex: number, optionIndex: number) => {
-    if (displayMode === "list") {
-      setListAnswers((prev) => ({ ...prev, [questionIndex]: optionIndex }));
-      return;
-    }
-
-    setSingleAnswers((prev) => {
-      const next = [...prev];
-      next[questionIndex] = optionIndex;
-      return next;
-    });
-  };
-
-  const handleNext = async () => {
-    if (displayMode !== "single") return;
-    if (singleAnswers[currentIdx] === undefined) return;
-    if (currentIdx < questions.length - 1) {
-      setCurrentIdx((prev) => prev + 1);
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      setResult(await onSubmit({ answers: questions.map((_, index) => singleAnswers[index] ?? -1) }));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleListSubmit = async () => {
-    setSubmitting(true);
-    try {
-      setResult(await onSubmit({ answers: questions.map((_, index) => listAnswers[index] ?? -1) }));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={styles.runnerSafeArea} edges={["top", "left", "right", "bottom"]}>
-        <View style={styles.runnerHeader}>
-          <Pressable style={styles.headerButton} onPress={onClose}>
-            <ArrowLeft size={18} color={Colors.text} />
-          </Pressable>
-          <Text style={styles.runnerTitle} numberOfLines={1}>
-            {linkedTest?.title || test?.title || "Maydon testi"}
-          </Text>
-          <View style={styles.runnerMetaPill}>
-            <Text style={styles.runnerMetaPillText}>
-              {timeLeft > 0
-                ? `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, "0")}`
-                : `${questions.length} savol`}
-            </Text>
-          </View>
-        </View>
-
-        {loading && !test ? (
-          <View style={styles.runnerCenterState}>
-            <ActivityIndicator color={Colors.primary} />
-          </View>
-        ) : result ? (
-          <ScrollView contentContainerStyle={styles.runnerResultContent} showsVerticalScrollIndicator={false}>
-            <View style={styles.runnerSummaryCard}>
-              <Text style={styles.runnerSummaryValue}>{Number(result.score || 0)}</Text>
-              <Text style={styles.runnerSummaryLabel}>To'g'ri javob</Text>
-            </View>
-            <View style={styles.runnerSummaryGrid}>
-              <View style={styles.runnerSummaryStat}>
-                <Text style={styles.runnerSummaryStatValue}>{Number(result.percent || 0)}%</Text>
-                <Text style={styles.runnerSummaryStatLabel}>Aniqlik</Text>
-              </View>
-              <View style={styles.runnerSummaryStat}>
-                <Text style={styles.runnerSummaryStatValue}>{Number(result.minimumScore || 0)}%</Text>
-                <Text style={styles.runnerSummaryStatLabel}>Minimum</Text>
-              </View>
-              <View style={styles.runnerSummaryStat}>
-                <Text style={styles.runnerSummaryStatValue}>
-                  {result.passed ? "Passed" : "Retry"}
-                </Text>
-                <Text style={styles.runnerSummaryStatLabel}>Holat</Text>
-              </View>
-            </View>
-            {Array.isArray(result.results) && result.showResults !== false ? (
-              <View style={styles.runnerBreakdownList}>
-                {result.results.map((item, index) => {
-                  const resultItem = item as {
-                    questionIndex?: number;
-                    correct?: boolean;
-                    correctOptionIndex?: number;
-                  };
-                  const question =
-                    questions[resultItem.questionIndex ?? index] || questions[index];
-                  const selectedIndex =
-                    displayMode === "list"
-                      ? listAnswers[resultItem.questionIndex ?? index]
-                      : singleAnswers[resultItem.questionIndex ?? index];
-
-                  return (
-                    <View key={`result-${index}`} style={styles.runnerBreakdownCard}>
-                      <Text style={styles.runnerBreakdownQuestion}>
-                        {question?.questionText ||
-                          question?.question ||
-                          question?.prompt ||
-                          `${index + 1}-savol`}
-                      </Text>
-                      {(question?.options || []).map((option, optionIndex) => {
-                        const isCorrect = resultItem.correctOptionIndex === optionIndex;
-                        const isSelected = selectedIndex === optionIndex;
-
-                        return (
-                          <View
-                            key={`${option}-${optionIndex}`}
-                            style={[
-                              styles.runnerOptionReview,
-                              isCorrect && styles.runnerOptionReviewCorrect,
-                              isSelected && !isCorrect && styles.runnerOptionReviewSelected,
-                            ]}
-                          >
-                            <Text style={styles.runnerOptionReviewText}>{option}</Text>
-                          </View>
-                        );
-                      })}
-                    </View>
-                  );
-                })}
-              </View>
-            ) : null}
-          </ScrollView>
-        ) : displayMode === "list" ? (
-          <ScrollView contentContainerStyle={styles.runnerBody} showsVerticalScrollIndicator={false}>
-            {questions.map((question, questionIndex) => (
-              <View key={`question-${questionIndex}`} style={styles.runnerQuestionCard}>
-                <Text style={styles.runnerQuestionText}>
-                  {question.questionText ||
-                    question.question ||
-                    question.prompt ||
-                    `${questionIndex + 1}-savol`}
-                </Text>
-                <View style={styles.runnerOptionsList}>
-                  {(question.options || []).map((option, optionIndex) => (
-                    <Pressable
-                      key={`${option}-${optionIndex}`}
-                      style={[
-                        styles.runnerOptionButton,
-                        listAnswers[questionIndex] === optionIndex && styles.runnerOptionButtonActive,
-                      ]}
-                      onPress={() => selectOption(questionIndex, optionIndex)}
-                    >
-                      <Text style={styles.runnerOptionLabel}>{String.fromCharCode(65 + optionIndex)}</Text>
-                      <Text
-                        style={[
-                          styles.runnerOptionText,
-                          listAnswers[questionIndex] === optionIndex && styles.runnerOptionTextActive,
-                        ]}
-                      >
-                        {option}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
-            ))}
-          </ScrollView>
-        ) : (
-          <View style={styles.runnerBody}>
-            <View style={styles.runnerProgressBar}>
-              <View
-                style={[
-                  styles.runnerProgressFill,
-                  { width: `${questions.length ? ((currentIdx + 1) / questions.length) * 100 : 0}%` },
-                ]}
-              />
-            </View>
-            <View style={styles.runnerQuestionCard}>
-              <Text style={styles.runnerQuestionCounter}>
-                {currentIdx + 1} / {questions.length}
-              </Text>
-              <Text style={styles.runnerQuestionText}>
-                {currentQuestion?.questionText ||
-                  currentQuestion?.question ||
-                  currentQuestion?.prompt ||
-                  "Savol"}
-              </Text>
-              <View style={styles.runnerOptionsList}>
-                {(currentQuestion?.options || []).map((option, optionIndex) => (
-                  <Pressable
-                    key={`${option}-${optionIndex}`}
-                    style={[
-                      styles.runnerOptionButton,
-                      singleAnswers[currentIdx] === optionIndex && styles.runnerOptionButtonActive,
-                    ]}
-                    onPress={() => selectOption(currentIdx, optionIndex)}
-                  >
-                    <Text style={styles.runnerOptionLabel}>{String.fromCharCode(65 + optionIndex)}</Text>
-                    <Text
-                      style={[
-                        styles.runnerOptionText,
-                        singleAnswers[currentIdx] === optionIndex && styles.runnerOptionTextActive,
-                      ]}
-                    >
-                      {option}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          </View>
-        )}
-
-        {!result ? (
-          <View style={styles.runnerFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, submitting && styles.sendButtonDisabled]}
-              disabled={
-                submitting ||
-                (displayMode === "single"
-                  ? singleAnswers[currentIdx] === undefined
-                  : questions.some((_, index) => listAnswers[index] === undefined))
-              }
-              onPress={() => void (displayMode === "single" ? handleNext() : handleListSubmit())}
-            >
-              {submitting ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>
-                  {displayMode === "single" && currentIdx < questions.length - 1
-                    ? "Keyingi"
-                    : "Yakunlash"}
-                </Text>
-              )}
-            </Pressable>
-          </View>
-        ) : (
-          <View style={styles.runnerFooter}>
-            <Pressable style={styles.primaryButton} onPress={onClose}>
-              <Text style={styles.primaryButtonText}>Yopish</Text>
-            </Pressable>
-          </View>
-        )}
-      </SafeAreaView>
-    </Modal>
-  );
-}
-
-function InlineSentenceBuilderModal({
-  visible,
-  deck,
-  linkedTest,
-  loading,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean;
-  deck: SentenceBuilderDeck | null;
-  linkedTest: CourseLinkedTest | null;
-  loading: boolean;
-  onClose: () => void;
-  onSubmit: (payload: {
-    sentenceBuilderAnswers: Array<{ questionIndex: number; selectedTokens: string[] }>;
-  }) => Promise<Record<string, unknown> | null>;
-}) {
-  const [questionIndex, setQuestionIndex] = useState(0);
-  const [selectedTokens, setSelectedTokens] = useState<string[]>([]);
-  const [poolTokens, setPoolTokens] = useState<string[]>([]);
-  const [answerMap, setAnswerMap] = useState<Record<number, string[]>>({});
-  const [checkedResult, setCheckedResult] = useState<Record<string, unknown> | null>(null);
-  const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(0);
-
-  const items = deck?.items || [];
-  const currentQuestion = items[questionIndex];
-
-  useEffect(() => {
-    if (!visible) {
-      setQuestionIndex(0);
-      setSelectedTokens([]);
-      setPoolTokens([]);
-      setAnswerMap({});
-      setCheckedResult(null);
-      setSummary(null);
-      setChecking(false);
-      setSubmitting(false);
-      setTimeLeft(0);
-      return;
-    }
-
-    setQuestionIndex(0);
-    setSelectedTokens([]);
-    setPoolTokens(currentQuestion?.poolTokens || []);
-    setAnswerMap({});
-    setCheckedResult(null);
-    setSummary(null);
-    setChecking(false);
-    setSubmitting(false);
-    setTimeLeft(Math.max(0, Number(linkedTest?.timeLimit || 0) * 60));
-  }, [currentQuestion?.poolTokens, linkedTest?.timeLimit, visible]);
-
-  useEffect(() => {
-    if (!currentQuestion || summary) {
-      return;
-    }
-
-    setSelectedTokens(answerMap[questionIndex] || []);
-    setPoolTokens(
-      (currentQuestion.poolTokens || []).filter(
-        (token) => !(answerMap[questionIndex] || []).includes(token),
-      ),
-    );
-    setCheckedResult(null);
-  }, [currentQuestion, questionIndex, summary]);
-
-  useEffect(() => {
-    if (!visible || !timeLeft || summary || submitting) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => Math.max(0, prev - 1));
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [submitting, summary, timeLeft, visible]);
-
-  const finish = async (nextMap = answerMap) => {
-    setSubmitting(true);
-    try {
-      const sentenceBuilderAnswers = Object.entries(nextMap).map(([idx, selected]) => ({
-        questionIndex: Number(idx),
-        selectedTokens: selected,
-      }));
-      setSummary(await onSubmit({ sentenceBuilderAnswers }));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!visible || timeLeft !== 0 || summary || submitting) {
-      return;
-    }
-
-    void finish(answerMap);
-  }, [answerMap, submitting, summary, timeLeft, visible]);
-
-  const handleCheck = async () => {
-    if (!deck?._id || !selectedTokens.length) return;
-    setChecking(true);
-    try {
-      const result = await arenaApi.checkSentenceBuilderAnswer(deck._id, questionIndex, selectedTokens);
-      setCheckedResult(result);
-      setAnswerMap((prev) => ({ ...prev, [questionIndex]: selectedTokens }));
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  const handleChooseToken = (token: string, index: number) => {
-    if (checkedResult) return;
-    setPoolTokens((prev) => prev.filter((_, tokenIndex) => !(prev[tokenIndex] === token && tokenIndex === index)));
-    setSelectedTokens((prev) => [...prev, token]);
-  };
-
-  const handleRemoveToken = (token: string, index: number) => {
-    if (checkedResult) return;
-    setSelectedTokens((prev) => prev.filter((_, tokenIndex) => tokenIndex !== index));
-    setPoolTokens((prev) => [...prev, token]);
-  };
-
-  const handleNext = async () => {
-    const nextAnswerMap = { ...answerMap, [questionIndex]: selectedTokens };
-    if (questionIndex >= items.length - 1) {
-      await finish(nextAnswerMap);
-      return;
-    }
-
-    setQuestionIndex((prev) => prev + 1);
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={styles.runnerSafeArea} edges={["top", "left", "right", "bottom"]}>
-        <View style={styles.runnerHeader}>
-          <Pressable style={styles.headerButton} onPress={onClose}>
-            <ArrowLeft size={18} color={Colors.text} />
-          </Pressable>
-          <Text style={styles.runnerTitle} numberOfLines={1}>
-            {linkedTest?.title || deck?.title || "Sentence Builder"}
-          </Text>
-          <View style={styles.runnerMetaPill}>
-            <Text style={styles.runnerMetaPillText}>
-              {timeLeft > 0
-                ? `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, "0")}`
-                : `${items.length} gap`}
-            </Text>
-          </View>
-        </View>
-
-        {loading && !deck ? (
-          <View style={styles.runnerCenterState}>
-            <ActivityIndicator color={Colors.primary} />
-          </View>
-        ) : summary ? (
-          <ScrollView contentContainerStyle={styles.runnerResultContent} showsVerticalScrollIndicator={false}>
-            <View style={styles.runnerSummaryCard}>
-              <Text style={styles.runnerSummaryValue}>{Number(summary.score || 0)}</Text>
-              <Text style={styles.runnerSummaryLabel}>To'g'ri gaplar</Text>
-            </View>
-            <View style={styles.runnerSummaryGrid}>
-              <View style={styles.runnerSummaryStat}>
-                <Text style={styles.runnerSummaryStatValue}>{Number(summary.percent || 0)}%</Text>
-                <Text style={styles.runnerSummaryStatLabel}>Aniqlik</Text>
-              </View>
-              <View style={styles.runnerSummaryStat}>
-                <Text style={styles.runnerSummaryStatValue}>{Number(summary.minimumScore || 0)}%</Text>
-                <Text style={styles.runnerSummaryStatLabel}>Minimum</Text>
-              </View>
-              <View style={styles.runnerSummaryStat}>
-                <Text style={styles.runnerSummaryStatValue}>{summary.passed ? "Passed" : "Retry"}</Text>
-                <Text style={styles.runnerSummaryStatLabel}>Holat</Text>
-              </View>
-            </View>
-          </ScrollView>
-        ) : (
-          <View style={styles.runnerBody}>
-            <View style={styles.runnerProgressBar}>
-              <View
-                style={[
-                  styles.runnerProgressFill,
-                  { width: `${items.length ? ((questionIndex + 1) / items.length) * 100 : 0}%` },
-                ]}
-              />
-            </View>
-            <View style={styles.runnerQuestionCard}>
-              <Text style={styles.runnerQuestionCounter}>
-                {questionIndex + 1} / {items.length}
-              </Text>
-              <Text style={styles.runnerQuestionText}>{currentQuestion?.prompt || "Gapni tuzing"}</Text>
-
-              <View style={styles.builderDropZone}>
-                {selectedTokens.length ? (
-                  selectedTokens.map((token, index) => (
-                    <Pressable
-                      key={`${token}-${index}`}
-                      style={styles.builderTokenSelected}
-                      onPress={() => handleRemoveToken(token, index)}
-                    >
-                      <Text style={styles.builderTokenText}>{token}</Text>
-                    </Pressable>
-                  ))
-                ) : (
-                  <Text style={styles.sectionHint}>Javobni shu yerga tering.</Text>
-                )}
-              </View>
-
-              <View style={styles.builderPoolWrap}>
-                {(poolTokens || []).map((token, index) => (
-                  <Pressable
-                    key={`${token}-${index}`}
-                    style={styles.builderToken}
-                    onPress={() => handleChooseToken(token, index)}
-                  >
-                    <Text style={styles.builderTokenText}>{token}</Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              {checkedResult ? (
-                <View style={styles.builderFeedback}>
-                  <Text style={styles.progressBadgeText}>
-                    {checkedResult.isCorrect ? "To'g'ri" : "Xato"}
-                  </Text>
-                  {Array.isArray(checkedResult.expected) ? (
-                    <View style={styles.builderPoolWrap}>
-                      {(checkedResult.expected as string[]).map((token, index) => (
-                        <View key={`${token}-${index}`} style={styles.builderTokenExpected}>
-                          <Text style={styles.builderTokenText}>{token}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-            </View>
-          </View>
-        )}
-
-        {!summary ? (
-          <View style={styles.runnerFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            {checkedResult ? (
-              <Pressable style={styles.primaryButton} onPress={() => void handleNext()} disabled={submitting}>
-                {submitting ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>
-                    {questionIndex >= items.length - 1 ? "Yakunlash" : "Keyingi"}
-                  </Text>
-                )}
-              </Pressable>
-            ) : (
-              <Pressable
-                style={[styles.primaryButton, (!selectedTokens.length || checking) && styles.sendButtonDisabled]}
-                disabled={!selectedTokens.length || checking}
-                onPress={() => void handleCheck()}
-              >
-                {checking ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>Tekshirish</Text>
-                )}
-              </Pressable>
-            )}
-          </View>
-        ) : (
-          <View style={styles.runnerFooter}>
-            <Pressable style={styles.primaryButton} onPress={onClose}>
-              <Text style={styles.primaryButtonText}>Yopish</Text>
-            </Pressable>
-          </View>
-        )}
-      </SafeAreaView>
-    </Modal>
-  );
-}
-
 export function CoursesScreen({ navigation, route }: Props) {
+  return <CoursesScreenContent navigation={navigation} routeParams={route.params} />;
+}
+
+export function CourseDetailScreen({ navigation, route }: CourseDetailProps) {
+  return (
+    <CoursesScreenContent
+      navigation={navigation as any}
+      routeParams={route.params}
+      detailOnly
+    />
+  );
+}
+
+type SharedCoursesProps = {
+  navigation: Props["navigation"] | CourseDetailProps["navigation"];
+  routeParams?: {
+    courseId?: string | null;
+    lessonId?: string | null;
+    viewMode?: CourseViewMode | null;
+  };
+  detailOnly?: boolean;
+};
+
+function CoursesScreenContent({
+  navigation,
+  routeParams,
+  detailOnly = false,
+}: SharedCoursesProps) {
+  const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
@@ -2404,8 +749,13 @@ export function CoursesScreen({ navigation, route }: Props) {
   const currentIndexRef = useRef(0);
   const [tabsWidth, setTabsWidth] = useState(0);
   const [query, setQuery] = useState("");
-  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
-  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
+  const [listRefreshing, setListRefreshing] = useState(false);
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(() =>
+    detailOnly ? String(routeParams?.courseId || "").trim() || null : null,
+  );
+  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(() =>
+    detailOnly ? String(routeParams?.lessonId || "").trim() || null : null,
+  );
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [lessonAdminPanelOpen, setLessonAdminPanelOpen] = useState(false);
   const [adminActiveTab, setAdminActiveTab] = useState<CourseAdminTab>("homework");
@@ -2460,11 +810,18 @@ export function CoursesScreen({ navigation, route }: Props) {
   const [mediaDuration, setMediaDuration] = useState(0);
   const [mediaBufferedPosition, setMediaBufferedPosition] = useState(0);
   const [isLessonVideoPlaying, setIsLessonVideoPlaying] = useState(false);
+  const [isLessonVideoStarting, setIsLessonVideoStarting] = useState(false);
   const [isLessonVideoFullscreen, setIsLessonVideoFullscreen] = useState(false);
   const [offlineTooltipVisible, setOfflineTooltipVisible] = useState(false);
   const [videoProgressTrackWidth, setVideoProgressTrackWidth] = useState(0);
+  const [videoChromeVisible, setVideoChromeVisible] = useState(true);
+  const [videoScrubPercent, setVideoScrubPercent] = useState<number | null>(null);
+  const [playerSettingsOpen, setPlayerSettingsOpen] = useState(false);
+  const [videoPlaybackRate, setVideoPlaybackRate] = useState(1);
   const pendingSeekTimeRef = useRef<number | null>(null);
   const offlineTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const videoChromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const videoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const offlineTooltipSuppressPressRef = useRef(false);
   const videoViewRef = useRef<VideoView | null>(null);
   const adminPaneBackdropOpacity = useMemo(
@@ -2484,6 +841,45 @@ export function CoursesScreen({ navigation, route }: Props) {
     }
   }, []);
 
+  const clearVideoChromeTimer = useCallback(() => {
+    if (videoChromeTimerRef.current) {
+      clearTimeout(videoChromeTimerRef.current);
+      videoChromeTimerRef.current = null;
+    }
+  }, []);
+
+  const clearVideoStartTimer = useCallback(() => {
+    if (videoStartTimerRef.current) {
+      clearTimeout(videoStartTimerRef.current);
+      videoStartTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleVideoChromeAutoHide = useCallback(() => {
+    clearVideoChromeTimer();
+    videoChromeTimerRef.current = setTimeout(() => {
+      setVideoChromeVisible(false);
+      videoChromeTimerRef.current = null;
+    }, 3200);
+  }, [clearVideoChromeTimer]);
+
+  const showVideoChrome = useCallback(
+    (withAutoHide = true) => {
+      setVideoChromeVisible(true);
+      if (withAutoHide) {
+        scheduleVideoChromeAutoHide();
+      } else {
+        clearVideoChromeTimer();
+      }
+    },
+    [clearVideoChromeTimer, scheduleVideoChromeAutoHide],
+  );
+
+  const hideVideoChrome = useCallback(() => {
+    clearVideoChromeTimer();
+    setVideoChromeVisible(false);
+  }, [clearVideoChromeTimer]);
+
   const showOfflineTooltip = useCallback(() => {
     clearOfflineTooltipTimer();
     setOfflineTooltipVisible(true);
@@ -2497,15 +893,27 @@ export function CoursesScreen({ navigation, route }: Props) {
   useEffect(() => {
     return () => {
       clearOfflineTooltipTimer();
+      clearVideoChromeTimer();
     };
-  }, [clearOfflineTooltipTimer]);
+  }, [clearOfflineTooltipTimer, clearVideoChromeTimer]);
   const isExpoWebPlaybackFallback = Platform.OS === "web";
   const canUseOfflineLessonCache = Platform.OS !== "web";
 
   const coursesQuery = useQuery({
     queryKey: ["courses"],
     queryFn: () => coursesApi.fetchCourses(1, 40),
+    refetchOnMount: false,
+    refetchOnReconnect: false,
   });
+
+  const handleRefreshCourses = useCallback(async () => {
+    setListRefreshing(true);
+    try {
+      await coursesQuery.refetch();
+    } finally {
+      setListRefreshing(false);
+    }
+  }, [coursesQuery]);
 
   const selectedCourseQuery = useQuery({
     queryKey: ["course", selectedCourseId],
@@ -2524,8 +932,19 @@ export function CoursesScreen({ navigation, route }: Props) {
     }) => coursesApi.createCourse(payload),
     onSuccess: async (course) => {
       await queryClient.invalidateQueries({ queryKey: ["courses"] });
-      setSelectedCourseId(course.urlSlug || course._id || null);
-      setSelectedLessonId(course.lessons?.[0]?._id || null);
+      const courseId = course.urlSlug || course._id || null;
+      const lessonId = course.lessons?.[0]?._id || null;
+      if (detailOnly) {
+        setSelectedCourseId(courseId);
+        setSelectedLessonId(lessonId);
+        return;
+      }
+      if (courseId) {
+        (navigation as any).navigate("CourseDetail", {
+          courseId,
+          lessonId: lessonId || undefined,
+        });
+      }
     },
   });
 
@@ -2670,6 +1089,9 @@ export function CoursesScreen({ navigation, route }: Props) {
         String(lesson.urlSlug || "") === String(currentLesson?.urlSlug || ""),
     ) ?? 0,
   );
+  const currentLessonHeaderTitle = currentLesson
+    ? `${currentLessonIndex + 1}-dars: ${currentLesson.title || currentCourse?.name || "Dars"}`
+    : currentCourse?.name || "Dars";
   const lessonKey =
     currentCourse?._id && currentLesson?._id ? [currentCourse._id, currentLesson._id] : null;
   const isOwner = Boolean(currentCourse && getCourseOwnerId(currentCourse) === currentUserId);
@@ -2782,6 +1204,8 @@ export function CoursesScreen({ navigation, route }: Props) {
     setActiveMediaIndex(0);
     setLessonDescriptionSheetOpen(false);
     setStudentExtrasOpen(false);
+    setPlayerSettingsOpen(false);
+    setVideoChromeVisible(true);
     setEditingOralRows({});
     setOralScoreDrafts({});
     setOralNoteDrafts({});
@@ -2792,6 +1216,7 @@ export function CoursesScreen({ navigation, route }: Props) {
     setMediaDuration(0);
     setMediaBufferedPosition(0);
     setPlaybackRetryNonce(0);
+    setVideoScrubPercent(null);
   }, [currentLesson?._id, currentLesson?.urlSlug]);
 
   useEffect(() => {
@@ -2819,16 +1244,20 @@ export function CoursesScreen({ navigation, route }: Props) {
   }, [selectedCourseId]);
 
   useEffect(() => {
-    navigation.setOptions({
-      tabBarStyle: selectedCourseId ? { display: "none" } : undefined,
+    if (detailOnly) {
+      return;
+    }
+
+    (navigation as any).setOptions({
+      tabBarStyle: undefined,
     });
 
     return () => {
-      navigation.setOptions({
+      (navigation as any).setOptions({
         tabBarStyle: undefined,
       });
     };
-  }, [navigation, selectedCourseId]);
+  }, [detailOnly, navigation]);
 
   const myMemberStatus =
     getCourseMemberStatus(currentCourse, currentUserId) ||
@@ -2912,12 +1341,33 @@ export function CoursesScreen({ navigation, route }: Props) {
       ? activeOfflinePlaybackStored
       : null;
   const isCurrentMediaOffline = Boolean(activeOfflinePlaybackStored);
+  const lessonOfflineMediaKeys = useMemo(
+    () =>
+      lessonMediaItems.map((item) =>
+        getOfflineLessonMediaKey(
+          currentCourse?._id,
+          currentLesson?._id,
+          item.mediaId || null,
+        ),
+      ),
+    [currentCourse?._id, currentLesson?._id, lessonMediaItems],
+  );
+  const lessonOfflineItems = useMemo(
+    () =>
+      lessonOfflineMediaKeys
+        .map((key) => offlinePlaybackMap[key])
+        .filter(Boolean) as OfflineLessonPlayback[],
+    [lessonOfflineMediaKeys, offlinePlaybackMap],
+  );
+  const isLessonFullyOffline = Boolean(
+    lessonMediaItems.length > 0 && lessonOfflineItems.length === lessonMediaItems.length,
+  );
 
   useEffect(() => {
     setOfflineTooltipVisible(false);
     offlineTooltipSuppressPressRef.current = false;
     clearOfflineTooltipTimer();
-  }, [activeOfflineMediaKey, clearOfflineTooltipTimer]);
+  }, [activeOfflineMediaKey, clearOfflineTooltipTimer, isLessonFullyOffline]);
   const isUsingOfflinePlayback = Boolean(
     activeOfflinePlayback?.localUrl &&
       playbackStreamUrl &&
@@ -2928,6 +1378,11 @@ export function CoursesScreen({ navigation, route }: Props) {
   const hasHomeworkBadge = Boolean(homeworkAssignments.length);
   const hasLessonExtras = Boolean(hasLessonTests || hasHomeworkBadge);
   const canRenderLessonPlayer = canAttemptProtectedPlayback;
+  const playbackSourceLabel = isUsingOfflinePlayback
+    ? "Offline"
+    : playbackStreamType === "hls"
+      ? "Adaptive"
+      : "Direct";
   const segmentDurations = useMemo(
     () =>
       lessonMediaItems.map((item, index) => {
@@ -2952,9 +1407,12 @@ export function CoursesScreen({ navigation, route }: Props) {
     [activeMediaIndex, segmentDurations],
   );
   const overallCurrentTime = elapsedBeforeCurrentMedia + mediaCurrentTime;
+  const remainingPlaybackTime = Math.max(0, totalLessonDuration - overallCurrentTime);
   const overallProgressPercent = totalLessonDuration
     ? Math.max(0, Math.min(100, (overallCurrentTime / totalLessonDuration) * 100))
     : 0;
+  const displayedProgressPercent =
+    videoScrubPercent !== null ? videoScrubPercent : overallProgressPercent;
   const bufferedProgressPercent = totalLessonDuration
     ? Math.max(
         overallProgressPercent,
@@ -3108,6 +1566,7 @@ export function CoursesScreen({ navigation, route }: Props) {
       setMediaCurrentTime(0);
       setMediaDuration(0);
       setMediaBufferedPosition(0);
+      setIsLessonVideoStarting(false);
       return;
     }
 
@@ -3146,6 +1605,7 @@ export function CoursesScreen({ navigation, route }: Props) {
       setMediaCurrentTime(0);
       setMediaDuration(0);
       setMediaBufferedPosition(0);
+      setIsLessonVideoStarting(false);
       return;
     }
 
@@ -3176,6 +1636,7 @@ export function CoursesScreen({ navigation, route }: Props) {
             ? error.message
             : "Protected video streamni ochib bo'lmadi.",
         );
+        setIsLessonVideoStarting(false);
       })
       .finally(() => {
         if (!cancelled) {
@@ -3208,16 +1669,45 @@ export function CoursesScreen({ navigation, route }: Props) {
   });
 
   useEffect(() => {
+    lessonVideoPlayer.playbackRate = videoPlaybackRate;
+  }, [lessonVideoPlayer, videoPlaybackRate]);
+
+  useEffect(() => {
     setIsLessonVideoPlaying(lessonVideoPlayer.playing);
 
     const playingSubscription = lessonVideoPlayer.addListener("playingChange", (payload) => {
       setIsLessonVideoPlaying(payload.isPlaying);
+      if (payload.isPlaying) {
+        clearVideoStartTimer();
+        setIsLessonVideoStarting(false);
+      }
     });
 
     return () => {
       playingSubscription.remove();
     };
-  }, [lessonVideoPlayer]);
+  }, [clearVideoStartTimer, lessonVideoPlayer]);
+
+  useEffect(() => {
+    if (!playbackStreamUrl || isLessonVideoFullscreen || playerSettingsOpen) {
+      showVideoChrome(false);
+      return;
+    }
+
+    if (isLessonVideoPlaying) {
+      scheduleVideoChromeAutoHide();
+      return;
+    }
+
+    showVideoChrome(false);
+  }, [
+    isLessonVideoFullscreen,
+    isLessonVideoPlaying,
+    playbackStreamUrl,
+    playerSettingsOpen,
+    scheduleVideoChromeAutoHide,
+    showVideoChrome,
+  ]);
 
   useEffect(() => {
     const timeSubscription = lessonVideoPlayer.addListener("timeUpdate", (payload) => {
@@ -3245,6 +1735,10 @@ export function CoursesScreen({ navigation, route }: Props) {
       }
     });
     const statusSubscription = lessonVideoPlayer.addListener("statusChange", (payload) => {
+      if (payload.status === "error") {
+        clearVideoStartTimer();
+        setIsLessonVideoStarting(false);
+      }
       if (payload.status !== "error") {
         return;
       }
@@ -3281,6 +1775,7 @@ export function CoursesScreen({ navigation, route }: Props) {
     activeOfflineMediaKey,
     activeMediaIndex,
     canOpenLesson,
+    clearVideoStartTimer,
     currentCourseLessons,
     currentLessonIndex,
     isUsingOfflinePlayback,
@@ -3289,29 +1784,48 @@ export function CoursesScreen({ navigation, route }: Props) {
   ]);
 
   const handleToggleVideoPlayback = useCallback(() => {
+    showVideoChrome();
     if (lessonVideoPlayer.playing) {
+      clearVideoStartTimer();
+      setIsLessonVideoStarting(false);
       lessonVideoPlayer.pause();
       return;
     }
 
+    setIsLessonVideoStarting(true);
+    clearVideoStartTimer();
+    videoStartTimerRef.current = setTimeout(() => {
+      setIsLessonVideoStarting(false);
+      videoStartTimerRef.current = null;
+    }, 10000);
     lessonVideoPlayer.play();
-  }, [lessonVideoPlayer]);
+  }, [clearVideoStartTimer, lessonVideoPlayer, showVideoChrome]);
+
+  const handleVideoSurfacePress = useCallback(() => {
+    if (videoChromeVisible) {
+      hideVideoChrome();
+      return;
+    }
+
+    showVideoChrome();
+  }, [hideVideoChrome, showVideoChrome, videoChromeVisible]);
 
   const handleEnterVideoFullscreen = useCallback(() => {
+    showVideoChrome(false);
     if (isLessonVideoFullscreen) {
       void videoViewRef.current?.exitFullscreen();
       return;
     }
 
     void videoViewRef.current?.enterFullscreen();
-  }, [isLessonVideoFullscreen]);
+  }, [isLessonVideoFullscreen, showVideoChrome]);
 
   const handleDownloadLessonOffline = useCallback(async () => {
     if (
       !canUseOfflineLessonCache ||
       !currentCourse?._id ||
       !currentLesson?._id ||
-      !activeMediaItem
+      !lessonMediaItems.length
     ) {
       return;
     }
@@ -3319,33 +1833,36 @@ export function CoursesScreen({ navigation, route }: Props) {
     setOfflineDownloading(true);
     setOfflineDownloadProgress({
       current: 0,
-      total: 1,
+      total: lessonMediaItems.length,
     });
 
     try {
-      setOfflineDownloadProgress({
-        current: 1,
-        total: 1,
-      });
+      for (let index = 0; index < lessonMediaItems.length; index += 1) {
+        const item = lessonMediaItems[index];
+        setOfflineDownloadProgress({
+          current: index + 1,
+          total: lessonMediaItems.length,
+        });
 
-      const payload = await coursesApi.getLessonPlaybackToken(
-        currentCourse._id,
-        currentLesson._id,
-        activeMediaItem.mediaId || undefined,
-      );
-      const streamUrl = resolveApiUrl(payload.streamUrl);
+        const payload = await coursesApi.getLessonPlaybackToken(
+          currentCourse._id,
+          currentLesson._id,
+          item.mediaId || undefined,
+        );
+        const streamUrl = resolveApiUrl(payload.streamUrl);
 
-      if (!streamUrl) {
-        throw new Error("Lesson videoni yuklab olish uchun stream topilmadi.");
+        if (!streamUrl) {
+          throw new Error("Lesson videoni yuklab olish uchun stream topilmadi.");
+        }
+
+        await downloadOfflineLessonPlayback({
+          courseId: currentCourse._id,
+          lessonId: currentLesson._id,
+          mediaId: item.mediaId || undefined,
+          streamType: payload.streamType === "hls" ? "hls" : "direct",
+          streamUrl,
+        });
       }
-
-      await downloadOfflineLessonPlayback({
-        courseId: currentCourse._id,
-        lessonId: currentLesson._id,
-        mediaId: activeMediaItem.mediaId || undefined,
-        streamType: payload.streamType === "hls" ? "hls" : "direct",
-        streamUrl,
-      });
 
       setOfflinePlaybackBypassKeys({});
       setOfflineRefreshNonce((value) => value + 1);
@@ -3367,25 +1884,27 @@ export function CoursesScreen({ navigation, route }: Props) {
       setOfflineDownloadProgress({ current: 0, total: 0 });
     }
   }, [
-    activeMediaItem,
     canUseOfflineLessonCache,
     currentCourse?._id,
     currentLesson?._id,
+    lessonMediaItems,
   ]);
 
   const handleRemoveLessonOffline = useCallback(async () => {
-    if (!currentCourse?._id || !currentLesson?._id || !activeMediaItem) {
+    if (!currentCourse?._id || !currentLesson?._id || !lessonMediaItems.length) {
       return;
     }
 
     setOfflineRemoving(true);
 
     try {
-      await removeOfflineLessonPlayback({
-        courseId: currentCourse._id,
-        lessonId: currentLesson._id,
-        mediaId: activeMediaItem.mediaId || undefined,
-      });
+      for (const item of lessonMediaItems) {
+        await removeOfflineLessonPlayback({
+          courseId: currentCourse._id,
+          lessonId: currentLesson._id,
+          mediaId: item.mediaId || undefined,
+        });
+      }
 
       setOfflinePlaybackBypassKeys({});
       setOfflineRefreshNonce((value) => value + 1);
@@ -3405,17 +1924,17 @@ export function CoursesScreen({ navigation, route }: Props) {
     } finally {
       setOfflineRemoving(false);
     }
-  }, [activeMediaItem, currentCourse?._id, currentLesson?._id]);
+  }, [currentCourse?._id, currentLesson?._id, lessonMediaItems]);
 
   const handleToggleLessonOffline = useCallback(() => {
     if (offlineDownloading || offlineRemoving) {
       return;
     }
 
-    if (isCurrentMediaOffline) {
+    if (isLessonFullyOffline) {
       Alert.alert(
         "Offline saqlangan lesson",
-        "Hozir ochiq turgan video private storage'dan o'chirilsinmi? O'chirilgandan keyin qayta internet kerak bo'ladi.",
+        "Bu lesson ichidagi barcha section videolari private storage'dan o'chirilsinmi? O'chirilgandan keyin qayta internet kerak bo'ladi.",
         [
           {
             text: "Bekor qilish",
@@ -3437,7 +1956,7 @@ export function CoursesScreen({ navigation, route }: Props) {
   }, [
     handleDownloadLessonOffline,
     handleRemoveLessonOffline,
-    isCurrentMediaOffline,
+    isLessonFullyOffline,
     offlineDownloading,
     offlineRemoving,
   ]);
@@ -3479,18 +1998,86 @@ export function CoursesScreen({ navigation, route }: Props) {
     [activeMediaIndex, lessonVideoPlayer, segmentDurations, totalLessonDuration],
   );
 
+  const updateVideoScrubPreview = useCallback(
+    (locationX: number) => {
+      if (!videoProgressTrackWidth) {
+        return 0;
+      }
+
+      const nextRatio = Math.max(0, Math.min(1, locationX / videoProgressTrackWidth));
+      setVideoScrubPercent(nextRatio * 100);
+      return nextRatio;
+    },
+    [videoProgressTrackWidth],
+  );
+
+  const finishVideoScrub = useCallback(
+    (locationX: number) => {
+      const nextRatio = updateVideoScrubPreview(locationX);
+      setVideoScrubPercent(null);
+      handleSeekLessonProgress(nextRatio);
+    },
+    [handleSeekLessonProgress, updateVideoScrubPreview],
+  );
+
+  const handleSeekRelative = useCallback(
+    (deltaSeconds: number) => {
+      if (!totalLessonDuration) {
+        return;
+      }
+
+      const targetTime = Math.max(0, Math.min(totalLessonDuration, overallCurrentTime + deltaSeconds));
+      handleSeekLessonProgress(targetTime / totalLessonDuration);
+      showVideoChrome();
+    },
+    [handleSeekLessonProgress, overallCurrentTime, showVideoChrome, totalLessonDuration],
+  );
+
+  const handleSelectPlaybackRate = useCallback(
+    (rate: number) => {
+      setVideoPlaybackRate(rate);
+      showVideoChrome();
+      setPlayerSettingsOpen(false);
+    },
+    [showVideoChrome],
+  );
+
+  const handleSelectMediaItem = useCallback(
+    (index: number) => {
+      if (index === activeMediaIndex) {
+        setPlayerSettingsOpen(false);
+        return;
+      }
+
+      setActiveMediaIndex(index);
+      setPlayerSettingsOpen(false);
+      showVideoChrome();
+    },
+    [activeMediaIndex, showVideoChrome],
+  );
+
   const handleOpenCourse = async (course: Course) => {
     await Haptics.selectionAsync();
     const identifier = course.urlSlug || course._id || null;
-    setSelectedCourseId(identifier);
-    setSelectedLessonId(course.lessons?.[0]?._id || course.lessons?.[0]?.urlSlug || null);
-    setPlaylistCollapsed(false);
+    const lessonId = course.lessons?.[0]?._id || course.lessons?.[0]?.urlSlug || null;
+    if (detailOnly) {
+      setSelectedCourseId(identifier);
+      setSelectedLessonId(lessonId);
+      setPlaylistCollapsed(false);
+      return;
+    }
+    if (identifier) {
+      (navigation as any).navigate("CourseDetail", {
+        courseId: identifier,
+        lessonId: lessonId || undefined,
+      });
+    }
   };
 
   const handleCloseCourseDetail = useCallback(() => {
+    clearVideoStartTimer();
+    setIsLessonVideoStarting(false);
     setIsLessonVideoFullscreen(false);
-    setSelectedCourseId(null);
-    setSelectedLessonId(null);
     setPlaylistCollapsed(false);
     setCommentsOpen(false);
     setLessonAdminPanelOpen(false);
@@ -3505,7 +2092,13 @@ export function CoursesScreen({ navigation, route }: Props) {
     setActiveLinkedTest(null);
     setActiveArenaTest(null);
     setActiveSentenceDeck(null);
-  }, []);
+    if (detailOnly) {
+      (navigation as any).goBack();
+      return;
+    }
+    setSelectedCourseId(null);
+    setSelectedLessonId(null);
+  }, [clearVideoStartTimer, detailOnly, navigation]);
 
   useEffect(() => {
     if (!selectedCourseId) {
@@ -3773,36 +2366,51 @@ export function CoursesScreen({ navigation, route }: Props) {
   );
 
   useEffect(() => {
-    const nextCourseId = String(route.params?.courseId || "").trim();
-    const nextLessonId = String(route.params?.lessonId || "").trim();
-    const nextViewMode = route.params?.viewMode;
+    const nextCourseId = String(routeParams?.courseId || "").trim();
+    const nextLessonId = String(routeParams?.lessonId || "").trim();
+    const nextViewMode = routeParams?.viewMode;
 
     if (!nextCourseId && !nextLessonId && !nextViewMode) {
       return;
     }
 
     if (nextCourseId) {
-      setSelectedCourseId(nextCourseId);
-      setSelectedLessonId(nextLessonId || null);
-      setPlaylistCollapsed(false);
-      setViewMode("courses");
+      if (detailOnly) {
+        setSelectedCourseId(nextCourseId);
+        setSelectedLessonId(nextLessonId || null);
+        setPlaylistCollapsed(false);
+        setViewMode("courses");
+      } else {
+        (navigation as any).navigate("CourseDetail", {
+          courseId: nextCourseId,
+          lessonId: nextLessonId || undefined,
+        });
+        (navigation as any).setParams({
+          courseId: undefined,
+          lessonId: undefined,
+          viewMode: undefined,
+        });
+      }
     } else if (nextViewMode === "arena") {
       animateToViewMode("arena");
     } else if (nextViewMode === "courses") {
       animateToViewMode("courses");
     }
 
-    navigation.setParams({
-      courseId: undefined,
-      lessonId: undefined,
-      viewMode: undefined,
-    });
+    if (!detailOnly) {
+      (navigation as any).setParams({
+        courseId: undefined,
+        lessonId: undefined,
+        viewMode: undefined,
+      });
+    }
   }, [
     animateToViewMode,
+    detailOnly,
     navigation,
-    route.params?.courseId,
-    route.params?.lessonId,
-    route.params?.viewMode,
+    routeParams?.courseId,
+    routeParams?.lessonId,
+    routeParams?.viewMode,
   ]);
 
   const handleOpenLinkedTest = async (linkedTest: CourseLinkedTest) => {
@@ -3859,22 +2467,22 @@ export function CoursesScreen({ navigation, route }: Props) {
 
   const handleOpenArenaItem = (item: ArenaItem) => {
     if (item.key === "tests") {
-      navigation.navigate("ArenaQuizList");
+      (navigation as any).navigate("ArenaQuizList");
       return;
     }
 
     if (item.key === "flashcards") {
-      navigation.navigate("ArenaFlashcardList");
+      (navigation as any).navigate("ArenaFlashcardList");
       return;
     }
 
     if (item.key === "sentenceBuilders") {
-      navigation.navigate("ArenaSentenceBuilderList");
+      (navigation as any).navigate("ArenaSentenceBuilderList");
       return;
     }
 
     if (item.key === "mnemonics") {
-      navigation.navigate("ArenaMnemonics");
+      (navigation as any).navigate("ArenaMnemonics");
       return;
     }
 
@@ -3915,7 +2523,7 @@ export function CoursesScreen({ navigation, route }: Props) {
       ? "Yuklanmoqda"
       : offlineRemoving
         ? "O'chirilmoqda"
-        : isCurrentMediaOffline
+        : isLessonFullyOffline
           ? "Offline saqlangan"
           : "Offline yuklash";
 
@@ -3923,7 +2531,7 @@ export function CoursesScreen({ navigation, route }: Props) {
       return (
         <View style={styles.playerStageCard}>
           <View style={styles.videoStage}>
-            {!isLessonVideoFullscreen ? (
+            {!isLessonVideoFullscreen && !playbackStreamUrl ? (
               <View style={styles.videoStageTopBar}>
                 <Pressable
                   style={styles.videoStageBackButton}
@@ -3932,7 +2540,7 @@ export function CoursesScreen({ navigation, route }: Props) {
                   <ArrowLeft size={18} color="#fff" />
                 </Pressable>
                 <Text style={styles.videoStageTopTitle} numberOfLines={1}>
-                  {currentLesson?.title || currentCourse?.name || "Dars"}
+                  {currentLessonHeaderTitle}
                 </Text>
                 {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
                   <View style={styles.videoStageTopActions}>
@@ -3945,7 +2553,7 @@ export function CoursesScreen({ navigation, route }: Props) {
                       <Pressable
                         style={[
                           styles.videoStageTopActionButton,
-                          isCurrentMediaOffline && styles.videoStageTopActionButtonReady,
+                          isLessonFullyOffline && styles.videoStageTopActionButtonReady,
                           offlineBusy && styles.sendButtonDisabled,
                         ]}
                         disabled={offlineBusy}
@@ -3968,7 +2576,7 @@ export function CoursesScreen({ navigation, route }: Props) {
                           <ActivityIndicator size="small" color="#fff" />
                         ) : (
                           <Ionicons
-                            name={isCurrentMediaOffline ? "cloud-done-outline" : "arrow-down"}
+                            name={isLessonFullyOffline ? "cloud-done-outline" : "arrow-down"}
                             size={17}
                             color="#fff"
                           />
@@ -4003,72 +2611,219 @@ export function CoursesScreen({ navigation, route }: Props) {
                   onFullscreenExit={() => setIsLessonVideoFullscreen(false)}
                 />
                 {!isLessonVideoFullscreen ? (
-                  <View pointerEvents="box-none" style={styles.videoStageOverlay}>
-                    <View style={styles.videoStageBottomBar}>
-                      <Pressable
-                        style={styles.videoStageProgressTrack}
-                        onLayout={(event) =>
-                          setVideoProgressTrackWidth(event.nativeEvent.layout.width)
-                        }
-                        onPress={(event) => {
-                          if (!videoProgressTrackWidth) {
-                            return;
-                          }
+                  <>
+                    <Pressable style={styles.videoStageTouchLayer} onPress={handleVideoSurfacePress} />
+                    {videoChromeVisible ? (
+                      <View pointerEvents="box-none" style={styles.videoStageOverlay}>
+                        <LinearGradient
+                          colors={["rgba(7,10,18,0.78)", "rgba(7,10,18,0.08)"]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.videoStageTopGradient}
+                        >
+                          <View style={styles.videoStageTopBar}>
+                            <Pressable
+                              style={styles.videoStageBackButton}
+                              onPress={handleCloseCourseDetail}
+                            >
+                              <ArrowLeft size={18} color="#fff" />
+                            </Pressable>
+                            <View style={styles.videoStageTitleWrap}>
+                              <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+                                {currentLessonHeaderTitle}
+                              </Text>
+                              <Text style={styles.videoStageSubtitle} numberOfLines={1}>
+                                {currentCourse?.name || "Jamm Course"} · {playbackSourceLabel}
+                              </Text>
+                            </View>
+                            <View style={styles.videoStageTopActions}>
+                             
+                              {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
+                                <View style={styles.videoStageTopActionAnchor}>
+                                  {offlineTooltipVisible ? (
+                                    <View style={styles.videoStageTooltip}>
+                                      <Text style={styles.videoStageTooltipText}>
+                                        {offlineButtonLabel}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                  <Pressable
+                                    style={[
+                                      styles.videoStageTopActionButton,
+                                      isLessonFullyOffline && styles.videoStageTopActionButtonReady,
+                                      offlineBusy && styles.sendButtonDisabled,
+                                    ]}
+                                    disabled={offlineBusy}
+                                    delayLongPress={260}
+                                    onLongPress={() => {
+                                      offlineTooltipSuppressPressRef.current = true;
+                                      showOfflineTooltip();
+                                    }}
+                                    onPress={() => {
+                                      if (offlineTooltipSuppressPressRef.current) {
+                                        offlineTooltipSuppressPressRef.current = false;
+                                        return;
+                                      }
+                                      setOfflineTooltipVisible(false);
+                                      clearOfflineTooltipTimer();
+                                      showVideoChrome();
+                                      void handleToggleLessonOffline();
+                                    }}
+                                  >
+                                    {offlineBusy ? (
+                                      <ActivityIndicator size="small" color="#fff" />
+                                    ) : (
+                                      <Ionicons
+                                        name={
+                                          isLessonFullyOffline
+                                            ? "cloud-done-outline"
+                                            : "arrow-down"
+                                        }
+                                        size={17}
+                                        color="#fff"
+                                      />
+                                    )}
+                                  </Pressable>
+                                </View>
+                              ) : null}
+                            </View>
+                          </View>
+                        </LinearGradient>
 
-                          handleSeekLessonProgress(
-                            event.nativeEvent.locationX / videoProgressTrackWidth,
-                          );
-                        }}
-                      >
-                        <View
+                        <View style={styles.videoStageCenterControls}>
+                          <Pressable
+                            style={styles.videoStageSeekButton}
+                            onPress={() => handleSeekRelative(-10)}
+                          >
+                            <Ionicons name="play-back" size={22} color="#fff" />
+                          </Pressable>
+                          <Pressable
+                            style={styles.videoStagePlayButton}
+                            onPress={handleToggleVideoPlayback}
+                          >
+                            {isLessonVideoStarting ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <Ionicons
+                                name={isLessonVideoPlaying ? "pause" : "play"}
+                                size={24}
+                                color="#fff"
+                                style={!isLessonVideoPlaying ? styles.videoStagePlayIcon : undefined}
+                              />
+                            )}
+                          </Pressable>
+                          <Pressable
+                            style={styles.videoStageSeekButton}
+                            onPress={() => handleSeekRelative(10)}
+                          >
+                            <Ionicons name="play-forward" size={22} color="#fff" />
+                          </Pressable>
+                        </View>
+
+                        <LinearGradient
+                          colors={["rgba(7,10,18,0.08)", "rgba(7,10,18,0.9)"]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
                           style={[
-                            styles.videoStageProgressBuffered,
-                            { width: `${bufferedProgressPercent}%` },
+                            styles.videoStageBottomBar,
+                            { paddingBottom: 4 },
                           ]}
-                        />
+                        >
+                          
+
+                          <View
+                            style={styles.videoStageProgressTrack}
+                            onLayout={(event) =>
+                              setVideoProgressTrackWidth(event.nativeEvent.layout.width)
+                            }
+                            onStartShouldSetResponder={() => true}
+                            onMoveShouldSetResponder={() => true}
+                            onResponderGrant={(event) => {
+                              showVideoChrome();
+                              updateVideoScrubPreview(event.nativeEvent.locationX);
+                            }}
+                            onResponderMove={(event) => {
+                              updateVideoScrubPreview(event.nativeEvent.locationX);
+                            }}
+                            onResponderRelease={(event) => {
+                              showVideoChrome();
+                              finishVideoScrub(event.nativeEvent.locationX);
+                            }}
+                            onResponderTerminate={() => {
+                              setVideoScrubPercent(null);
+                            }}
+                          >
+                            <View
+                              style={[
+                                styles.videoStageProgressBuffered,
+                                { width: `${bufferedProgressPercent}%` },
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.videoStageProgressElapsed,
+                                { width: `${displayedProgressPercent}%` },
+                              ]}
+                            />
+                            <View
+                              style={[
+                                styles.videoStageProgressThumb,
+                                { left: `${displayedProgressPercent}%` },
+                              ]}
+                            />
+                            {segmentBoundaries.map((boundary, index) => (
+                              <View
+                                key={`segment-${index}`}
+                                style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
+                              />
+                            ))}
+                          </View>
+
+                          <View style={styles.videoStageControlsRow}>
+                            <View style={styles.videoStageMetaRow}>
+                            <View style={styles.videoStageMetaBadge}>
+                              <Text style={styles.videoStageMetaBadgeText}>
+                                {activeMediaIndex + 1}/{Math.max(lessonMediaItems.length, 1)}
+                              </Text>
+                            </View>
+                          </View>
+                            <Text style={styles.videoStageTimeText}>
+                              {formatPlaybackClock(overallCurrentTime)} /{" "}
+                              {formatPlaybackClock(totalLessonDuration)}
+                            </Text>
+
+                            <Pressable
+                              style={styles.videoStageControlButtonWide}
+                              onPress={() => setPlayerSettingsOpen(true)}
+                            >
+                              <Ionicons name="options-outline" size={16} color="#fff" />
+                              <Text style={styles.videoStageControlButtonText}>Sozlamalar</Text>
+                            </Pressable>
+
+                            <Pressable
+                              style={styles.videoStageControlButton}
+                              onPress={handleEnterVideoFullscreen}
+                            >
+                              <Ionicons
+                                name={isLessonVideoFullscreen ? "contract-outline" : "expand-outline"}
+                                size={16}
+                                color="#fff"
+                              />
+                            </Pressable>
+                          </View>
+                        </LinearGradient>
+                      </View>
+                    ) : (
+                      <View pointerEvents="none" style={styles.videoStageMiniProgressWrap}>
                         <View
                           style={[
-                            styles.videoStageProgressElapsed,
+                            styles.videoStageMiniProgress,
                             { width: `${overallProgressPercent}%` },
                           ]}
                         />
-                        {segmentBoundaries.map((boundary, index) => (
-                          <View
-                            key={`segment-${index}`}
-                            style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
-                          />
-                        ))}
-                      </Pressable>
-
-                      <View style={styles.videoStageControlsRow}>
-                        <Pressable
-                          style={styles.videoStageControlButton}
-                          onPress={handleToggleVideoPlayback}
-                        >
-                          {isLessonVideoPlaying ? (
-                            <Pause size={16} color="#fff" />
-                          ) : (
-                            <Play size={16} color="#fff" fill="#fff" />
-                          )}
-                        </Pressable>
-
-                        <Text style={styles.videoStageTimeText}>
-                          {formatPlaybackClock(overallCurrentTime)} / {formatPlaybackClock(totalLessonDuration)}
-                        </Text>
-
-                        <Pressable
-                          style={styles.videoStageControlButton}
-                          onPress={handleEnterVideoFullscreen}
-                        >
-                          <Ionicons
-                            name={isLessonVideoFullscreen ? "contract-outline" : "expand-outline"}
-                            size={16}
-                            color="#fff"
-                          />
-                        </Pressable>
                       </View>
-                    </View>
-                  </View>
+                    )}
+                  </>
                 ) : null}
               </>
             ) : (
@@ -4130,7 +2885,7 @@ export function CoursesScreen({ navigation, route }: Props) {
               <ArrowLeft size={18} color="#fff" />
             </Pressable>
             <Text style={styles.videoStageTopTitle} numberOfLines={1}>
-              {currentLesson?.title || currentCourse?.name || "Dars"}
+              {currentLessonHeaderTitle}
             </Text>
           </View>
           <View style={styles.videoStageCenter}>
@@ -4147,79 +2902,25 @@ export function CoursesScreen({ navigation, route }: Props) {
     if (!currentLesson || !canRenderLessonPlayer) return null;
 
     return (
-      <>
-        <View style={styles.videoInfoCard}>
-          <Text style={styles.videoInfoTitle}>
-            {currentLessonIndex + 1}-dars: {currentLesson.title || currentCourse?.name || "Dars"}
-          </Text>
-          <View style={styles.videoMetaRow}>
-            <View style={styles.videoMetaItem}>
-              <Eye size={14} color={Colors.subtleText} />
-              <Text style={styles.videoMetaText}>{currentLesson.views || 0} ko'rish</Text>
-            </View>
-            <Pressable
-              style={[
-                styles.videoMetaItem,
-                currentLesson.liked && styles.videoMetaItemLiked,
-              ]}
-              onPress={() =>
-                currentCourse?._id && currentLesson?._id
-                  ? likeLessonMutation.mutate({
-                      courseId: currentCourse._id,
-                      lessonId: currentLesson._id,
-                    })
-                  : undefined
-              }
-            >
-              <Heart
-                size={14}
-                color={currentLesson.liked ? Colors.danger : Colors.subtleText}
-                fill={currentLesson.liked ? Colors.danger : "transparent"}
-              />
-              <Text
-                style={[
-                  styles.videoMetaText,
-                  currentLesson.liked && styles.videoMetaTextLiked,
-                ]}
-              >
-                {currentLesson.likes || 0} like
-              </Text>
-            </Pressable>
-            <Pressable
-              style={styles.videoMetaItem}
-              onPress={() => void handleCopyLessonLink(currentLesson)}
-            >
-              <Copy size={14} color={Colors.subtleText} />
-              <Text style={styles.videoMetaText}>Nusxalash</Text>
-            </Pressable>
-            {currentLesson.description ? (
-          <Pressable
-            style={styles.lessonDescriptionCard}
-            onPress={() => setLessonDescriptionSheetOpen(true)}
-          >
-            <Text style={styles.lessonDescriptionBody}>
-              {currentLesson.description.length > 30
-                ? `${currentLesson.description.slice(0, 30).trimEnd()}...`
-                : currentLesson.description}
-            </Text>
-            <View style={styles.lessonDescriptionFooter}>
-              <Text style={styles.lessonDescriptionFooterText}>ko'proq</Text>
-            </View>
-          </Pressable>
-        ) : null}
-            {lessonMediaItems.length > 1 ? (
-              <View style={styles.videoMetaItem}>
-                <ListVideo size={14} color={Colors.subtleText} />
-                <Text style={styles.videoMetaText}>
-                  {activeMediaIndex + 1}/{lessonMediaItems.length}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-        </View>
-
-        
-      </>
+      <LessonInfoSection
+        visible
+        views={currentLesson.views || 0}
+        likes={currentLesson.likes || 0}
+        liked={Boolean(currentLesson.liked)}
+        onLike={() =>
+          currentCourse?._id && currentLesson?._id
+            ? likeLessonMutation.mutate({
+                courseId: currentCourse._id,
+                lessonId: currentLesson._id,
+              })
+            : undefined
+        }
+        onCopy={() => void handleCopyLessonLink(currentLesson)}
+        description={currentLesson.description}
+        onOpenDescription={() => setLessonDescriptionSheetOpen(true)}
+        mediaCount={lessonMediaItems.length}
+        activeMediaIndex={activeMediaIndex}
+      />
     );
   };
 
@@ -4437,539 +3138,78 @@ export function CoursesScreen({ navigation, route }: Props) {
   };
 
   const renderAdminMaterialsCard = () => (
-    <View style={styles.adminPaneSectionCard}>
-      <View style={styles.adminPaneSectionHeader}>
-        <Text style={styles.adminPaneSectionTitle}>Materiallar</Text>
-        <Pressable
-          style={styles.adminPaneInlineAction}
-          onPress={() => openAdminChildModal("material")}
-        >
-          <Plus size={14} color={Colors.primary} />
-          <Text style={styles.adminPaneInlineActionText}>Qo'shish</Text>
-        </Pressable>
-      </View>
-      {lessonMaterials.length ? (
-        <View style={{...styles.materialsList,paddingHorizontal: 14}}>
-          {lessonMaterials.map((item) => (
-            <View key={item.materialId || item.fileUrl} style={styles.materialCard}>
-              <View style={styles.materialMeta}>
-                <Text style={styles.materialName}>{item.title || item.fileName}</Text>
-                <Text style={styles.materialSub}>
-                  {item.fileName} · {formatFileSize(item.fileSize)}
-                </Text>
-              </View>
-              <View style={styles.materialActions}>
-                <Pressable
-                  style={styles.materialIconButton}
-                  onPress={() =>
-                    item.fileUrl ? Linking.openURL(item.fileUrl).catch(() => undefined) : undefined
-                  }
-                >
-                  <Globe2 size={15} color={Colors.text} />
-                </Pressable>
-                <Pressable
-                  style={styles.materialIconButton}
-                  onPress={() => handleDeleteLessonMaterial(item.materialId)}
-                >
-                  <Trash2 size={15} color={Colors.danger} />
-                </Pressable>
-              </View>
-            </View>
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.adminPaneEmptyText}>Materiallar hali qo'shilmagan.</Text>
-      )}
-    </View>
+    <AdminMaterialsSection
+      materials={lessonMaterials}
+      formatFileSize={formatFileSize}
+      onAdd={() => openAdminChildModal("material")}
+      onDelete={handleDeleteLessonMaterial}
+    />
   );
 
   const renderAdminTestsTab = () => (
-    <View style={styles.adminPaneSectionCard}>
-      <View style={styles.adminPaneSectionHeader}>
-        <Text style={styles.adminPaneSectionTitle}>Maydon mashqlari</Text>
-        <Pressable
-          style={styles.adminPaneInlineAction}
-          onPress={() => openAdminChildModal("linked-test")}
-        >
-          <Plus size={14} color={Colors.primary} />
-          <Text style={styles.adminPaneInlineActionText}>Qo'shish</Text>
-        </Pressable>
-      </View>
-      {linkedTests.length ? (
-        <View style={styles.resourceList}>
-          {linkedTests.map((item) => (
-            <View key={item.linkedTestId || item.url} style={styles.resourceRow}>
-              <View style={styles.resourceCopy}>
-                <Text style={styles.resourceTitle}>{item.title}</Text>
-                <Text style={styles.resourceMeta}>
-                  {item.resourceType === "sentenceBuilder" ? "Sentence builder" : "Quiz"} · min{" "}
-                  {item.minimumScore || 0}%
-                </Text>
-                {item.selfProgress ? (
-                  <Text style={styles.progressBadgeText}>
-                    {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% ·{" "}
-                    {item.selfProgress.passed ? "Passed" : "Waiting"}
-                  </Text>
-                ) : null}
-              </View>
-              <View style={styles.adminPaneResourceActions}>
-                <Pressable
-                  style={styles.resourceButton}
-                  onPress={() => void handleOpenLinkedTest(item)}
-                >
-                  <Text style={styles.resourceButtonText}>Boshlash</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.rowIconButton}
-                  onPress={() => handleDeleteLinkedTest(item.linkedTestId)}
-                >
-                  <Trash2 size={14} color={Colors.danger} />
-                </Pressable>
-              </View>
-            </View>
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.adminPaneEmptyText}>Maydon mashqlari hali ulanmagan.</Text>
-      )}
-    </View>
+    <AdminTestsSection
+      linkedTests={linkedTests}
+      onAdd={() => openAdminChildModal("linked-test")}
+      onStart={(item) => void handleOpenLinkedTest(item)}
+      onDelete={handleDeleteLinkedTest}
+    />
   );
 
   const renderAdminHomeworkTab = () => (
-    <View style={styles.adminPaneSectionCard}>
-      <View style={styles.adminPaneSectionHeader}>
-        <Text style={styles.adminPaneSectionTitle}>Homework</Text>
-        <Pressable
-          style={styles.adminPaneInlineAction}
-          onPress={() => openAdminChildModal("homework")}
-        >
-          <Plus size={14} color={Colors.primary} />
-          <Text style={styles.adminPaneInlineActionText}>Qo'shish</Text>
-        </Pressable>
-      </View>
-      {homeworkAssignments.length ? (
-        <View style={{...styles.resourceList,paddingHorizontal: 14}}>
-          {homeworkAssignments.map((item) => (
-            <View key={item.assignmentId || item.title} style={styles.homeworkCard}>
-              <View style={styles.resourceCopy}>
-                <Text style={styles.resourceTitle}>{item.title}</Text>
-                <Text style={styles.resourceMeta}>
-                  {item.type} · {item.maxScore || 0} ball
-                  {item.deadline ? ` · ${timeAgo(item.deadline)}` : ""}
-                </Text>
-                {item.description ? (
-                  <Text style={styles.homeworkDescription}>{item.description}</Text>
-                ) : null}
-                <Text style={styles.resourceMeta}>
-                  {item.submissionCount || 0} topshiriq topshirilgan
-                </Text>
-              </View>
-              <View style={styles.adminPaneResourceActions}>
-                <Pressable
-                  style={styles.rowIconButton}
-                  onPress={() => handleDeleteHomeworkAssignment(item.assignmentId)}
-                >
-                  <Trash2 size={14} color={Colors.danger} />
-                </Pressable>
-              </View>
-            </View>
-          ))}
-        </View>
-      ) : (
-        <Text style={styles.adminPaneEmptyText}>Homework hali qo'shilmagan.</Text>
-      )}
-    </View>
+    <AdminHomeworkSection
+      assignments={homeworkAssignments}
+      onAdd={() => openAdminChildModal("homework")}
+      onDelete={handleDeleteHomeworkAssignment}
+      timeAgo={timeAgo}
+    />
   );
 
-  const renderAdminAttendanceTab = () => {
-    if (attendanceQuery.isLoading) {
-      return (
-        <View style={styles.adminPaneCenterState}>
-          <ActivityIndicator color={Colors.primary} />
-        </View>
-      );
-    }
+  const renderAdminAttendanceTab = () => (
+    <AdminAttendanceSection
+      loading={attendanceQuery.isLoading}
+      attendance={attendanceData}
+      actionTargetId={attendanceActionTargetId}
+      onStatusChange={(memberId, status) => void handleAttendanceStatusChange(memberId, status)}
+    />
+  );
 
-    return (
-      <View style={styles.adminPaneStack}>
-        <View style={styles.adminPaneSummaryGrid}>
-          <View style={styles.adminPaneSummaryCard}>
-            <Text style={styles.adminPaneSummaryLabel}>Present</Text>
-            <Text style={styles.adminPaneSummaryValue}>
-              {attendanceData?.summary?.present || 0}
-            </Text>
-          </View>
-          <View style={styles.adminPaneSummaryCard}>
-            <Text style={styles.adminPaneSummaryLabel}>Late</Text>
-            <Text style={styles.adminPaneSummaryValue}>{attendanceData?.summary?.late || 0}</Text>
-          </View>
-          <View style={styles.adminPaneSummaryCard}>
-            <Text style={styles.adminPaneSummaryLabel}>Absent</Text>
-            <Text style={styles.adminPaneSummaryValue}>
-              {attendanceData?.summary?.absent || 0}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.adminPaneSectionCard}>
-          <View style={styles.adminPaneSectionHeader}>
-            <Text style={styles.adminPaneSectionTitle}>Davomat</Text>
-            <Text style={styles.adminPaneSectionMuted}>
-              {attendanceData?.members?.length || 0} ta talaba
-            </Text>
-          </View>
-          {attendanceData?.members?.length ? (
-            <View style={styles.adminPaneList}>
-              {attendanceData.members.map((member) => {
-                const memberId = String(member.userId || "");
-                const loading = attendanceActionTargetId === memberId;
-                return (
-                  <View key={memberId} style={styles.adminPaneMemberRow}>
-                    <View style={styles.adminPaneMemberMeta}>
-                      <View style={styles.adminPaneMemberAvatar}>
-                        {member.userAvatar ? (
-                          <PersistentCachedImage
-                            remoteUri={member.userAvatar}
-                            style={styles.adminPaneMemberAvatarImage}
-                          />
-                        ) : (
-                          <Text style={styles.adminPaneMemberAvatarLetter}>
-                            {String(member.userName || "?").charAt(0).toUpperCase()}
-                          </Text>
-                        )}
-                      </View>
-                      <View style={styles.adminPaneMemberCopy}>
-                        <Text style={styles.adminPaneMemberName}>{member.userName}</Text>
-                        <Text style={styles.adminPaneMemberSub}>
-                          Progress {Math.round(member.progressPercent || 0)}%
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.adminPaneAttendanceActions}>
-                      {(["present", "late", "absent"] as const).map((status) => (
-                        <Pressable
-                          key={status}
-                          style={[
-                            styles.adminPaneStatusChip,
-                            member.status === status && styles.adminPaneStatusChipActive,
-                          ]}
-                          disabled={loading}
-                          onPress={() => void handleAttendanceStatusChange(memberId, status)}
-                        >
-                          {loading && member.status !== status ? (
-                            <ActivityIndicator size="small" color={Colors.primary} />
-                          ) : (
-                            <Text
-                              style={[
-                                styles.adminPaneStatusChipText,
-                                member.status === status && styles.adminPaneStatusChipTextActive,
-                              ]}
-                            >
-                              {status === "present"
-                                ? "Present"
-                                : status === "late"
-                                  ? "Late"
-                                  : "Absent"}
-                            </Text>
-                          )}
-                        </Pressable>
-                      ))}
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          ) : (
-            <Text style={styles.adminPaneEmptyText}>Davomat uchun talaba topilmadi.</Text>
-          )}
-        </View>
-      </View>
-    );
-  };
-
-  const renderAdminGradingTab = () => {
-    if (gradingQuery.isLoading) {
-      return (
-        <View style={styles.adminPaneCenterState}>
-          <ActivityIndicator color={Colors.primary} />
-        </View>
-      );
-    }
-
-    const rows = grading?.lesson?.students || [];
-
-    return (
-      <View style={styles.adminPaneStack}>
-        <View style={styles.adminPaneSummaryGrid}>
-          <View style={styles.adminPaneSummaryCard}>
-            <Text style={styles.adminPaneSummaryLabel}>O'rtacha</Text>
-            <Text style={styles.adminPaneSummaryValue}>
-              {grading?.lesson?.summary?.averageScore || 0}%
-            </Text>
-          </View>
-          <View style={styles.adminPaneSummaryCard}>
-            <Text style={styles.adminPaneSummaryLabel}>Homework</Text>
-            <Text style={styles.adminPaneSummaryValue}>
-              {grading?.lesson?.summary?.completedHomeworkCount || 0}
-            </Text>
-          </View>
-          <View style={styles.adminPaneSummaryCard}>
-            <Text style={styles.adminPaneSummaryLabel}>Attendance</Text>
-            <Text style={styles.adminPaneSummaryValue}>
-              {grading?.lesson?.summary?.attendanceMarkedCount || 0}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.adminPaneSectionCard}>
-          <View style={styles.adminPaneSectionHeader}>
-            <Text style={styles.adminPaneSectionTitle}>Baholash</Text>
-            <Text style={styles.adminPaneSectionMuted}>{rows.length} ta talaba</Text>
-          </View>
-          {rows.length ? (
-            <View style={styles.adminPaneList}>
-              {rows.map((row) => {
-                const rowUserId = String(row.userId || "");
-                const isEditing = editingOralRows[rowUserId];
-                const isSaving = oralSavingUserId === rowUserId;
-                return (
-                  <View key={rowUserId} style={styles.adminPaneStudentCard}>
-                    <View style={styles.adminPaneMemberMeta}>
-                      <View style={styles.adminPaneMemberAvatar}>
-                        {row.userAvatar ? (
-                          <PersistentCachedImage
-                            remoteUri={row.userAvatar}
-                            style={styles.adminPaneMemberAvatarImage}
-                          />
-                        ) : (
-                          <Text style={styles.adminPaneMemberAvatarLetter}>
-                            {String(row.userName || "?").charAt(0).toUpperCase()}
-                          </Text>
-                        )}
-                      </View>
-                      <View style={styles.adminPaneMemberCopy}>
-                        <Text style={styles.adminPaneMemberName}>{row.userName}</Text>
-                        <Text style={styles.adminPaneMemberSub}>
-                          Score {Math.round(row.lessonScore || 0)} · {row.performance || "Normal"}
-                        </Text>
-                      </View>
-                      <Pressable
-                        style={styles.rowIconButton}
-                        onPress={() => openOralEditor(row)}
-                      >
-                        <Pencil size={14} color={Colors.primary} />
-                      </Pressable>
-                    </View>
-
-                    <View style={styles.adminPaneMetaRow}>
-                      <View style={styles.extraPill}>
-                        <Text style={styles.extraPillText}>
-                          Davomat: {row.attendanceStatus || "absent"}
-                        </Text>
-                      </View>
-                      <View style={styles.extraPill}>
-                        <Text style={styles.extraPillText}>
-                          Homework: {row.homeworkStatus || "pending"}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {isEditing ? (
-                      <View style={styles.adminPaneOralEditor}>
-                        <TextInput
-                          value={oralScoreDrafts[rowUserId] ?? ""}
-                          onChangeText={(value) =>
-                            setOralScoreDrafts((current) => ({
-                              ...current,
-                              [rowUserId]: value.replace(/[^0-9]/g, ""),
-                            }))
-                          }
-                          keyboardType="number-pad"
-                          placeholder="Og'zaki baho"
-                          placeholderTextColor={Colors.subtleText}
-                          style={styles.adminPaneInput}
-                        />
-                        <TextInput
-                          value={oralNoteDrafts[rowUserId] ?? ""}
-                          onChangeText={(value) =>
-                            setOralNoteDrafts((current) => ({
-                              ...current,
-                              [rowUserId]: value,
-                            }))
-                          }
-                          placeholder="Izoh"
-                          placeholderTextColor={Colors.subtleText}
-                          multiline
-                          textAlignVertical="top"
-                          style={styles.adminPaneTextarea}
-                        />
-                        <View style={styles.adminPaneResourceActions}>
-                          <Pressable
-                            style={[styles.adminPaneInlineAction, styles.adminPaneInlineActionMuted]}
-                            onPress={() => closeOralEditor(rowUserId)}
-                          >
-                            <Text style={styles.adminPaneInlineActionTextMuted}>Bekor qilish</Text>
-                          </Pressable>
-                          <Pressable
-                            style={styles.adminPaneInlineAction}
-                            disabled={isSaving}
-                            onPress={() => void handleSaveOralAssessment(rowUserId)}
-                          >
-                            {isSaving ? (
-                              <ActivityIndicator size="small" color={Colors.primary} />
-                            ) : (
-                              <>
-                                <Check size={14} color={Colors.primary} />
-                                <Text style={styles.adminPaneInlineActionText}>Saqlash</Text>
-                              </>
-                            )}
-                          </Pressable>
-                        </View>
-                      </View>
-                    ) : (
-                      <View style={styles.adminPaneOralSummary}>
-                        <Text style={styles.adminPaneOralSummaryTitle}>
-                          Og'zaki baho:{" "}
-                          <Text style={styles.adminPaneOralSummaryValue}>
-                            {row.oralScore === null || row.oralScore === undefined
-                              ? "-"
-                              : row.oralScore}
-                          </Text>
-                        </Text>
-                        {row.oralNote ? (
-                          <Text style={styles.adminPaneMemberSub}>{row.oralNote}</Text>
-                        ) : null}
-                      </View>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-          ) : (
-            <Text style={styles.adminPaneEmptyText}>Baholash ma'lumoti hozircha yo'q.</Text>
-          )}
-        </View>
-      </View>
-    );
-  };
+  const renderAdminGradingTab = () => (
+    <AdminGradingSection
+      loading={gradingQuery.isLoading}
+      grading={grading}
+      editingRows={editingOralRows}
+      savingUserId={oralSavingUserId}
+      oralScoreDrafts={oralScoreDrafts}
+      oralNoteDrafts={oralNoteDrafts}
+      onOpenEditor={openOralEditor}
+      onCloseEditor={closeOralEditor}
+      onScoreDraftChange={(userId, value) =>
+        setOralScoreDrafts((current) => ({
+          ...current,
+          [userId]: value.replace(/[^0-9]/g, ""),
+        }))
+      }
+      onNoteDraftChange={(userId, value) =>
+        setOralNoteDrafts((current) => ({
+          ...current,
+          [userId]: value,
+        }))
+      }
+      onSave={(userId) => void handleSaveOralAssessment(userId)}
+    />
+  );
 
   const renderAdminMembersTab = () => (
-    <View style={styles.adminPaneStack}>
-      <View style={styles.adminPaneSectionCard}>
-        <View style={styles.adminPaneSectionHeader}>
-          <Text style={styles.adminPaneSectionTitle}>Kutayotganlar ({pendingMembers.length})</Text>
-        </View>
-        {pendingMembers.length ? (
-          <View style={styles.adminPaneList}>
-            {pendingMembers.map((member) => {
-              const memberId = String(getCourseMemberUserId(member) || "");
-              const loading = memberActionTargetId === memberId;
-              return (
-                <View key={memberId} style={styles.adminPaneMemberRow}>
-                  <View style={styles.adminPaneMemberMeta}>
-                    <View style={styles.adminPaneMemberAvatar}>
-                      {getCourseMemberAvatar(member) ? (
-                        <PersistentCachedImage
-                          remoteUri={getCourseMemberAvatar(member)}
-                          style={styles.adminPaneMemberAvatarImage}
-                        />
-                      ) : (
-                        <Text style={styles.adminPaneMemberAvatarLetter}>
-                          {String(getCourseMemberName(member) || "?")
-                            .charAt(0)
-                            .toUpperCase()}
-                        </Text>
-                      )}
-                    </View>
-                    <View style={styles.adminPaneMemberCopy}>
-                      <Text style={styles.adminPaneMemberName}>{getCourseMemberName(member)}</Text>
-                      <Text style={styles.adminPaneMemberSub}>Tasdiq kutmoqda</Text>
-                    </View>
-                  </View>
-                  <View style={styles.adminPaneResourceActions}>
-                    <Pressable
-                      style={styles.adminPaneInlineAction}
-                      disabled={loading}
-                      onPress={() => void handleApproveMember(memberId)}
-                    >
-                      {loading ? (
-                        <ActivityIndicator size="small" color={Colors.primary} />
-                      ) : (
-                        <>
-                          <Check size={14} color={Colors.primary} />
-                          <Text style={styles.adminPaneInlineActionText}>Tasdiqlash</Text>
-                        </>
-                      )}
-                    </Pressable>
-                    <Pressable
-                      style={[styles.adminPaneInlineAction, styles.adminPaneInlineActionDanger]}
-                      disabled={loading}
-                      onPress={() => void handleRemoveMember(memberId, "So'rov")}
-                    >
-                      <Text style={styles.adminPaneInlineActionTextDanger}>Rad etish</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-        ) : (
-          <Text style={styles.adminPaneEmptyText}>Kutayotgan so'rovlar yo'q.</Text>
-        )}
-      </View>
-
-      <View style={styles.adminPaneSectionCard}>
-        <View style={styles.adminPaneSectionHeader}>
-          <Text style={styles.adminPaneSectionTitle}>A'zolar ({approvedMembers.length})</Text>
-        </View>
-        {approvedMembers.length ? (
-          <View style={styles.adminPaneList}>
-            {approvedMembers.map((member) => {
-              const memberId = String(getCourseMemberUserId(member) || "");
-              const loading = memberActionTargetId === memberId;
-              return (
-                <View key={memberId} style={styles.adminPaneMemberRow}>
-                  <View style={styles.adminPaneMemberMeta}>
-                    <View style={styles.adminPaneMemberAvatar}>
-                      {getCourseMemberAvatar(member) ? (
-                        <PersistentCachedImage
-                          remoteUri={getCourseMemberAvatar(member)}
-                          style={styles.adminPaneMemberAvatarImage}
-                        />
-                      ) : (
-                        <Text style={styles.adminPaneMemberAvatarLetter}>
-                          {String(getCourseMemberName(member) || "?")
-                            .charAt(0)
-                            .toUpperCase()}
-                        </Text>
-                      )}
-                    </View>
-                    <View style={styles.adminPaneMemberCopy}>
-                      <Text style={styles.adminPaneMemberName}>{getCourseMemberName(member)}</Text>
-                      <Text style={styles.adminPaneMemberSub}>Obuna bo'lingan</Text>
-                    </View>
-                  </View>
-                  <Pressable
-                    style={[styles.adminPaneInlineAction, styles.adminPaneInlineActionDanger]}
-                    disabled={loading}
-                    onPress={() => void handleRemoveMember(memberId, "A'zo")}
-                  >
-                    {loading ? (
-                      <ActivityIndicator size="small" color={Colors.danger} />
-                    ) : (
-                      <Text style={styles.adminPaneInlineActionTextDanger}>Olib tashlash</Text>
-                    )}
-                  </Pressable>
-                </View>
-              );
-            })}
-          </View>
-        ) : (
-          <Text style={styles.adminPaneEmptyText}>Hozircha a'zolar yo'q.</Text>
-        )}
-      </View>
-    </View>
+    <AdminMembersSection
+      pendingMembers={pendingMembers}
+      approvedMembers={approvedMembers}
+      actionTargetId={memberActionTargetId}
+      getMemberId={(member) => getCourseMemberUserId(member)}
+      getMemberName={getCourseMemberName}
+      getMemberAvatar={(member) => getCourseMemberAvatar(member)}
+      onApprove={(memberId) => void handleApproveMember(memberId)}
+      onRemove={(memberId, label) => void handleRemoveMember(memberId, label)}
+    />
   );
 
   const renderAdminTabContent = () => {
@@ -4989,407 +3229,41 @@ export function CoursesScreen({ navigation, route }: Props) {
   };
 
   const renderOwnerLessonAdminModal = () => {
-    const adminPaneLesson = currentLesson || currentCourseLessons[0] || null;
-
-    if (!lessonAdminPanelOpen || !isOwner || !adminPaneLesson) {
-      return null;
-    }
-
-    const adminPaneContent = (
-      <KeyboardAvoidingView
-        style={styles.adminPaneKeyboardAvoid}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <Animated.View
-          style={[
-            styles.adminPaneShell,
-            Platform.OS === "web"
-              ? null
-              : {
-                  transform: [{ translateX: adminPaneTranslateX }],
-                },
-          ]}
-        >
-          <View style={styles.adminPaneTopBar}>
-            <View style={styles.adminPaneTitleWrap}>
-              <Text style={styles.adminPaneTitle} numberOfLines={2}>
-                {adminPaneLesson.title || currentCourse?.name || "Boshqarish"}
-              </Text>
-              <Text style={styles.adminPaneMuted}>Joriy dars boshqaruvi</Text>
-            </View>
-            <Pressable
-              style={styles.adminPaneCloseButton}
-              onPress={() => handleCloseLessonAdminPanel()}
-            >
-              <X size={18} color={Colors.text} />
-            </Pressable>
-          </View>
-
-          <View style={styles.adminPaneActionRow}>
-            <Pressable style={styles.adminPaneGhostButton} onPress={handleOpenAdminLessonEditor}>
-              <Pencil size={15} color={Colors.text} />
-              <Text style={styles.adminPaneGhostButtonText}>Tahrirlash</Text>
-            </Pressable>
-            {(adminPaneLesson.status || "published") === "draft" && selectedHasMedia ? (
-              <Pressable style={styles.adminPanePrimaryButton} onPress={() => void handlePublishCurrentLesson()}>
-                <Check size={15} color="#fff" />
-                <Text style={styles.adminPanePrimaryButtonText}>Publish</Text>
-              </Pressable>
-            ) : null}
-            <Pressable
-              style={styles.adminPaneDangerButton}
-              onPress={() => void handleDeleteLesson(adminPaneLesson)}
-            >
-              <Trash2 size={15} color={Colors.danger} />
-              <Text style={styles.adminPaneDangerButtonText}>O'chirish</Text>
-            </Pressable>
-          </View>
-
-          <ScrollView
-            style={styles.adminPaneScroll}
-            contentContainerStyle={styles.adminPaneScrollContent}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-          >
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.adminPaneLessonStrip}
-              keyboardShouldPersistTaps="handled"
-            >
-              {currentCourseLessons.map((lesson, index) => {
-                const lessonId = String(lesson._id || lesson.urlSlug || index);
-                const active =
-                  lessonId === String(currentLesson?._id || currentLesson?.urlSlug || "");
-                return (
-                  <Pressable
-                    key={lessonId}
-                    style={[
-                      styles.adminPaneLessonButton,
-                      active && styles.adminPaneLessonButtonActive,
-                    ]}
-                    onPress={() => void handleSelectLesson(lesson)}
-                  >
-                    <Text
-                      style={[
-                        styles.adminPaneLessonTitle,
-                        active && styles.adminPaneLessonTitleActive,
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {lesson.title || `${index + 1}-dars`}
-                    </Text>
-                    <View style={styles.adminPaneLessonMeta}>
-                      <Text style={styles.adminPaneLessonMetaText}>{index + 1}-dars</Text>
-                      <View
-                        style={[
-                          styles.adminPaneStatusPill,
-                          (lesson.status || "published") === "draft" &&
-                            styles.adminPaneStatusPillDraft,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.adminPaneStatusPillText,
-                            (lesson.status || "published") === "draft" &&
-                              styles.adminPaneStatusPillTextDraft,
-                          ]}
-                        >
-                          {(lesson.status || "published") === "draft" ? "Draft" : "Published"}
-                        </Text>
-                      </View>
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-
-            <View style={styles.adminPaneSummaryGrid}>
-              <View style={styles.adminPaneSummaryCard}>
-                <Text style={styles.adminPaneSummaryLabel}>Jami dars</Text>
-                <Text style={styles.adminPaneSummaryValue}>{currentCourseLessons.length}</Text>
-              </View>
-              <View style={styles.adminPaneSummaryCard}>
-                <Text style={styles.adminPaneSummaryLabel}>Published</Text>
-                <Text style={styles.adminPaneSummaryValue}>{publishedLessonsCount}</Text>
-              </View>
-              <View style={styles.adminPaneSummaryCard}>
-                <Text style={styles.adminPaneSummaryLabel}>Draft</Text>
-                <Text style={styles.adminPaneSummaryValue}>{draftLessonsCount}</Text>
-              </View>
-              <View style={styles.adminPaneSummaryCard}>
-                <Text style={styles.adminPaneSummaryLabel}>Talabalar</Text>
-                <Text style={styles.adminPaneSummaryValue}>{approvedMembers.length}</Text>
-              </View>
-            </View>
-
-            {renderAdminMaterialsCard()}
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.adminPaneTabs}
-              keyboardShouldPersistTaps="handled"
-            >
-              {([
-                { key: "tests", label: "Tests" },
-                { key: "homework", label: "Homework" },
-                { key: "attendance", label: "Attendance" },
-                { key: "grading", label: "Grading" },
-                { key: "members", label: "Members" },
-              ] as Array<{ key: CourseAdminTab; label: string }>).map((tab) => (
-                <Pressable
-                  key={tab.key}
-                  style={[
-                    styles.adminPaneTabButton,
-                    adminActiveTab === tab.key && styles.adminPaneTabButtonActive,
-                  ]}
-                  onPress={() => setAdminActiveTab(tab.key)}
-                >
-                  <Text
-                    style={[
-                      styles.adminPaneTabText,
-                      adminActiveTab === tab.key && styles.adminPaneTabTextActive,
-                    ]}
-                  >
-                    {tab.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            {renderAdminTabContent()}
-          </ScrollView>
-        </Animated.View>
-      </KeyboardAvoidingView>
-    );
-
-    if (Platform.OS === "web") {
-      return (
-        <Modal
-          visible={lessonAdminPanelOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => handleCloseLessonAdminPanel()}
-        >
-          <View style={styles.adminPaneOverlay}>
-            <Pressable style={styles.adminPaneBackdrop} onPress={() => handleCloseLessonAdminPanel()} />
-            <SafeAreaView style={styles.adminPaneSafeArea} edges={["top", "left", "right", "bottom"]}>
-              {adminPaneContent}
-            </SafeAreaView>
-          </View>
-        </Modal>
-      );
-    }
-
     return (
-      <Animated.View style={styles.adminPaneOverlay}>
-        <Animated.View style={[styles.adminPaneBackdropFade, { opacity: adminPaneBackdropOpacity }]}>
-          <Pressable style={styles.adminPaneBackdrop} onPress={() => handleCloseLessonAdminPanel()} />
-        </Animated.View>
-        <SafeAreaView style={styles.adminPaneSafeArea} edges={[ "left", "right", "bottom"]}>
-          {adminPaneContent}
-        </SafeAreaView>
-      </Animated.View>
-    );
-  };
-
-  const renderLessonMaterialsSection = () => {
-    if (!canRenderLessonPlayer || !hasLessonMaterials) {
-      return null;
-    }
-
-    return (
-      <View style={styles.lessonMaterialsSection}>
-        <View style={styles.lessonMaterialsHeader}>
-          <View style={styles.lessonMaterialsTitleRow}>
-            <FolderOpen size={17} color={Colors.primary} />
-            <Text style={styles.lessonMaterialsTitle}>Lesson materials</Text>
-          </View>
-          <Text style={styles.lessonMaterialsCount}>{lessonMaterials.length} ta</Text>
-        </View>
-        <Text style={styles.lessonMaterialsHint}>
-          Darsga biriktirilgan fayllarni shu yerda ochasiz.
-        </Text>
-        <View style={styles.materialsList}>
-          {lessonMaterials.map((item) => (
-            <View key={item.materialId || item.fileUrl} style={styles.materialCard}>
-              <View style={styles.materialMeta}>
-                <Text style={styles.materialName}>{item.title || item.fileName}</Text>
-                <Text style={styles.materialSub}>
-                  {item.fileName} · {formatFileSize(item.fileSize)}
-                </Text>
-              </View>
-              <View style={styles.materialActions}>
-                <Pressable
-                  style={styles.materialIconButton}
-                  onPress={() =>
-                    item.fileUrl ? Linking.openURL(item.fileUrl).catch(() => undefined) : undefined
-                  }
-                >
-                  <Globe2 size={15} color={Colors.text} />
-                </Pressable>
-              </View>
-            </View>
-          ))}
-        </View>
-      </View>
-    );
-  };
-
-  const renderStudentExtrasSection = () => {
-    if (isOwner || !canRenderLessonPlayer || !hasLessonExtras) {
-      return null;
-    }
-
-    return (
-      <View style={styles.studentExtrasCard}>
-        <Pressable
-          style={styles.studentExtrasHeader}
-          onPress={() => setStudentExtrasOpen((value) => !value)}
-        >
-          <View style={styles.studentExtrasHeaderCopy}>
-            <View style={styles.studentExtrasTitleRow}>
-              <Text style={styles.studentExtrasTitle}>Dars qo'shimchalari</Text>
-              {studentExtrasOpen ? (
-                <ChevronUp size={16} color={Colors.subtleText} />
-              ) : (
-                <ChevronDown size={16} color={Colors.subtleText} />
-              )}
-            </View>
-            <Text style={styles.studentExtrasHint}>
-              Test va uyga vazifani shu yerda ochasiz.
-            </Text>
-          </View>
-          {!studentExtrasOpen ? (
-            <View style={styles.studentExtrasBadgeRow}>
-              {hasLessonTests ? (
-                <View style={styles.studentExtrasBadge}>
-                  <Text style={styles.studentExtrasBadgeText}>Lesson testi</Text>
-                </View>
-              ) : null}
-              {hasHomeworkBadge ? (
-                <View style={styles.studentExtrasBadge}>
-                  <Text style={styles.studentExtrasBadgeText}>Uyga vazifa</Text>
-                </View>
-              ) : null}
-            </View>
-          ) : null}
-        </Pressable>
-
-        {studentExtrasOpen ? (
-          <View style={styles.studentExtrasBody}>
-            {hasLessonTests ? (
-              <View style={styles.studentExtraBlock}>
-                <View style={styles.studentExtraHeader}>
-                  <ClipboardList size={16} color={Colors.primary} />
-                  <Text style={styles.studentExtraTitle}>Lesson testi</Text>
-                </View>
-                <Text style={styles.studentExtraHint}>
-                  {linkedTests.filter((item) => item.selfProgress?.passed).length} /{" "}
-                  {linkedTests.length} test bajarilgan
-                </Text>
-                <View style={styles.resourceList}>
-                  {linkedTests.map((item) => (
-                    <View key={item.linkedTestId || item.url} style={styles.resourceRow}>
-                      <View style={styles.resourceCopy}>
-                        <Text style={styles.resourceTitle}>{item.title}</Text>
-                        <Text style={styles.resourceMeta}>
-                          {item.resourceType === "sentenceBuilder" ? "Sentence builder" : "Quiz"} · min{" "}
-                          {item.minimumScore || 0}%
-                        </Text>
-                        {item.selfProgress ? (
-                          <Text style={styles.progressBadgeText}>
-                            {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% ·{" "}
-                            {item.selfProgress.passed ? "Passed" : "Waiting"}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <Pressable
-                        style={styles.resourceButton}
-                        onPress={() => void handleOpenLinkedTest(item)}
-                      >
-                        <Text style={styles.resourceButtonText}>Boshlash</Text>
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-
-            {hasHomeworkBadge ? (
-              <View style={styles.studentExtraBlock}>
-                <View style={styles.studentExtraHeader}>
-                  <FileText size={16} color={Colors.primary} />
-                  <Text style={styles.studentExtraTitle}>Uyga vazifa</Text>
-                </View>
-                <Text style={styles.studentExtraHint}>
-                  Javobni topshiriq turiga mos yuboring
-                </Text>
-                <View style={styles.resourceList}>
-                  {homeworkAssignments.map((item) => (
-                    <View key={item.assignmentId || item.title} style={styles.homeworkCard}>
-                      <View style={styles.resourceCopy}>
-                        <Text style={styles.resourceTitle}>{item.title}</Text>
-                        <Text style={styles.resourceMeta}>
-                          {item.type} · {item.maxScore || 0} ball
-                          {item.deadline ? ` · ${timeAgo(item.deadline)}` : ""}
-                        </Text>
-                        {item.description ? (
-                          <Text style={styles.homeworkDescription}>{item.description}</Text>
-                        ) : null}
-                        {item.selfSubmission ? (
-                          <Text style={styles.progressBadgeText}>
-                            {item.selfSubmission.status || "submitted"}
-                            {item.selfSubmission.score !== null &&
-                            item.selfSubmission.score !== undefined
-                              ? ` · ${item.selfSubmission.score} ball`
-                              : ""}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <Pressable
-                        style={styles.resourceButton}
-                        onPress={() => handleOpenHomeworkSubmit(item)}
-                      >
-                        <Text style={styles.resourceButtonText}>
-                          {item.selfSubmission ? "Yangilash" : "Topshirish"}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
+      <CourseAdminPane
+        visible={lessonAdminPanelOpen}
+        isOwner={isOwner}
+        isWeb={Platform.OS === "web"}
+        backdropOpacity={adminPaneBackdropOpacity}
+        translateX={adminPaneTranslateX}
+        currentCourseName={currentCourse?.name}
+        currentLesson={currentLesson || currentCourseLessons[0] || null}
+        lessons={currentCourseLessons}
+        selectedLessonId={currentLesson?._id || currentLesson?.urlSlug || null}
+        selectedHasMedia={selectedHasMedia}
+        publishedLessonsCount={publishedLessonsCount}
+        draftLessonsCount={draftLessonsCount}
+        approvedMembersCount={approvedMembers.length}
+        activeTab={adminActiveTab}
+        onTabChange={setAdminActiveTab}
+        onClose={handleCloseLessonAdminPanel}
+        onEdit={handleOpenAdminLessonEditor}
+        onPublish={() => void handlePublishCurrentLesson()}
+        onDelete={(lesson) => void handleDeleteLesson(lesson)}
+        onSelectLesson={(lesson) => void handleSelectLesson(lesson)}
+        materialsCard={renderAdminMaterialsCard()}
+        tabContent={renderAdminTabContent()}
+      />
     );
   };
 
   const renderEnrollmentSection = () => (
-    <View style={styles.compactEnrollmentCard}>
-      <View style={styles.enrollmentInfoRow}>
-        <View style={styles.creatorAvatar}>
-          {courseOwnerAvatar ? (
-            <PersistentCachedImage
-              remoteUri={courseOwnerAvatar}
-              style={styles.creatorAvatarImage}
-              requireManualDownload
-            />
-          ) : (
-            <Text style={styles.creatorAvatarLetter}>
-              {String(courseOwnerName || "?").charAt(0).toUpperCase()}
-            </Text>
-          )}
-        </View>
-        <View style={styles.creatorMeta}>
-          <Text style={styles.creatorName}>{courseOwnerName}</Text>
-          <Text style={styles.creatorCount}>{getCourseMemberCount(currentCourse)} talaba</Text>
-        </View>
-        <View style={styles.enrollmentActionsRow}>
-        {isOwner ? (
+    <EnrollmentSection
+      ownerName={courseOwnerName}
+      ownerAvatar={courseOwnerAvatar}
+      memberCount={getCourseMemberCount(currentCourse)}
+      actionSlot={
+        isOwner ? (
           <Pressable
             style={[styles.roundedActionButton, styles.roundedActionButtonAdmin]}
             onPress={() => {
@@ -5403,9 +3277,7 @@ export function CoursesScreen({ navigation, route }: Props) {
             }}
           >
             <Shield size={15} color={Colors.primary} />
-            <Text
-              style={[styles.roundedActionButtonText, styles.roundedActionButtonTextAdmin]}
-            >
+            <Text style={[styles.roundedActionButtonText, styles.roundedActionButtonTextAdmin]}>
               Boshqarish
             </Text>
           </Pressable>
@@ -5444,11 +3316,9 @@ export function CoursesScreen({ navigation, route }: Props) {
               </>
             )}
           </Pressable>
-        )}
-      </View>
-      </View>
-      
-    </View>
+        )
+      }
+    />
   );
 
   const indicatorTranslateX =
@@ -5629,23 +3499,18 @@ export function CoursesScreen({ navigation, route }: Props) {
 
   const mainContent = (
     <View style={styles.container}>
-      <View style={styles.coursesTopHeader}>
-        <View style={styles.searchWrap}>
-          <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder={viewMode === "arena" ? "Arena qidirish..." : "Kurs qidirish..."}
-            placeholderTextColor={Colors.subtleText}
-            style={styles.searchInput}
-          />
-        </View>
-        {viewMode === "courses" ? (
-          <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
-            <Plus size={18} color={Colors.text} />
-          </Pressable>
-        ) : null}
-      </View>
+      <SearchHeaderBar
+        value={query}
+        onChangeText={setQuery}
+        placeholder={viewMode === "arena" ? "Arena qidirish..." : "Kurs qidirish..."}
+        rightSlot={
+          viewMode === "courses" ? (
+            <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
+              <Plus size={18} color={Colors.text} />
+            </Pressable>
+          ) : null
+        }
+      />
 
       <View style={styles.coursesTabsRow}>
         <View
@@ -5718,8 +3583,8 @@ export function CoursesScreen({ navigation, route }: Props) {
             contentContainerStyle={styles.listContent}
             refreshControl={
               <RefreshControl
-                refreshing={coursesQuery.isRefetching}
-                onRefresh={() => coursesQuery.refetch()}
+                refreshing={listRefreshing}
+                onRefresh={() => void handleRefreshCourses()}
                 tintColor={Colors.primary}
               />
             }
@@ -5735,8 +3600,8 @@ export function CoursesScreen({ navigation, route }: Props) {
             contentContainerStyle={styles.listContent}
             refreshControl={
               <RefreshControl
-                refreshing={coursesQuery.isRefetching}
-                onRefresh={() => coursesQuery.refetch()}
+                refreshing={listRefreshing}
+                onRefresh={() => void handleRefreshCourses()}
                 tintColor={Colors.primary}
               />
             }
@@ -5758,10 +3623,10 @@ export function CoursesScreen({ navigation, route }: Props) {
               { transform: [{ translateX: courseDetailTranslateX }] },
             ]}
           >
-            <SafeAreaView style={styles.detailSafeArea} edges={["left", "right", "bottom"]}>
+            <SafeAreaView style={styles.detailSafeArea} edges={["top", "left", "right", "bottom"]}>
             <View style={styles.detailContainer}>
           <PanGestureHandler
-            enabled={!isLessonVideoFullscreen}
+            enabled={!detailOnly && !isLessonVideoFullscreen}
             activeOffsetX={24}
             failOffsetY={[-16, 16]}
             shouldCancelWhenOutside={false}
@@ -5787,8 +3652,21 @@ export function CoursesScreen({ navigation, route }: Props) {
               {renderCurrentLessonStage()}
               {renderCurrentLessonInfo()}
               {renderEnrollmentSection()}
-              {renderLessonMaterialsSection()}
-              {renderStudentExtrasSection()}
+              <LessonMaterialsSection
+                visible={canRenderLessonPlayer && hasLessonMaterials}
+                materials={lessonMaterials}
+                formatFileSize={formatFileSize}
+              />
+              <StudentExtrasSection
+                visible={!isOwner && canRenderLessonPlayer && hasLessonExtras}
+                open={studentExtrasOpen}
+                onToggle={() => setStudentExtrasOpen((value) => !value)}
+                linkedTests={linkedTests}
+                homeworkAssignments={homeworkAssignments}
+                onOpenLinkedTest={handleOpenLinkedTest}
+                onOpenHomeworkSubmit={handleOpenHomeworkSubmit}
+                timeAgo={timeAgo}
+              />
 
               <View style={styles.playlistPanel}>
                 <View style={styles.playlistHeader}>
@@ -5990,6 +3868,82 @@ export function CoursesScreen({ navigation, route }: Props) {
         </ScrollView>
       </DraggableBottomSheet>
 
+      <DraggableBottomSheet
+        visible={playerSettingsOpen && canRenderLessonPlayer}
+        title="Player sozlamalari"
+        onClose={() => setPlayerSettingsOpen(false)}
+        minHeight={420}
+        initialHeightRatio={0.62}
+      >
+        <ScrollView
+          style={styles.playerSettingsSheetScroll}
+          contentContainerStyle={styles.playerSettingsSheetContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.playerSettingsSection}>
+            <Text style={styles.playerSettingsLabel}>Playback tezligi</Text>
+            <View style={styles.playerRateGrid}>
+              {VIDEO_PLAYBACK_RATES.map((rate) => {
+                const active = rate === videoPlaybackRate;
+                return (
+                  <Pressable
+                    key={`rate-${rate}`}
+                    style={[
+                      styles.playerRateChip,
+                      active && styles.playerRateChipActive,
+                    ]}
+                    onPress={() => handleSelectPlaybackRate(rate)}
+                  >
+                    <Text
+                      style={[
+                        styles.playerRateChipText,
+                        active && styles.playerRateChipTextActive,
+                      ]}
+                    >
+                      {rate}x
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          {lessonMediaItems.length > 1 ? (
+            <View style={styles.playerSettingsSection}>
+              <Text style={styles.playerSettingsLabel}>Playlist</Text>
+              {lessonMediaItems.map((item, index) => {
+                const active = index === activeMediaIndex;
+                return (
+                  <Pressable
+                    key={`media-${item.mediaId || index}`}
+                    style={[
+                      styles.playerSegmentRow,
+                      active && styles.playerSegmentRowActive,
+                    ]}
+                    onPress={() => handleSelectMediaItem(index)}
+                  >
+                    <View style={styles.playerSegmentIndex}>
+                      <Text style={styles.playerSegmentIndexText}>{index + 1}</Text>
+                    </View>
+                    <View style={styles.playerSegmentBody}>
+                      <Text style={styles.playerSegmentTitle} numberOfLines={1}>
+                        {item.title || `${index + 1}-video`}
+                      </Text>
+                      <Text style={styles.playerSegmentMeta}>
+                        {formatPlaybackClock(item.durationSeconds || 0)}
+                      </Text>
+                    </View>
+                    {active ? (
+                      <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+        </ScrollView>
+      </DraggableBottomSheet>
+
       {renderOwnerLessonAdminModal()}
 
       <CommentsModal
@@ -6007,6 +3961,9 @@ export function CoursesScreen({ navigation, route }: Props) {
           setEditingLesson(null);
         }}
         onSaved={invalidateCourseDetail}
+        pickDocument={pickDocument}
+        formatFileSize={formatFileSize}
+        styles={styles}
       />
       <MaterialEditorModal
         visible={materialModalOpen}
@@ -6028,6 +3985,9 @@ export function CoursesScreen({ navigation, route }: Props) {
         lessonId={currentLesson?._id || null}
         onClose={() => setHomeworkModalOpen(false)}
         onSaved={invalidateCourseDetail}
+        pickDocument={pickDocument}
+        formatFileSize={formatFileSize}
+        styles={styles}
       />
       <HomeworkSubmitModal
         visible={homeworkSubmitOpen}
@@ -6039,6 +3999,8 @@ export function CoursesScreen({ navigation, route }: Props) {
           setSelectedHomework(null);
         }}
         onSaved={invalidateCourseDetail}
+        pickDocument={pickDocument}
+        styles={styles}
       />
       <InlineTestPlayerModal
         visible={Boolean(activeArenaTest && activeLinkedTest)}
@@ -6047,6 +4009,7 @@ export function CoursesScreen({ navigation, route }: Props) {
         loading={arenaLoading}
         onClose={handleCloseArenaPlayer}
         onSubmit={handleSubmitArenaTest}
+        styles={styles}
       />
       <InlineSentenceBuilderModal
         visible={Boolean(activeSentenceDeck && activeLinkedTest)}
@@ -6055,15 +4018,25 @@ export function CoursesScreen({ navigation, route }: Props) {
         loading={arenaLoading}
         onClose={handleCloseArenaPlayer}
         onSubmit={async (payload) => handleSubmitArenaTest(payload)}
+        styles={styles}
       />
     </>
   ) : null;
+
+  if (detailOnly) {
+    return detailLayer ?? (
+      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+        <View style={styles.loaderState}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.screenStack}>
         {mainContent}
-        {detailLayer}
       </View>
 
       <CreateCourseModal
@@ -6088,7 +4061,7 @@ export function CoursesScreen({ navigation, route }: Props) {
 const styles = StyleSheet.create<Record<string, any>>({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.surface,  
   },
   deadlineFieldRowWrapper:{
     display:'flex',
@@ -6106,9 +4079,8 @@ const styles = StyleSheet.create<Record<string, any>>({
     zIndex: 20,
   },
   detailSafeArea: {
+    backgrround: Colors.surface,
     flex: 1,
-   
-    backgroundColor: Colors.background,
   },
   coursesTopHeader: {
     paddingHorizontal: 16,
@@ -6606,19 +4578,12 @@ const styles = StyleSheet.create<Record<string, any>>({
     position: "relative",
   },
   videoStageTopBar: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 5,
-    elevation: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 12,
-    backgroundColor: "rgba(0,0,0,0.28)",
   },
   videoStageBackButton: {
     width: 34,
@@ -6629,13 +4594,38 @@ const styles = StyleSheet.create<Record<string, any>>({
     justifyContent: "center",
   },
   videoStageTopTitle: {
-    flex: 1,
     color: "#fff",
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  videoStageTitleWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  videoStageSubtitle: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    fontWeight: "500",
   },
   videoStageTopActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginLeft: "auto",
+  },
+  videoStageTopChip: {
+    minWidth: 48,
+    height: 34,
+    paddingHorizontal: 10,
+    borderRadius: 17,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoStageTopChipText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
   },
   videoStageTopActionAnchor: {
     position: "relative",
@@ -6686,20 +4676,77 @@ const styles = StyleSheet.create<Record<string, any>>({
   },
   videoStageOverlay: {
     ...StyleSheet.absoluteFillObject,
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
+    zIndex: 3,
+    elevation: 6,
+  },
+  videoStageTouchLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
+  },
+  videoStageTopGradient: {
+    paddingTop: 0,
+  },
+  videoStageCenterControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 18,
+    paddingHorizontal: 24,
+  },
+  videoStageSeekButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 29,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 1,
+  },
+  videoStageSeekLabel: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  videoStagePlayButton: {
+    width: 54,
+    height: 54,
+    borderRadius: 37,
+    backgroundColor: "#00000071",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoStagePlayIcon: {
+    marginLeft: 3,
   },
   videoStageBottomBar: {
     paddingHorizontal: 16,
     paddingTop: 10,
     paddingBottom: 14,
-    backgroundColor: "rgba(0,0,0,0.42)",
     gap: 10,
+  },
+  videoStageMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  videoStageMetaBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  videoStageMetaBadgeText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
   },
   videoStageProgressTrack: {
     height: 8,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.16)",
-    overflow: "hidden",
     position: "relative",
   },
   videoStageProgressBuffered: {
@@ -6718,6 +4765,21 @@ const styles = StyleSheet.create<Record<string, any>>({
     borderRadius: 999,
     backgroundColor: Colors.primary,
   },
+  videoStageProgressThumb: {
+    position: "absolute",
+    top: "50%",
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    marginLeft: -7,
+    marginTop: -7,
+    backgroundColor: "#fff",
+    shadowColor: "#000",
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
   videoStageProgressMarker: {
     position: "absolute",
     top: 1,
@@ -6729,7 +4791,7 @@ const styles = StyleSheet.create<Record<string, any>>({
   videoStageControlsRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     gap: 12,
   },
   videoStageControlButton: {
@@ -6740,12 +4802,125 @@ const styles = StyleSheet.create<Record<string, any>>({
     alignItems: "center",
     justifyContent: "center",
   },
+  videoStageControlButtonWide: {
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  videoStageControlButtonText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   videoStageTimeText: {
     flex: 1,
     color: "#fff",
     fontSize: 12,
     fontWeight: "600",
-    textAlign: "center",
+    textAlign: "left",
+  },
+  videoStageMiniProgressWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 3,
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  videoStageMiniProgress: {
+    height: "100%",
+    backgroundColor: Colors.primary,
+  },
+  playerSettingsSheetScroll: {
+    flex: 1,
+  },
+  playerSettingsSheetContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+    gap: 18,
+  },
+  playerSettingsSection: {
+    gap: 12,
+  },
+  playerSettingsLabel: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  playerRateGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  playerRateChip: {
+    minWidth: 72,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 14,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: "center",
+  },
+  playerRateChipActive: {
+    backgroundColor: Colors.primarySoft,
+    borderColor: Colors.primary,
+  },
+  playerRateChipText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  playerRateChipTextActive: {
+    color: Colors.primary,
+    fontWeight: "700",
+  },
+  playerSegmentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  playerSegmentRowActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  playerSegmentIndex: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  playerSegmentIndexText: {
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  playerSegmentBody: {
+    flex: 1,
+    gap: 2,
+  },
+  playerSegmentTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  playerSegmentMeta: {
+    color: Colors.mutedText,
+    fontSize: 11,
+    fontWeight: "500",
   },
   videoInfoCard: {
     paddingHorizontal: 20,

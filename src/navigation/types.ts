@@ -28,12 +28,24 @@ export type MainTabsParamList = {
         viewMode?: "courses" | "arena" | null;
       }
     | undefined;
-  Profile: undefined;
+  Profile:
+    | {
+        userId?: string | null;
+        jammId?: string | number | null;
+      }
+    | undefined;
 };
 
 export type RootStackParamList = {
   Auth: undefined;
   MainTabs: NavigatorScreenParams<MainTabsParamList>;
+  ArticleDetail: {
+    articleId: string;
+  };
+  CourseDetail: {
+    courseId: string;
+    lessonId?: string | null;
+  };
   ArenaQuizList: undefined;
   ArenaFlashcardList:
     | {

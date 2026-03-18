@@ -771,13 +771,21 @@ function SecurityPinModal({
   );
 }
 
-export function ProfileScreen({ navigation }: Props) {
+export function ProfileScreen({ navigation, route }: Props) {
   const { width: screenWidth } = useWindowDimensions();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const logout = useAuthStore((state) => state.logout);
   const currentUserId = getEntityId(user);
+  const requestedUserId = String(route.params?.userId || "").trim();
+  const requestedJammId = String(route.params?.jammId || "").trim();
+  const requestedProfileIdentifier = requestedJammId || requestedUserId;
+  const isRequestedOwnProfile =
+    !requestedProfileIdentifier ||
+    requestedUserId === currentUserId ||
+    requestedJammId === String(user?.jammId || "");
+  const isViewingOwnProfile = Boolean(user) && isRequestedOwnProfile;
   const [activeTab, setActiveTab] = useState<ProfileTab>(null);
   const [paneVisible, setPaneVisible] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
@@ -789,16 +797,29 @@ export function ProfileScreen({ navigation }: Props) {
   const paneStartXRef = useRef(screenWidth);
   const profileScrollY = useRef(new Animated.Value(0)).current;
 
+  const publicProfileQuery = useQuery({
+    queryKey: ["public-profile", requestedProfileIdentifier],
+    queryFn: () => usersApi.getPublicProfile(requestedProfileIdentifier),
+    enabled: Boolean(requestedProfileIdentifier && !isViewingOwnProfile),
+  });
+
+  const displayUser = isViewingOwnProfile ? user : publicProfileQuery.data || null;
+  const profileUserId = getEntityId(displayUser) || requestedUserId || "";
+  const profilePostsIdentifier = profileUserId || currentUserId;
+  const profileArticlesIdentifier = String(
+    displayUser?.jammId || requestedJammId || profileUserId || currentUserId || "",
+  ).trim();
+
   const postsQuery = useQuery({
-    queryKey: ["profile-posts", currentUserId],
-    queryFn: () => postsApi.fetchUserPosts(currentUserId),
-    enabled: Boolean(currentUserId),
+    queryKey: ["profile-posts", profilePostsIdentifier],
+    queryFn: () => postsApi.fetchUserPosts(profilePostsIdentifier),
+    enabled: Boolean(profilePostsIdentifier),
   });
 
   const articlesQuery = useQuery({
-    queryKey: ["profile-articles", currentUserId],
-    queryFn: () => articlesApi.fetchUserArticles(String(user?.jammId || currentUserId)),
-    enabled: Boolean(currentUserId),
+    queryKey: ["profile-articles", profileArticlesIdentifier],
+    queryFn: () => articlesApi.fetchUserArticles(profileArticlesIdentifier),
+    enabled: Boolean(profileArticlesIdentifier),
   });
 
   const coursesQuery = useQuery({
@@ -810,25 +831,25 @@ export function ProfileScreen({ navigation }: Props) {
   const decorationsQuery = useQuery({
     queryKey: ["profile-decorations"],
     queryFn: usersApi.getProfileDecorations,
-    enabled: activeTab === "appearance" || activeTab === "premium",
+    enabled: isViewingOwnProfile && (activeTab === "appearance" || activeTab === "premium"),
   });
 
   const appLockQuery = useQuery({
     queryKey: ["app-lock"],
     queryFn: usersApi.getAppLockStatus,
-    enabled: activeTab === "security",
+    enabled: isViewingOwnProfile && activeTab === "security",
   });
 
   const likedPostsQuery = useQuery({
     queryKey: ["liked-posts"],
     queryFn: postsApi.fetchLikedPosts,
-    enabled: activeTab === "favorites",
+    enabled: isViewingOwnProfile && activeTab === "favorites",
   });
 
   const likedArticlesQuery = useQuery({
     queryKey: ["liked-articles"],
     queryFn: articlesApi.fetchLikedArticles,
-    enabled: activeTab === "favorites",
+    enabled: isViewingOwnProfile && activeTab === "favorites",
   });
 
   const createPostMutation = useMutation({
@@ -924,18 +945,18 @@ export function ProfileScreen({ navigation }: Props) {
         typeof course.createdBy === "string"
           ? course.createdBy
           : getEntityId(course.createdBy as User | null);
-      return owner === currentUserId;
+      return owner === profileUserId;
     });
-  }, [coursesQuery.data?.data, currentUserId]);
+  }, [coursesQuery.data?.data, profileUserId]);
 
   const stats = useMemo(
     () => [
-      { label: "Obunachilar", value: String(user?.followersCount || 0) },
+      { label: "Obunachilar", value: String(displayUser?.followersCount || 0) },
       { label: "Gurunglar", value: String(postsQuery.data?.length || 0) },
       { label: "Maqolalar", value: String(articlesQuery.data?.length || 0) },
       { label: "Darslar", value: String(ownedCourses.length || 0) },
     ],
-    [articlesQuery.data?.length, ownedCourses.length, postsQuery.data?.length, user?.followersCount],
+    [articlesQuery.data?.length, displayUser?.followersCount, ownedCourses.length, postsQuery.data?.length],
   );
   const headerProgress = profileScrollY.interpolate({
     inputRange: [PROFILE_HEADER_FADE_START, PROFILE_HEADER_FADE_END],
@@ -1106,38 +1127,43 @@ export function ProfileScreen({ navigation }: Props) {
       >
         <View style={styles.cover}>
           <View style={styles.coverShade} />
-          <Pressable
-            style={styles.coverAction}
-            onPress={() => setProfileEditOpen(true)}
-          >
-            <Pencil size={15} color="#fff" />
-          </Pressable>
+          {isViewingOwnProfile ? (
+            <Pressable
+              style={styles.coverAction}
+              onPress={() => setProfileEditOpen(true)}
+            >
+              <Pencil size={15} color="#fff" />
+            </Pressable>
+          ) : null}
         </View>
 
         <View style={styles.avatarWrap}>
           <Avatar
-            label={user?.nickname || user?.username || "User"}
-            uri={user?.avatar}
+            label={displayUser?.nickname || displayUser?.username || "User"}
+            uri={displayUser?.avatar}
             size={76}
           />
         </View>
 
         <View style={styles.infoBlock}>
           <UserDisplayName
-            user={user}
-            fallback={user?.nickname || user?.username || "Foydalanuvchi"}
+            user={displayUser}
+            fallback={displayUser?.nickname || displayUser?.username || "Foydalanuvchi"}
             size="lg"
             textStyle={styles.displayName}
             containerStyle={styles.displayNameWrap}
           />
-          <Text style={styles.handle}>@{user?.username || "user"}</Text>
+          <Text style={styles.handle}>@{displayUser?.username || "user"}</Text>
           <Text style={styles.bio}>
-            {user?.bio || "Profilingizga qisqa ta'rif qo'shing."}
+            {displayUser?.bio ||
+              (isViewingOwnProfile
+                ? "Profilingizga qisqa ta'rif qo'shing."
+                : "Foydalanuvchi hali bio qo'shmagan.")}
           </Text>
           <View style={styles.metaRow}>
             <Calendar size={13} color={Colors.mutedText} />
             <Text style={styles.metaText}>
-              {formatJoinedDate(user?.createdAt) || "Jamm foydalanuvchisi"}
+              {formatJoinedDate(displayUser?.createdAt) || "Jamm foydalanuvchisi"}
             </Text>
           </View>
         </View>
@@ -1182,52 +1208,56 @@ export function ProfileScreen({ navigation }: Props) {
           })}
         </View>
 
-        <View style={styles.tabCard}>
-          {UTILITY_TABS.map((item, index) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.key;
-            return (
-              <Pressable
-                key={item.key}
-                style={[styles.tabRow, isActive && styles.tabRowActive]}
-                onPress={() => openPane(item.key)}
-              >
-                <View
-                  style={[
-                    styles.tabIcon,
-                    isActive ? styles.tabIconActive : null,
-                  ]}
-                >
-                  <Icon size={15} color={isActive ? Colors.text : Colors.mutedText} />
+        {isViewingOwnProfile ? (
+          <>
+            <View style={styles.tabCard}>
+              {UTILITY_TABS.map((item, index) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.key;
+                return (
+                  <Pressable
+                    key={item.key}
+                    style={[styles.tabRow, isActive && styles.tabRowActive]}
+                    onPress={() => openPane(item.key)}
+                  >
+                    <View
+                      style={[
+                        styles.tabIcon,
+                        isActive ? styles.tabIconActive : null,
+                      ]}
+                    >
+                      <Icon size={15} color={isActive ? Colors.text : Colors.mutedText} />
+                    </View>
+                    <Text style={styles.tabLabel}>{item.label}</Text>
+                    <ChevronRight size={16} color={Colors.subtleText} style={styles.tabChevron} />
+                    {index < UTILITY_TABS.length - 1 ? <View style={styles.tabDivider} /> : null}
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.footerCard}>
+              <View style={styles.footerRow}>
+                <View>
+                  <Text style={styles.footerTitle}>App version</Text>
+                  <Text style={styles.footerSubtitle}>Current production version</Text>
                 </View>
-                <Text style={styles.tabLabel}>{item.label}</Text>
-                <ChevronRight size={16} color={Colors.subtleText} style={styles.tabChevron} />
-                {index < UTILITY_TABS.length - 1 ? <View style={styles.tabDivider} /> : null}
+                <Text style={styles.versionBadge}>Expo</Text>
+              </View>
+
+              <Pressable style={styles.footerRow} onPress={handleLogout}>
+                <View>
+                  <Text style={styles.footerTitle}>Log out</Text>
+                  <Text style={styles.footerSubtitle}>Ushbu qurilmadan chiqish</Text>
+                </View>
+                <View style={styles.logoutBadge}>
+                  <LogOut size={14} color={Colors.danger} />
+                  <Text style={styles.logoutBadgeText}>Chiqish</Text>
+                </View>
               </Pressable>
-            );
-          })}
-        </View>
-
-        <View style={styles.footerCard}>
-          <View style={styles.footerRow}>
-            <View>
-              <Text style={styles.footerTitle}>App version</Text>
-              <Text style={styles.footerSubtitle}>Current production version</Text>
             </View>
-            <Text style={styles.versionBadge}>Expo</Text>
-          </View>
-
-          <Pressable style={styles.footerRow} onPress={handleLogout}>
-            <View>
-              <Text style={styles.footerTitle}>Log out</Text>
-              <Text style={styles.footerSubtitle}>Ushbu qurilmadan chiqish</Text>
-            </View>
-            <View style={styles.logoutBadge}>
-              <LogOut size={14} color={Colors.danger} />
-              <Text style={styles.logoutBadgeText}>Chiqish</Text>
-            </View>
-          </Pressable>
-        </View>
+          </>
+        ) : null}
       </View>
     </Animated.ScrollView>
   );
@@ -1245,9 +1275,13 @@ export function ProfileScreen({ navigation }: Props) {
           <EmptyPane
             icon={<MessageSquare size={26} color={Colors.mutedText} />}
             title="Hali gurung yo'q"
-            description="Birinchi gurungingizni shu yerdan yozishingiz mumkin."
-            actionLabel="Yangi gurung"
-            onAction={() => setComposerOpen(true)}
+            description={
+              isViewingOwnProfile
+                ? "Birinchi gurungingizni shu yerdan yozishingiz mumkin."
+                : "Bu foydalanuvchi hali gurung joylamagan."
+            }
+            actionLabel={isViewingOwnProfile ? "Yangi gurung" : undefined}
+            onAction={isViewingOwnProfile ? () => setComposerOpen(true) : undefined}
           />
         ) : (
           <ScrollView
@@ -1259,14 +1293,14 @@ export function ProfileScreen({ navigation }: Props) {
               <View key={post._id} style={styles.postCard}>
                 <View style={styles.postHeader}>
                   <Avatar
-                    label={user?.nickname || user?.username || "User"}
-                    uri={user?.avatar}
+                    label={displayUser?.nickname || displayUser?.username || "User"}
+                    uri={displayUser?.avatar}
                     size={34}
                   />
                   <View style={styles.postMeta}>
                     <UserDisplayName
-                      user={user}
-                      fallback={user?.nickname || user?.username || "User"}
+                      user={displayUser}
+                      fallback={displayUser?.nickname || displayUser?.username || "User"}
                       size="sm"
                       textStyle={styles.postAuthor}
                     />
@@ -1310,27 +1344,29 @@ export function ProfileScreen({ navigation }: Props) {
                   </View>
                 </View>
 
-                <View style={styles.ownerActions}>
-                  <Pressable
-                    style={styles.ownerAction}
-                    onPress={() => {
-                      setEditingPost(post);
-                      setComposerOpen(true);
-                    }}
-                  >
-                    <Pencil size={14} color={Colors.mutedText} />
-                    <Text style={styles.ownerActionText}>Tahrirlash</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.ownerAction}
-                    onPress={() => handleDeletePost(post._id)}
-                  >
-                    <Trash2 size={14} color={Colors.danger} />
-                    <Text style={[styles.ownerActionText, { color: Colors.danger }]}>
-                      O'chirish
-                    </Text>
-                  </Pressable>
-                </View>
+                {isViewingOwnProfile ? (
+                  <View style={styles.ownerActions}>
+                    <Pressable
+                      style={styles.ownerAction}
+                      onPress={() => {
+                        setEditingPost(post);
+                        setComposerOpen(true);
+                      }}
+                    >
+                      <Pencil size={14} color={Colors.mutedText} />
+                      <Text style={styles.ownerActionText}>Tahrirlash</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.ownerAction}
+                      onPress={() => handleDeletePost(post._id)}
+                    >
+                      <Trash2 size={14} color={Colors.danger} />
+                      <Text style={[styles.ownerActionText, { color: Colors.danger }]}>
+                        O'chirish
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : null}
               </View>
             ))}
           </ScrollView>
@@ -1398,7 +1434,11 @@ export function ProfileScreen({ navigation }: Props) {
         <EmptyPane
           icon={<GraduationCap size={26} color={Colors.mutedText} />}
           title="Darslar yo'q"
-          description="Siz yaratgan kurslar shu yerda ko'rinadi."
+          description={
+            isViewingOwnProfile
+              ? "Siz yaratgan kurslar shu yerda ko'rinadi."
+              : "Bu foydalanuvchi yaratgan kurslar shu yerda ko'rinadi."
+          }
         />
       ) : (
         <ScrollView
@@ -1748,7 +1788,20 @@ export function ProfileScreen({ navigation }: Props) {
     UTILITY_TABS.find((item) => item.key === activeTab)?.label ||
     "Profile";
 
-  if (!user) {
+  if (!displayUser && !isViewingOwnProfile && publicProfileQuery.isError) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.loaderState}>
+          <Text style={styles.emptyPaneTitle}>Profil topilmadi</Text>
+          <Text style={styles.emptyPaneDescription}>
+            Bu foydalanuvchi profili yuklanmadi.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!displayUser || (!isViewingOwnProfile && publicProfileQuery.isLoading)) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.loaderState}>
@@ -1784,20 +1837,20 @@ export function ProfileScreen({ navigation }: Props) {
             ]}
           >
             <Avatar
-              label={user?.nickname || user?.username || "User"}
-              uri={user?.avatar}
+              label={displayUser?.nickname || displayUser?.username || "User"}
+              uri={displayUser?.avatar}
               size={34}
               shape="circle"
             />
             <View style={styles.collapsedHeaderText}>
               <UserDisplayName
-                user={user}
-                fallback={user?.nickname || user?.username || "Foydalanuvchi"}
+                user={displayUser}
+                fallback={displayUser?.nickname || displayUser?.username || "Foydalanuvchi"}
                 size="sm"
                 textStyle={styles.collapsedHeaderName}
               />
               <Text style={styles.collapsedHeaderHandle}>
-                @{user?.username || "user"}
+                @{displayUser?.username || "user"}
               </Text>
             </View>
           </Animated.View>
@@ -1821,7 +1874,7 @@ export function ProfileScreen({ navigation }: Props) {
                 title={activeTitle}
                 onBack={closePane}
                 action={
-                  activeTab === "groups" ? (
+                  activeTab === "groups" && isViewingOwnProfile ? (
                     <Pressable
                       style={styles.paneHeaderButton}
                       onPress={() => {
@@ -1852,14 +1905,14 @@ export function ProfileScreen({ navigation }: Props) {
       />
 
       <ProfileEditModal
-        visible={profileEditOpen}
+        visible={isViewingOwnProfile && profileEditOpen}
         user={user}
         onClose={() => setProfileEditOpen(false)}
         onSaved={handleProfileSaved}
       />
 
       <SecurityPinModal
-        visible={securityModalOpen}
+        visible={isViewingOwnProfile && securityModalOpen}
         enabled={Boolean(appLockQuery.data?.enabled)}
         loading={appLockMutation.isPending}
         onClose={() => setSecurityModalOpen(false)}
@@ -1881,7 +1934,7 @@ export function ProfileScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.surface,
   },
   container: {
     flex: 1,
