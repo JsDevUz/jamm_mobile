@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Animated,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
-  PanResponder,
   Platform,
   Pressable,
   StyleSheet,
@@ -12,6 +12,11 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { X } from "lucide-react-native";
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerStateChangeEvent,
+} from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors } from "../theme/colors";
 
@@ -21,6 +26,7 @@ type Props = {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  overlay?: ReactNode;
   minHeight?: number;
   initialHeightRatio?: number;
   maxHeightRatio?: number;
@@ -32,6 +38,7 @@ export function DraggableBottomSheet({
   onClose,
   children,
   footer,
+  overlay,
   minHeight = 520,
   initialHeightRatio = 0.8,
   maxHeightRatio = 0.94,
@@ -48,7 +55,9 @@ export function DraggableBottomSheet({
   const closedTranslateY = maxHeight + insets.bottom + 40;
   const sheetTranslateY = useRef(new Animated.Value(closedTranslateY)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const currentTranslateYRef = useRef(closedTranslateY);
   const panStartYRef = useRef(closedTranslateY);
+  const [keyboardInset, setKeyboardInset] = useState(0);
 
   const animateSheetTo = useCallback(
     (toValue: number, opacity = 1, onDone?: () => void) => {
@@ -75,10 +84,79 @@ export function DraggableBottomSheet({
   );
 
   useEffect(() => {
+    currentTranslateYRef.current = closedTranslateY;
+    panStartYRef.current = closedTranslateY;
+  }, [closedTranslateY]);
+
+  useEffect(() => {
+    const listenerId = sheetTranslateY.addListener(({ value }) => {
+      currentTranslateYRef.current = value;
+    });
+
+    return () => {
+      sheetTranslateY.removeListener(listenerId);
+    };
+  }, [sheetTranslateY]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const handleKeyboardShow = (event: { endCoordinates?: { height?: number } }) => {
+      if (Platform.OS !== "android") {
+        return;
+      }
+
+      const nextInset = Math.max(0, Number(event.endCoordinates?.height || 0) - insets.bottom);
+      setKeyboardInset(nextInset);
+    };
+
+    const handleKeyboardHide = () => {
+      setKeyboardInset(0);
+    };
+
+    const showSubscription = Keyboard.addListener(showEvent, handleKeyboardShow);
+    const hideSubscription = Keyboard.addListener(hideEvent, handleKeyboardHide);
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [insets.bottom]);
+
+  useEffect(() => {
+    if (!visible) {
+      setKeyboardInset(0);
+    }
+  }, [visible]);
+
+  const handleClose = useCallback(() => {
+    Keyboard.dismiss();
+    setKeyboardInset(0);
+    requestAnimationFrame(() => {
+      onClose();
+    });
+  }, [onClose]);
+
+  const updateDraggedPosition = useCallback(
+    (translationY: number) => {
+      const nextValue = Math.max(
+        0,
+        Math.min(closedTranslateY, panStartYRef.current + translationY),
+      );
+      sheetTranslateY.setValue(nextValue);
+      backdropOpacity.setValue(1 - Math.min(nextValue / Math.max(maxHeight, 1), 1));
+    },
+    [backdropOpacity, closedTranslateY, maxHeight, sheetTranslateY],
+  );
+
+  useEffect(() => {
     if (visible) {
       setIsMounted(true);
       sheetTranslateY.setValue(closedTranslateY);
       backdropOpacity.setValue(0);
+      currentTranslateYRef.current = closedTranslateY;
+      panStartYRef.current = closedTranslateY;
       animateSheetTo(collapsedTranslateY, 1);
       return;
     }
@@ -113,48 +191,45 @@ export function DraggableBottomSheet({
     visible,
   ]);
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
-          Math.abs(gestureState.dy) > 6 &&
-          Math.abs(gestureState.dy) > Math.abs(gestureState.dx) * 0.9,
-        onMoveShouldSetPanResponder: (_event, gestureState) =>
-          Math.abs(gestureState.dy) > 6 &&
-          Math.abs(gestureState.dy) > Math.abs(gestureState.dx) * 0.9,
-        onPanResponderGrant: () => {
-          sheetTranslateY.stopAnimation((value) => {
-            panStartYRef.current = value;
-          });
-        },
-        onPanResponderMove: (_event, gestureState) => {
-          const nextValue = Math.max(
-            0,
-            Math.min(closedTranslateY, panStartYRef.current + gestureState.dy),
-          );
-          sheetTranslateY.setValue(nextValue);
-          backdropOpacity.setValue(1 - Math.min(nextValue / maxHeight, 1));
-        },
-        onPanResponderRelease: (_event, gestureState) => {
-          const releaseValue = panStartYRef.current + gestureState.dy;
-          const shouldClose =
-            releaseValue > collapsedTranslateY + maxHeight * 0.16 || gestureState.vy > 0.95;
+  const handleGestureEvent = useCallback(
+    (event: { nativeEvent: { translationY: number } }) => {
+      updateDraggedPosition(event.nativeEvent.translationY);
+    },
+    [updateDraggedPosition],
+  );
 
-          if (shouldClose) {
-            onClose();
-            return;
-          }
+  const handleGestureStateChange = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      const { state, oldState, translationY, velocityY } = event.nativeEvent;
 
-          const shouldExpand =
-            releaseValue < collapsedTranslateY * 0.62 || gestureState.vy < -0.35;
+      if (state === State.BEGAN) {
+        sheetTranslateY.stopAnimation((value) => {
+          currentTranslateYRef.current = value;
+          panStartYRef.current = value;
+        });
+        return;
+      }
 
-          animateSheetTo(shouldExpand ? 0 : collapsedTranslateY, 1);
-        },
-        onPanResponderTerminate: () => {
+      if (oldState !== State.ACTIVE) {
+        if (state === State.CANCELLED || state === State.FAILED) {
           animateSheetTo(collapsedTranslateY, 1);
-        },
-      }),
-    [animateSheetTo, backdropOpacity, closedTranslateY, collapsedTranslateY, maxHeight, onClose, sheetTranslateY],
+        }
+        return;
+      }
+
+      const releaseValue = panStartYRef.current + translationY;
+      const shouldClose =
+        releaseValue > collapsedTranslateY + maxHeight * 0.12 || velocityY > 700;
+
+      if (shouldClose) {
+        handleClose();
+        return;
+      }
+
+      const shouldExpand = releaseValue < collapsedTranslateY * 0.62 || velocityY < -350;
+      animateSheetTo(shouldExpand ? 0 : collapsedTranslateY, 1);
+    },
+    [animateSheetTo, collapsedTranslateY, handleClose, maxHeight, sheetTranslateY],
   );
 
   if (!isMounted) {
@@ -162,10 +237,10 @@ export function DraggableBottomSheet({
   }
 
   return (
-    <Modal visible transparent animationType="none" onRequestClose={onClose}>
+    <Modal visible transparent animationType="none" onRequestClose={handleClose}>
       <View style={styles.root}>
         <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
         </Animated.View>
 
         <KeyboardAvoidingView
@@ -177,25 +252,37 @@ export function DraggableBottomSheet({
               styles.panel,
               {
                 height: maxHeight,
-                paddingBottom: Math.max(insets.bottom, 12),
+                paddingBottom:
+                  Math.max(insets.bottom, 12) +
+                  (Platform.OS === "android" ? keyboardInset : 0),
                 transform: [{ translateY: sheetTranslateY }],
               },
             ]}
           >
-            <View {...panResponder.panHandlers}>
-              <View style={styles.handleWrap}>
-                <View style={styles.handle} />
+            <PanGestureHandler
+              activeOffsetY={[-6, 6]}
+              failOffsetX={[-24, 24]}
+              shouldCancelWhenOutside={false}
+              onGestureEvent={handleGestureEvent}
+              onHandlerStateChange={handleGestureStateChange}
+            >
+              <View style={styles.dragArea}>
+                <View style={styles.handleWrap}>
+                  <View style={styles.handle} />
+                </View>
               </View>
-              <View style={styles.header}>
-                <Text style={styles.title}>{title}</Text>
-                <Pressable onPress={onClose} style={styles.closeButton}>
-                  <X size={18} color={Colors.text} />
-                </Pressable>
-              </View>
+            </PanGestureHandler>
+
+            <View style={styles.header}>
+              <Text style={styles.title}>{title}</Text>
+              <Pressable onPress={handleClose} hitSlop={10} style={styles.closeButton}>
+                <X size={18} color={Colors.text} />
+              </Pressable>
             </View>
 
             <View style={styles.body}>{children}</View>
             {footer ? <View style={styles.footer}>{footer}</View> : null}
+            {overlay ? <View style={styles.overlay}>{overlay}</View> : null}
           </Animated.View>
         </KeyboardAvoidingView>
       </View>
@@ -221,6 +308,9 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     overflow: "hidden",
+  },
+  dragArea: {
+    backgroundColor: Colors.surface,
   },
   handleWrap: {
     alignItems: "center",
@@ -259,5 +349,9 @@ const styles = StyleSheet.create({
   footer: {
     borderTopWidth: 1,
     borderTopColor: Colors.border,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
   },
 });

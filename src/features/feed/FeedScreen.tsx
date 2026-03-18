@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -9,8 +10,12 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -21,7 +26,9 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { FlashList } from "@shopify/flash-list";
+import type { FlashListRef } from "@shopify/flash-list";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import type { InfiniteData } from "@tanstack/react-query";
 import { BlurView } from "expo-blur";
 import { Image } from "expo-image";
 import {
@@ -43,13 +50,28 @@ import {
 import * as Haptics from "expo-haptics";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
+import {
+  APP_LIMITS,
+  countWords,
+  isPremiumStatus,
+} from "../../constants/appLimits";
 import { postsApi } from "../../lib/api";
+import {
+  loadCachedFeedComments,
+  loadCachedFeedTab,
+  loadFeedLastActiveTab,
+  loadFeedScrollPosition,
+  saveCachedFeedComments,
+  saveCachedFeedTab,
+  saveFeedLastActiveTab,
+  saveFeedScrollPosition,
+} from "../../lib/feed-cache";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -62,11 +84,9 @@ import type {
   FeedTab,
   PostComment,
 } from "../../types/posts";
+import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Feed">;
-const POST_WORD_LIMIT = 100;
-const POST_IMAGE_LIMIT = 3;
-const POST_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const POST_PLACEHOLDER =
   "Fikringizni yozing... markdown qo'llab-quvvatlanadi: **qalin**, _kursiv_, #teg";
 
@@ -90,11 +110,127 @@ type ComposerAttachment = {
   error: string | null;
 };
 
-function countWords(value = "") {
-  return String(value)
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
+type FeedLightboxState = {
+  images: FeedImage[];
+  initialIndex: number;
+};
+
+type FeedInfiniteData = InfiniteData<FeedResponse, unknown>;
+
+const getFeedImageKey = (image: FeedImage, index: number) => `${image.url}-${index}`;
+
+type FeedInlineToken =
+  | { type: "text"; value: string }
+  | { type: "strong"; value: string }
+  | { type: "em"; value: string }
+  | { type: "underline"; value: string }
+  | { type: "code"; value: string }
+  | { type: "link"; value: string; href: string };
+
+function parseFeedInline(text: string): FeedInlineToken[] {
+  const pattern =
+    /(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|_([^_]+)_)/g;
+  const tokens: FeedInlineToken[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push({ type: "text", value: text.slice(lastIndex, match.index) });
+    }
+
+    if (match[2] && match[3]) {
+      tokens.push({
+        type: "link",
+        value: match[2],
+        href: match[3],
+      });
+    } else if (match[4]) {
+      tokens.push({ type: "code", value: match[4] });
+    } else if (match[5]) {
+      tokens.push({ type: "strong", value: match[5] });
+    } else if (match[6]) {
+      tokens.push({ type: "underline", value: match[6] });
+    } else if (match[7]) {
+      tokens.push({ type: "em", value: match[7] });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    tokens.push({ type: "text", value: text.slice(lastIndex) });
+  }
+
+  return tokens.length ? tokens : [{ type: "text", value: text }];
+}
+
+function FeedMarkdownText({
+  content,
+  style,
+  numberOfLines,
+}: {
+  content: string;
+  style?: object;
+  numberOfLines?: number;
+}) {
+  const tokens = useMemo(() => parseFeedInline(String(content || "")), [content]);
+
+  return (
+    <Text style={style} numberOfLines={numberOfLines}>
+      {tokens.map((token, index) => {
+        if (token.type === "strong") {
+          return (
+            <Text key={`strong-${index}`} style={styles.feedMarkdownStrong}>
+              {token.value}
+            </Text>
+          );
+        }
+
+        if (token.type === "em") {
+          return (
+            <Text key={`em-${index}`} style={styles.feedMarkdownEm}>
+              {token.value}
+            </Text>
+          );
+        }
+
+        if (token.type === "underline") {
+          return (
+            <Text key={`underline-${index}`} style={styles.feedMarkdownUnderline}>
+              {token.value}
+            </Text>
+          );
+        }
+
+        if (token.type === "code") {
+          return (
+            <Text key={`code-${index}`} style={styles.feedMarkdownCode}>
+              {token.value}
+            </Text>
+          );
+        }
+
+        if (token.type === "link") {
+          return (
+            <Text
+              key={`link-${index}`}
+              style={styles.feedMarkdownLink}
+              onPress={() => {
+                void Linking.openURL(token.href).catch(() => {
+                  Alert.alert("Link ochilmadi", token.href);
+                });
+              }}
+            >
+              {token.value}
+            </Text>
+          );
+        }
+
+        return <Fragment key={`text-${index}`}>{token.value}</Fragment>;
+      })}
+    </Text>
+  );
 }
 
 function timeAgo(iso: string) {
@@ -125,7 +261,7 @@ function formatTimestamp(iso: string) {
 }
 
 function isPremiumUser(user?: User | null) {
-  return user?.premiumStatus === "active" || user?.premiumStatus === "premium";
+  return isPremiumStatus(user?.premiumStatus);
 }
 
 function getMimeType(uri?: string | null, fileName?: string | null) {
@@ -160,7 +296,7 @@ function FeedImageCarousel({
 }: {
   images: FeedImage[];
   onInteractionChange?: (active: boolean) => void;
-  onOpenImage: (image: FeedImage) => void;
+  onOpenImage: (images: FeedImage[], initialIndex: number) => void;
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
@@ -187,9 +323,9 @@ function FeedImageCarousel({
         }}
         scrollEventThrottle={16}
       >
-        {images.map((image) => (
+        {images.map((image, index) => (
           <View
-            key={image.url}
+            key={getFeedImageKey(image, index)}
             style={[
               styles.imageSlide,
               viewportWidth > 0 ? { width: viewportWidth } : null,
@@ -200,7 +336,7 @@ function FeedImageCarousel({
               blurDataUrl={image.blurDataUrl}
               style={styles.imageFill}
               requireManualDownload
-              onPress={() => onOpenImage(image)}
+              onPress={() => onOpenImage(images, index)}
             />
           </View>
         ))}
@@ -210,7 +346,7 @@ function FeedImageCarousel({
         <View style={styles.imageDots}>
           {images.map((image, index) => (
             <Pressable
-              key={`${image.url}-dot`}
+              key={`${getFeedImageKey(image, index)}-dot`}
               onPress={() => {
                 setActiveIndex(index);
                 scrollRef.current?.scrollTo({
@@ -308,7 +444,7 @@ function PostComposerModal({
     const after = text.slice(selection.end);
     const nextText = `${before}${prefix}${selected}${suffix}${after}`;
 
-    if (countWords(nextText) > POST_WORD_LIMIT) {
+    if (countWords(nextText) > APP_LIMITS.postWords) {
       return;
     }
 
@@ -335,7 +471,7 @@ function PostComposerModal({
       return;
     }
 
-    const remainingSlots = POST_IMAGE_LIMIT - attachments.length;
+    const remainingSlots = APP_LIMITS.postImagesPerPost.premium - attachments.length;
     if (remainingSlots <= 0) {
       Alert.alert("Limit tugadi", "Har bir gurung uchun maksimal 3 ta rasm qo'shish mumkin.");
       return;
@@ -362,7 +498,7 @@ function PostComposerModal({
       const preparedAttachments: ComposerAttachment[] = [];
 
       for (const asset of assets) {
-        if (typeof asset.fileSize === "number" && asset.fileSize > POST_IMAGE_MAX_BYTES) {
+        if (typeof asset.fileSize === "number" && asset.fileSize > APP_LIMITS.postImageBytes) {
           Alert.alert("Rasm katta", `${asset.fileName || "Rasm"} maksimal 5MB bo'lishi kerak.`);
           continue;
         }
@@ -422,7 +558,7 @@ function PostComposerModal({
       (!nextContent && existingImages.length === 0 && localAttachments.length === 0) ||
       saving ||
       uploading ||
-      usedWords > POST_WORD_LIMIT
+      usedWords > APP_LIMITS.postWords
     ) {
       return;
     }
@@ -533,7 +669,7 @@ function PostComposerModal({
                   ref={inputRef}
                   value={text}
                   onChangeText={(nextText) => {
-                    if (countWords(nextText) <= POST_WORD_LIMIT) {
+                    if (countWords(nextText) <= APP_LIMITS.postWords) {
                       setText(nextText);
                     }
                   }}
@@ -549,10 +685,10 @@ function PostComposerModal({
                 <Text
                   style={[
                     styles.composerCounter,
-                    usedWords > POST_WORD_LIMIT - 10 && styles.composerCounterWarn,
+                    usedWords > APP_LIMITS.postWords - 10 && styles.composerCounterWarn,
                   ]}
                 >
-                  {usedWords}/{POST_WORD_LIMIT} so'z
+                  {usedWords}/{APP_LIMITS.postWords} so'z
                 </Text>
                 {attachments.length ? (
                   <View style={styles.composerAttachmentsGrid}>
@@ -626,7 +762,7 @@ function PostComposerModal({
                   (!text.trim() && !hasValidAttachments) ||
                   saving ||
                   uploading ||
-                  usedWords > POST_WORD_LIMIT ||
+                  usedWords > APP_LIMITS.postWords ||
                   attachments.some((attachment) => attachment.uploading)
                 }
                 style={[
@@ -634,7 +770,7 @@ function PostComposerModal({
                   ((!text.trim() && !hasValidAttachments) ||
                     saving ||
                     uploading ||
-                    usedWords > POST_WORD_LIMIT ||
+                    usedWords > APP_LIMITS.postWords ||
                     attachments.some((attachment) => attachment.uploading)) &&
                     styles.composerSubmitDisabled,
                 ]}
@@ -667,12 +803,20 @@ function CommentsModal({
   onClose: () => void;
   onCountChange: (postId: string, nextCount: number) => void;
 }) {
+  const currentUser = useAuthStore((state) => state.user);
+  const currentUserId = getEntityId(currentUser);
   const [comments, setComments] = useState<PostComment[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [commentsCacheHydrated, setCommentsCacheHydrated] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [editingComment, setEditingComment] = useState<{
+    commentId: string;
+    nickname: string;
+    kind: "comment" | "reply";
+  } | null>(null);
   const [replyingTo, setReplyingTo] = useState<{
     commentId: string;
     replyToUserId?: string;
@@ -688,26 +832,145 @@ function CommentsModal({
         setComments((prev) => (nextPage === 1 ? response.data || [] : [...prev, ...(response.data || [])]));
         setPage(nextPage);
         setTotalPages(response.totalPages || 1);
+        if (currentUserId && nextPage === 1) {
+          await saveCachedFeedComments(currentUserId, post._id, response);
+        }
+      } catch (error) {
+        if (nextPage === 1) {
+          console.warn("Failed to fetch comments", error);
+        }
       } finally {
         setLoading(false);
       }
     },
-    [post?._id],
+    [currentUserId, post?._id],
   );
 
   useEffect(() => {
-    if (visible && post?._id) {
-      void loadComments(1);
-      setText("");
-      setReplyingTo(null);
+    let cancelled = false;
+    setCommentsCacheHydrated(false);
+
+    if (!visible || !post?._id) {
+      setCommentsCacheHydrated(true);
+      return;
     }
-  }, [loadComments, post?._id, visible]);
+
+    const hydrateComments = async () => {
+      try {
+        if (currentUserId) {
+          const cachedComments = await loadCachedFeedComments(currentUserId, post._id);
+          if (!cancelled && cachedComments) {
+            setComments(cachedComments.data || []);
+            setPage(cachedComments.page || 1);
+            setTotalPages(cachedComments.totalPages || 1);
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to hydrate cached comments", error);
+      } finally {
+        if (!cancelled) {
+          setCommentsCacheHydrated(true);
+        }
+      }
+    };
+
+    setText("");
+    setEditingComment(null);
+    setReplyingTo(null);
+    void hydrateComments();
+    void loadComments(1);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, loadComments, post?._id, visible]);
+
+  const handleCloseComments = useCallback(() => {
+    Keyboard.dismiss();
+    setEditingComment(null);
+    setReplyingTo(null);
+    setText("");
+    onClose();
+  }, [onClose]);
+
+  const startReply = useCallback(
+    (commentId: string, replyToUserId: string | undefined, nickname: string) => {
+      setEditingComment(null);
+      setReplyingTo({
+        commentId,
+        replyToUserId,
+        nickname,
+      });
+      setText("");
+    },
+    [],
+  );
+
+  const startEdit = useCallback(
+    (
+      item: {
+        _id: string;
+        content: string;
+      },
+      nickname: string,
+      kind: "comment" | "reply",
+    ) => {
+      setReplyingTo(null);
+      setEditingComment({
+        commentId: item._id,
+        nickname,
+        kind,
+      });
+      setText(item.content || "");
+    },
+    [],
+  );
+
+  const handleDeleteComment = useCallback(
+    (commentId: string) => {
+      if (!post?._id) {
+        return;
+      }
+
+      Alert.alert("Izohni o'chirish", "Bu amalni ortga qaytarib bo'lmaydi.", [
+        { text: "Bekor qilish", style: "cancel" },
+        {
+          text: "O'chirish",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              try {
+                const response = await postsApi.deleteComment(post._id, commentId);
+                if (editingComment?.commentId === commentId) {
+                  setEditingComment(null);
+                  setText("");
+                }
+                if (replyingTo?.commentId === commentId) {
+                  setReplyingTo(null);
+                }
+                onCountChange(post._id, response.comments);
+                await loadComments(1);
+              } catch (error) {
+                Alert.alert(
+                  "Izoh o'chirilmadi",
+                  error instanceof Error ? error.message : "Qaytadan urinib ko'ring.",
+                );
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [editingComment?.commentId, loadComments, onCountChange, post?._id, replyingTo?.commentId],
+  );
 
   const handleSubmit = async () => {
     if (!post?._id || !text.trim() || sending) return;
     setSending(true);
     try {
-      if (replyingTo) {
+      if (editingComment) {
+        await postsApi.updateComment(post._id, editingComment.commentId, text.trim());
+      } else if (replyingTo) {
         await postsApi.addReply(
           post._id,
           replyingTo.commentId,
@@ -720,6 +983,7 @@ function CommentsModal({
       }
 
       setText("");
+      setEditingComment(null);
       setReplyingTo(null);
       await loadComments(1);
     } finally {
@@ -731,11 +995,26 @@ function CommentsModal({
     <DraggableBottomSheet
       visible={visible}
       title="Izohlar"
-      onClose={onClose}
+      onClose={handleCloseComments}
       minHeight={540}
-      initialHeightRatio={0.82}
+      initialHeightRatio={0.94}
       footer={
         <View style={styles.commentInputWrap}>
+          {editingComment ? (
+            <View style={styles.replyingBar}>
+              <Text style={styles.replyingText}>
+                Tahrirlash: @{editingComment.nickname}
+              </Text>
+              <Pressable
+                onPress={() => {
+                  setEditingComment(null);
+                  setText("");
+                }}
+              >
+                <X size={14} color={Colors.mutedText} />
+              </Pressable>
+            </View>
+          ) : null}
           {replyingTo ? (
             <View style={styles.replyingBar}>
               <Text style={styles.replyingText}>Javob: @{replyingTo.nickname}</Text>
@@ -748,7 +1027,15 @@ function CommentsModal({
             <TextInput
               value={text}
               onChangeText={setText}
-              placeholder={replyingTo ? `@${replyingTo.nickname} ga javob...` : "Izoh yozing..."}
+              placeholder={
+                editingComment
+                  ? editingComment.kind === "reply"
+                    ? "Javobni tahrirlash..."
+                    : "Izohni tahrirlash..."
+                  : replyingTo
+                    ? `@${replyingTo.nickname} ga javob...`
+                    : "Izoh yozing..."
+              }
               placeholderTextColor={Colors.mutedText}
               style={styles.commentInput}
             />
@@ -774,15 +1061,17 @@ function CommentsModal({
         style={styles.commentsScroll}
         contentContainerStyle={styles.commentsContent}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         showsVerticalScrollIndicator={false}
       >
-              {loading && comments.length === 0 ? (
+              {!commentsCacheHydrated || (loading && comments.length === 0) ? (
                 <Text style={styles.commentsEmpty}>Yuklanmoqda...</Text>
               ) : comments.length === 0 ? (
                 <Text style={styles.commentsEmpty}>Hozircha izoh yo'q</Text>
               ) : (
                 comments.map((comment) => {
                   const name = comment.user?.nickname || comment.user?.username || "User";
+                  const isOwnComment = getEntityId(comment.user) === currentUserId;
 
                   return (
                     <View key={comment._id} style={styles.commentRow}>
@@ -801,19 +1090,36 @@ function CommentsModal({
                           <Text style={styles.commentTime}>{timeAgo(comment.createdAt)}</Text>
                           <Pressable
                             onPress={() =>
-                              setReplyingTo({
-                                commentId: comment._id,
-                                replyToUserId: comment.user?._id || comment.user?.id,
-                                nickname: name,
-                              })
+                              startReply(
+                                comment._id,
+                                comment.user?._id || comment.user?.id,
+                                name,
+                              )
                             }
                           >
                             <Text style={styles.replyAction}>Javob</Text>
                           </Pressable>
+                          {isOwnComment ? (
+                            <>
+                              <Pressable
+                                onPress={() => startEdit(comment, name, "comment")}
+                              >
+                                <Text style={styles.commentAction}>Tahrirlash</Text>
+                              </Pressable>
+                              <Pressable onPress={() => handleDeleteComment(comment._id)}>
+                                <Text
+                                  style={[styles.commentAction, styles.commentActionDanger]}
+                                >
+                                  O'chirish
+                                </Text>
+                              </Pressable>
+                            </>
+                          ) : null}
                         </View>
 
                         {comment.replies?.map((reply) => {
                           const replyName = reply.user?.nickname || reply.user?.username || "User";
+                          const isOwnReply = getEntityId(reply.user) === currentUserId;
 
                           return (
                             <View key={reply._id} style={styles.replyRow}>
@@ -834,6 +1140,28 @@ function CommentsModal({
                                   {reply.replyToUser ? `@${reply.replyToUser} ` : ""}
                                   {reply.content}
                                 </Text>
+                              </View>
+                              <View style={styles.replyMetaRow}>
+                                <Text style={styles.commentTime}>{timeAgo(reply.createdAt)}</Text>
+                                {isOwnReply ? (
+                                  <>
+                                    <Pressable
+                                      onPress={() => startEdit(reply, replyName, "reply")}
+                                    >
+                                      <Text style={styles.commentAction}>Tahrirlash</Text>
+                                    </Pressable>
+                                    <Pressable onPress={() => handleDeleteComment(reply._id)}>
+                                      <Text
+                                        style={[
+                                          styles.commentAction,
+                                          styles.commentActionDanger,
+                                        ]}
+                                      >
+                                        O'chirish
+                                      </Text>
+                                    </Pressable>
+                                  </>
+                                ) : null}
                               </View>
                             </View>
                           );
@@ -872,7 +1200,7 @@ function FeedPostCard({
   onImageInteractionChange?: (active: boolean) => void;
   onLike: (post: FeedPost) => void;
   onOpenComments: (post: FeedPost) => void;
-  onOpenImage: (image: FeedImage) => void;
+  onOpenImage: (images: FeedImage[], initialIndex: number) => void;
   onEdit: (post: FeedPost) => void;
   onDelete: (post: FeedPost) => void;
 }) {
@@ -950,12 +1278,11 @@ function FeedPostCard({
       ) : null}
 
       {post.content ? (
-        <Text
+        <FeedMarkdownText
           style={[styles.postText, hasImages && styles.postTextCompact]}
+          content={post.content}
           numberOfLines={expanded ? undefined : hasImages ? 3 : 8}
-        >
-          {post.content}
-        </Text>
+        />
       ) : null}
 
       {shouldClamp && !expanded ? (
@@ -1001,6 +1328,7 @@ function FeedPostCard({
 
 export function FeedScreen({ navigation }: Props) {
   const { width: screenWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const currentUser = useAuthStore((state) => state.user);
   const currentUserId = String(currentUser?._id || currentUser?.id || "");
   const queryClient = useQueryClient();
@@ -1008,13 +1336,30 @@ export function FeedScreen({ navigation }: Props) {
   const [composeOpen, setComposeOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<FeedPost | null>(null);
   const [commentPost, setCommentPost] = useState<FeedPost | null>(null);
-  const [lightboxImage, setLightboxImage] = useState<FeedImage | null>(null);
+  const [lightboxState, setLightboxState] = useState<FeedLightboxState | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [feedCacheHydrated, setFeedCacheHydrated] = useState(false);
   const viewedRef = useRef(new Set<string>());
   const pagerRef = useRef<ScrollView>(null);
+  const lightboxScrollRef = useRef<ScrollView>(null);
+  const forYouListRef = useRef<FlashListRef<FeedPost>>(null);
+  const followingListRef = useRef<FlashListRef<FeedPost>>(null);
   const pagerScrollX = useRef(new Animated.Value(0)).current;
   const currentIndexRef = useRef(0);
   const [tabsRowWidth, setTabsRowWidth] = useState(0);
   const [pagerScrollEnabled, setPagerScrollEnabled] = useState(true);
+  const savedTabScrollOffsetsRef = useRef<Record<FeedTab, number>>({
+    foryou: 0,
+    following: 0,
+  });
+  const pendingTabScrollRestoreRef = useRef<Record<FeedTab, number | null>>({
+    foryou: null,
+    following: null,
+  });
+  const tabScrollPersistTimeoutsRef = useRef<Record<FeedTab, ReturnType<typeof setTimeout> | null>>({
+    foryou: null,
+    following: null,
+  });
 
   const forYouQuery = useInfiniteQuery({
     queryKey: ["feed", "foryou"],
@@ -1031,6 +1376,8 @@ export function FeedScreen({ navigation }: Props) {
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       (lastPage.totalPages || 1) > lastPageParam ? lastPageParam + 1 : undefined,
   });
+  const hasForYouSnapshot = Boolean(forYouQuery.data);
+  const hasFollowingSnapshot = Boolean(followingQuery.data);
 
   const forYouPosts = useMemo(
     () => forYouQuery.data?.pages.flatMap((page) => page.data || []) || [],
@@ -1042,6 +1389,97 @@ export function FeedScreen({ navigation }: Props) {
   );
 
   useEffect(() => {
+    let cancelled = false;
+    setFeedCacheHydrated(false);
+
+    if (!currentUserId) {
+      setFeedCacheHydrated(true);
+      return;
+    }
+
+    const hydrateFeedCache = async () => {
+      try {
+        const [cachedForYou, cachedFollowing, cachedForYouOffset, cachedFollowingOffset, cachedTab] =
+          await Promise.all([
+            loadCachedFeedTab(currentUserId, "foryou"),
+            loadCachedFeedTab(currentUserId, "following"),
+            loadFeedScrollPosition(currentUserId, "foryou"),
+            loadFeedScrollPosition(currentUserId, "following"),
+            loadFeedLastActiveTab(currentUserId),
+          ]);
+
+        if (!cancelled && cachedForYou && !queryClient.getQueryData(["feed", "foryou"])) {
+          queryClient.setQueryData(["feed", "foryou"], cachedForYou);
+        }
+
+        if (!cancelled && cachedFollowing && !queryClient.getQueryData(["feed", "following"])) {
+          queryClient.setQueryData(["feed", "following"], cachedFollowing);
+        }
+
+        if (!cancelled) {
+          savedTabScrollOffsetsRef.current = {
+            foryou: typeof cachedForYouOffset === "number" ? cachedForYouOffset : 0,
+            following: typeof cachedFollowingOffset === "number" ? cachedFollowingOffset : 0,
+          };
+          pendingTabScrollRestoreRef.current = {
+            foryou: typeof cachedForYouOffset === "number" ? cachedForYouOffset : null,
+            following: typeof cachedFollowingOffset === "number" ? cachedFollowingOffset : null,
+          };
+
+          if (cachedTab) {
+            currentIndexRef.current = cachedTab === "following" ? 1 : 0;
+            setActiveTab(cachedTab);
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to hydrate cached feed", error);
+      } finally {
+        if (!cancelled) {
+          setFeedCacheHydrated(true);
+        }
+      }
+    };
+
+    void hydrateFeedCache();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, queryClient]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+
+    void saveFeedLastActiveTab(currentUserId, activeTab).catch((error) => {
+      console.warn("Failed to persist feed active tab", error);
+    });
+  }, [activeTab, currentUserId]);
+
+  useEffect(() => {
+    const snapshot = forYouQuery.data;
+    if (!currentUserId || !snapshot) {
+      return;
+    }
+
+    void saveCachedFeedTab(currentUserId, "foryou", snapshot).catch((error) => {
+      console.warn("Failed to persist for you feed cache", error);
+    });
+  }, [currentUserId, forYouQuery.data, hasForYouSnapshot]);
+
+  useEffect(() => {
+    const snapshot = followingQuery.data;
+    if (!currentUserId || !snapshot) {
+      return;
+    }
+
+    void saveCachedFeedTab(currentUserId, "following", snapshot).catch((error) => {
+      console.warn("Failed to persist following feed cache", error);
+    });
+  }, [currentUserId, followingQuery.data, hasFollowingSnapshot]);
+
+  useEffect(() => {
     const nextIndex = activeTab === "following" ? 1 : 0;
     currentIndexRef.current = nextIndex;
     requestAnimationFrame(() => {
@@ -1051,6 +1489,21 @@ export function FeedScreen({ navigation }: Props) {
       });
     });
   }, [activeTab, screenWidth]);
+
+  useEffect(() => {
+    if (!lightboxState) {
+      return;
+    }
+
+    setLightboxIndex(lightboxState.initialIndex);
+
+    requestAnimationFrame(() => {
+      lightboxScrollRef.current?.scrollTo({
+        x: lightboxState.initialIndex * Math.max(screenWidth, 1),
+        animated: false,
+      });
+    });
+  }, [lightboxState, screenWidth]);
 
   const updatePostAcrossFeeds = useCallback(
     (postId: string, updater: (post: FeedPost) => FeedPost) => {
@@ -1230,6 +1683,75 @@ export function FeedScreen({ navigation }: Props) {
     setPagerScrollEnabled(!active);
   }, []);
 
+  const handleOpenLightbox = useCallback((images: FeedImage[], initialIndex: number) => {
+    setLightboxState({ images, initialIndex });
+  }, []);
+
+  const handleCloseLightbox = useCallback(() => {
+    setLightboxState(null);
+    setLightboxIndex(0);
+  }, []);
+
+  const persistFeedScrollOffset = useCallback(
+    (tab: FeedTab) => {
+      if (!currentUserId) {
+        return;
+      }
+
+      const timeoutId = tabScrollPersistTimeoutsRef.current[tab];
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        tabScrollPersistTimeoutsRef.current[tab] = null;
+      }
+
+      void saveFeedScrollPosition(
+        currentUserId,
+        tab,
+        savedTabScrollOffsetsRef.current[tab],
+      ).catch((error) => {
+        console.warn("Failed to persist feed scroll position", error);
+      });
+    },
+    [currentUserId],
+  );
+
+  const scheduleFeedScrollOffsetPersist = useCallback(
+    (tab: FeedTab) => {
+      if (!currentUserId) {
+        return;
+      }
+
+      const timeoutId = tabScrollPersistTimeoutsRef.current[tab];
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+
+      tabScrollPersistTimeoutsRef.current[tab] = setTimeout(() => {
+        tabScrollPersistTimeoutsRef.current[tab] = null;
+        persistFeedScrollOffset(tab);
+      }, 180);
+    },
+    [currentUserId, persistFeedScrollOffset],
+  );
+
+  const handleFeedScroll = useCallback(
+    (tab: FeedTab, event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      savedTabScrollOffsetsRef.current[tab] = Math.max(
+        0,
+        event.nativeEvent.contentOffset?.y || 0,
+      );
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return () => {
+      (["foryou", "following"] as FeedTab[]).forEach((tab) => {
+        persistFeedScrollOffset(tab);
+      });
+    };
+  }, [persistFeedScrollOffset]);
+
   const indicatorTranslateX =
     tabsRowWidth > 0
       ? pagerScrollX.interpolate({
@@ -1245,9 +1767,26 @@ export function FeedScreen({ navigation }: Props) {
     query: typeof forYouQuery,
   ) => (
     <FlashList
+      ref={tab === "foryou" ? forYouListRef : followingListRef}
       data={posts}
       keyExtractor={(item) => item._id}
       drawDistance={600}
+      onLoad={() => {
+        const nextOffset = pendingTabScrollRestoreRef.current[tab];
+        const listRef = tab === "foryou" ? forYouListRef.current : followingListRef.current;
+        if (nextOffset !== null && listRef) {
+          savedTabScrollOffsetsRef.current[tab] = nextOffset;
+          listRef.scrollToOffset({
+            offset: nextOffset,
+            animated: false,
+          });
+          pendingTabScrollRestoreRef.current[tab] = null;
+        }
+      }}
+      onScroll={(event) => handleFeedScroll(tab, event)}
+      onScrollEndDrag={() => scheduleFeedScrollOffsetPersist(tab)}
+      onMomentumScrollEnd={() => scheduleFeedScrollOffsetPersist(tab)}
+      scrollEventThrottle={16}
       onEndReached={() => {
         if (query.hasNextPage && !query.isFetchingNextPage) {
           void query.fetchNextPage();
@@ -1266,10 +1805,21 @@ export function FeedScreen({ navigation }: Props) {
         </Pressable>
       }
       ListEmptyComponent={
-        query.isLoading ? (
+        !feedCacheHydrated || query.isLoading ? (
           <View style={styles.emptyState}>
             <ActivityIndicator color={Colors.primary} />
             <Text style={styles.emptyText}>Yuklanmoqda...</Text>
+          </View>
+        ) : query.isError ? (
+          <View style={styles.emptyState}>
+            <View style={styles.emptyIcon}>
+              <Text style={styles.emptyText}>Offline</Text>
+            </View>
+            <Text style={styles.emptyText}>
+              {query.error instanceof Error
+                ? query.error.message
+                : "Feedni yuklab bo'lmadi"}
+            </Text>
           </View>
         ) : (
           <View style={styles.emptyState}>
@@ -1302,7 +1852,7 @@ export function FeedScreen({ navigation }: Props) {
           onImageInteractionChange={handleImageInteractionChange}
           onLike={handleLike}
           onOpenComments={setCommentPost}
-          onOpenImage={setLightboxImage}
+          onOpenImage={handleOpenLightbox}
           onEdit={setEditingPost}
           onDelete={handleDeletePost}
         />
@@ -1433,21 +1983,76 @@ export function FeedScreen({ navigation }: Props) {
       />
 
       <Modal
-        visible={Boolean(lightboxImage)}
-        transparent
+        visible={Boolean(lightboxState)}
         animationType="fade"
-        onRequestClose={() => setLightboxImage(null)}
+        statusBarTranslucent
+        onRequestClose={handleCloseLightbox}
       >
-        <Pressable style={styles.lightboxOverlay} onPress={() => setLightboxImage(null)}>
-          {lightboxImage ? (
-            <PersistentCachedImage
-              remoteUri={lightboxImage.url}
-              blurDataUrl={lightboxImage.blurDataUrl}
-              style={styles.lightboxImage}
-              contentFit="contain"
-            />
+        <View style={styles.lightboxRoot}>
+          <ScrollView
+            ref={lightboxScrollRef}
+            horizontal
+            pagingEnabled
+            bounces={false}
+            showsHorizontalScrollIndicator={false}
+            style={styles.lightboxPager}
+            onMomentumScrollEnd={(event) => {
+              const nextIndex = Math.round(
+                event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
+              );
+              setLightboxIndex(
+                Math.max(0, Math.min(nextIndex, (lightboxState?.images.length || 1) - 1)),
+              );
+            }}
+          >
+            {(lightboxState?.images || []).map((image, index) => (
+              <View
+                key={`lightbox-${getFeedImageKey(image, index)}`}
+                style={[styles.lightboxSlide, { width: screenWidth }]}
+              >
+                <PersistentCachedImage
+                  remoteUri={image.url}
+                  blurDataUrl={image.blurDataUrl}
+                  style={styles.lightboxImage}
+                  contentFit="contain"
+                />
+              </View>
+            ))}
+          </ScrollView>
+
+          <View
+            style={[
+              styles.lightboxTopBar,
+              { top: Math.max(insets.top + 10, 16) },
+            ]}
+          >
+            <Text style={styles.lightboxCounter}>
+              {lightboxState?.images.length ? `${lightboxIndex + 1} / ${lightboxState.images.length}` : ""}
+            </Text>
+            <Pressable onPress={handleCloseLightbox} style={styles.lightboxCloseButton}>
+              <X size={20} color="#fff" />
+            </Pressable>
+          </View>
+
+          {(lightboxState?.images.length || 0) > 1 ? (
+            <View
+              style={[
+                styles.lightboxDots,
+                { bottom: Math.max(insets.bottom + 18, 26) },
+              ]}
+            >
+              {lightboxState?.images.map((image, index) => (
+                <View
+                  key={`lightbox-dot-${getFeedImageKey(image, index)}`}
+                  style={[
+                    styles.lightboxDot,
+                    index === lightboxIndex && styles.lightboxDotActive,
+                  ]}
+                />
+              ))}
+            </View>
           ) : null}
-        </Pressable>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1599,6 +2204,27 @@ const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 29,
     color: Colors.text,
+  },
+  feedMarkdownStrong: {
+    fontWeight: "800",
+    color: Colors.text,
+  },
+  feedMarkdownEm: {
+    fontStyle: "italic",
+    color: Colors.text,
+  },
+  feedMarkdownUnderline: {
+    textDecorationLine: "underline",
+    color: Colors.text,
+  },
+  feedMarkdownCode: {
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+    backgroundColor: Colors.input,
+    color: Colors.text,
+  },
+  feedMarkdownLink: {
+    color: Colors.primary,
+    textDecorationLine: "underline",
   },
   postTextCompact: {
     fontSize: 16,
@@ -1973,10 +2599,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 14,
+    flexWrap: "wrap",
   },
   commentTime: {
     color: Colors.subtleText,
     fontSize: 12,
+  },
+  commentAction: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  commentActionDanger: {
+    color: Colors.danger,
   },
   replyAction: {
     color: Colors.primary,
@@ -1996,6 +2631,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     gap: 4,
+  },
+  replyMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    flexWrap: "wrap",
+    marginTop: 4,
+    marginLeft: 4,
   },
   moreCommentsButton: {
     alignSelf: "center",
@@ -2048,16 +2691,66 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  lightboxOverlay: {
+  lightboxRoot: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.92)",
+    backgroundColor: "#000",
+  },
+  lightboxPager: {
+    flex: 1,
+  },
+  lightboxSlide: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 20,
   },
   lightboxImage: {
     width: "100%",
-    height: "80%",
-    borderRadius: 18,
+    height: "100%",
+    backgroundColor: "#000",
+  },
+  lightboxTopBar: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  lightboxCounter: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.42)",
+  },
+  lightboxCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.42)",
+  },
+  lightboxDots: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  lightboxDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.38)",
+  },
+  lightboxDotActive: {
+    width: 10,
+    height: 10,
+    backgroundColor: "#fff",
   },
 });

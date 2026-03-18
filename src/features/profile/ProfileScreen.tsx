@@ -15,7 +15,10 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import {
+  AlertCircle,
   Calendar,
+  Camera,
+  Check,
   ChevronRight,
   Eye,
   Globe,
@@ -32,19 +35,23 @@ import {
   Shield,
   Sparkles,
   Trash2,
+  X,
 } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
+import { APP_LIMITS, countWords } from "../../constants/appLimits";
 import {
   articlesApi,
   coursesApi,
   postsApi,
   usersApi,
 } from "../../lib/api";
+import { setAppUnlockToken } from "../../lib/session";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -118,7 +125,10 @@ const UTILITY_TABS: Array<{
   { key: "learn", label: "O'rganish", icon: Sparkles, color: "#8b5cf6" },
 ];
 
-const POST_WORD_LIMIT = 100;
+const PROFILE_HEADER_FADE_START = 126;
+const PROFILE_HEADER_FADE_END = 252;
+const PROFILE_SUMMARY_FADE_START = 32;
+const PROFILE_SUMMARY_FADE_END = 196;
 
 function formatJoinedDate(value?: string | null) {
   if (!value) return "";
@@ -144,11 +154,31 @@ function formatPostDate(value?: string) {
   })}`;
 }
 
-function countWords(value = "") {
-  return String(value)
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
+function formatPhone(value = "") {
+  const raw = String(value || "").trim();
+  const digits = raw.replace(/\D/g, "");
+
+  if (!digits.length) {
+    return "+998";
+  }
+
+  let localDigits = digits;
+  if (localDigits.startsWith("998")) {
+    localDigits = localDigits.slice(3);
+  }
+  localDigits = localDigits.slice(0, 9);
+
+  let formatted = "+998";
+  if (localDigits.length > 0) formatted += ` ${localDigits.slice(0, 2)}`;
+  if (localDigits.length > 2) formatted += ` ${localDigits.slice(2, 5)}`;
+  if (localDigits.length > 5) formatted += ` ${localDigits.slice(5, 7)}`;
+  if (localDigits.length > 7) formatted += ` ${localDigits.slice(7, 9)}`;
+
+  return formatted;
+}
+
+function normalizePhoneForPayload(value = "") {
+  return String(value || "").replace(/\s/g, "");
 }
 
 function ProfilePaneHeader({
@@ -279,7 +309,7 @@ function ProfilePostComposerModal({
   const usedWords = countWords(text);
 
   const handleSubmit = async () => {
-    if (!text.trim() || saving || usedWords > POST_WORD_LIMIT) {
+    if (!text.trim() || saving || usedWords > APP_LIMITS.postWords) {
       return;
     }
 
@@ -312,7 +342,7 @@ function ProfilePostComposerModal({
             placeholderTextColor={Colors.subtleText}
             style={styles.modalInput}
             multiline
-            maxLength={3000}
+            maxLength={APP_LIMITS.postDraftChars}
             autoFocus
           />
 
@@ -320,18 +350,18 @@ function ProfilePostComposerModal({
             <Text
               style={[
                 styles.modalCounter,
-                usedWords > POST_WORD_LIMIT && styles.modalCounterDanger,
+                usedWords > APP_LIMITS.postWords && styles.modalCounterDanger,
               ]}
             >
-              {usedWords}/{POST_WORD_LIMIT}
+              {usedWords}/{APP_LIMITS.postWords}
             </Text>
             <Pressable
               style={[
                 styles.primaryButton,
-                (!text.trim() || saving || usedWords > POST_WORD_LIMIT) &&
+                (!text.trim() || saving || usedWords > APP_LIMITS.postWords) &&
                   styles.primaryButtonDisabled,
               ]}
-              disabled={!text.trim() || saving || usedWords > POST_WORD_LIMIT}
+              disabled={!text.trim() || saving || usedWords > APP_LIMITS.postWords}
               onPress={handleSubmit}
             >
               {saving ? (
@@ -342,6 +372,330 @@ function ProfilePostComposerModal({
                 </Text>
               )}
             </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function ProfileEditModal({
+  visible,
+  user,
+  onClose,
+  onSaved,
+}: {
+  visible: boolean;
+  user: User | null;
+  onClose: () => void;
+  onSaved: (nextUser: User) => Promise<void>;
+}) {
+  const [profile, setProfile] = useState({
+    nickname: "",
+    username: "",
+    phone: "+998",
+    avatar: "",
+    bio: "",
+    premiumStatus: "none",
+  });
+  const [initialProfile, setInitialProfile] = useState({
+    nickname: "",
+    username: "",
+    phone: "+998",
+    avatar: "",
+    bio: "",
+    premiumStatus: "none",
+  });
+  const [pendingAvatarUri, setPendingAvatarUri] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<null | "ok" | string>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+
+    const normalized = {
+      nickname: user?.nickname || "",
+      username: user?.username || "",
+      phone: formatPhone(user?.phone || ""),
+      avatar: user?.avatar || "",
+      bio: user?.bio || "",
+      premiumStatus: user?.premiumStatus || "none",
+    };
+    setProfile(normalized);
+    setInitialProfile(normalized);
+    setPendingAvatarUri("");
+    setSaving(false);
+    setUploadingAvatar(false);
+    setSaveStatus(null);
+  }, [user, visible]);
+
+  const hasChanges =
+    profile.nickname !== initialProfile.nickname ||
+    profile.username !== initialProfile.username ||
+    profile.bio !== initialProfile.bio ||
+    normalizePhoneForPayload(profile.phone) !== normalizePhoneForPayload(initialProfile.phone) ||
+    Boolean(pendingAvatarUri);
+
+  const validate = () => {
+    if (profile.nickname && (profile.nickname.length < 3 || profile.nickname.length > 30)) {
+      return "Nickname 3 tadan 30 tagacha bo'lishi kerak.";
+    }
+
+    if (profile.username && !/^[a-zA-Z0-9]{8,24}$/.test(profile.username)) {
+      return "Username 8-24 ta harf va raqamdan iborat bo'lishi kerak.";
+    }
+
+    if ((profile.bio || "").length > APP_LIMITS.bioChars) {
+      return `Bio ko'pi bilan ${APP_LIMITS.bioChars} belgi bo'lishi kerak.`;
+    }
+
+    if (profile.phone && !/^\+998 \d{2} \d{3} \d{2} \d{2}$/.test(profile.phone)) {
+      return "Telefon raqam +998 XX XXX XX XX formatida bo'lishi kerak.";
+    }
+
+    return null;
+  };
+
+  const handlePickAvatar = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Ruxsat kerak", "Avatar tanlash uchun media kutubxonasiga ruxsat bering.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.9,
+    });
+
+    if (result.canceled || !result.assets?.[0]?.uri) {
+      return;
+    }
+
+    const asset = result.assets[0];
+    if ((asset.fileSize || 0) > 2 * 1024 * 1024) {
+      Alert.alert("Fayl juda katta", "Avatar hajmi maksimum 2MB bo'lishi kerak.");
+      return;
+    }
+
+    setPendingAvatarUri(asset.uri);
+  };
+
+  const handleSave = async () => {
+    if (saving || uploadingAvatar) return;
+
+    const error = validate();
+    if (error) {
+      setSaveStatus(error);
+      return;
+    }
+
+    if (!hasChanges) {
+      onClose();
+      return;
+    }
+
+    setSaving(true);
+    setSaveStatus(null);
+    try {
+      const payload: {
+        nickname?: string;
+        username?: string;
+        phone?: string;
+        bio?: string;
+        avatar?: string;
+      } = {};
+
+      if (profile.nickname !== initialProfile.nickname) {
+        payload.nickname = profile.nickname;
+      }
+      if (profile.username !== initialProfile.username) {
+        payload.username = profile.username;
+      }
+      if (profile.bio !== initialProfile.bio) {
+        payload.bio = profile.bio || "";
+      }
+      if (
+        normalizePhoneForPayload(profile.phone) !== normalizePhoneForPayload(initialProfile.phone)
+      ) {
+        payload.phone = normalizePhoneForPayload(profile.phone);
+      }
+      if (pendingAvatarUri) {
+        setUploadingAvatar(true);
+        const response = await usersApi.uploadAvatar(pendingAvatarUri);
+        payload.avatar = response.avatar || "";
+      }
+
+      const updatedUser =
+        Object.keys(payload).length > 0 ? await usersApi.updateMe(payload) : (user as User);
+      await onSaved(updatedUser);
+      setSaveStatus("ok");
+      setTimeout(() => {
+        onClose();
+      }, 320);
+    } catch (error) {
+      setSaveStatus(error instanceof Error ? error.message : "Saqlashda xatolik yuz berdi.");
+    } finally {
+      setSaving(false);
+      setUploadingAvatar(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalOverlayStrong} onPress={onClose}>
+        <Pressable style={styles.profileEditCard} onPress={(event) => event.stopPropagation()}>
+          <View style={styles.profileEditHeader}>
+            <Text style={styles.profileEditTitle}>Profilni tahrirlash</Text>
+            <Pressable style={styles.profileEditClose} onPress={onClose}>
+              <X size={18} color={Colors.text} />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.profileEditBody}
+            contentContainerStyle={styles.profileEditBodyContent}
+            showsVerticalScrollIndicator={false}
+          >
+            <Pressable style={styles.profileEditAvatarWrap} onPress={() => void handlePickAvatar()}>
+              <Avatar
+                label={profile.nickname || profile.username || "?"}
+                uri={pendingAvatarUri || profile.avatar}
+                size={92}
+                shape="circle"
+              />
+              <View style={styles.profileEditAvatarOverlay}>
+                {uploadingAvatar ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Camera size={20} color="#fff" />
+                )}
+              </View>
+            </Pressable>
+
+            <View style={styles.profileEditField}>
+              <View style={styles.profileEditLabelRow}>
+                <Text style={styles.profileEditLabel}>Nickname</Text>
+                {profile.premiumStatus === "active" ? (
+                  <View style={styles.profileEditPremiumBadge}>
+                    <Text style={styles.profileEditPremiumBadgeText}>Premium</Text>
+                  </View>
+                ) : null}
+              </View>
+              <TextInput
+                value={profile.nickname}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    nickname: value.slice(0, APP_LIMITS.nicknameChars),
+                  }))
+                }
+                placeholder="Nickname"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditInput}
+              />
+            </View>
+
+            <View style={styles.profileEditField}>
+              <Text style={styles.profileEditLabel}>Username</Text>
+              <TextInput
+                value={profile.username}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    username: value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9]/g, "")
+                      .slice(0, APP_LIMITS.usernameChars),
+                  }))
+                }
+                placeholder="username"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditInput}
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View style={styles.profileEditField}>
+              <View style={styles.profileEditCounterRow}>
+                <Text style={styles.profileEditLabel}>Haqida (Bio)</Text>
+                <Text
+                  style={[
+                    styles.profileEditCounter,
+                    (profile.bio?.length || 0) > APP_LIMITS.bioChars &&
+                      styles.profileEditCounterDanger,
+                  ]}
+                >
+                  {profile.bio?.length || 0}/{APP_LIMITS.bioChars}
+                </Text>
+              </View>
+              <TextInput
+                value={profile.bio || ""}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    bio: value.slice(0, APP_LIMITS.bioChars),
+                  }))
+                }
+                placeholder="O'zingiz haqingizda qisqacha yozing..."
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditTextArea}
+                multiline
+              />
+            </View>
+
+            <View style={styles.profileEditField}>
+              <Text style={styles.profileEditLabel}>Telefon raqam</Text>
+              <TextInput
+                value={profile.phone || "+998"}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    phone: formatPhone(value),
+                  }))
+                }
+                placeholder="+998 90 000 00 00"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditInput}
+                keyboardType="phone-pad"
+              />
+            </View>
+          </ScrollView>
+
+          <View style={styles.profileEditSaveBar}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                (!hasChanges || saving || uploadingAvatar) && styles.primaryButtonDisabled,
+              ]}
+              disabled={!hasChanges || saving || uploadingAvatar}
+              onPress={() => void handleSave()}
+            >
+              {saving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <View style={styles.profileEditSaveInner}>
+                  <Check size={14} color="#fff" />
+                  <Text style={styles.primaryButtonText}>Saqlash</Text>
+                </View>
+              )}
+            </Pressable>
+            {saveStatus === "ok" ? (
+              <View style={styles.profileEditStatus}>
+                <Check size={13} color={Colors.accent} />
+                <Text style={styles.profileEditStatusText}>Muvaffaqiyatli saqlandi</Text>
+              </View>
+            ) : saveStatus ? (
+              <View style={styles.profileEditStatus}>
+                <AlertCircle size={13} color={Colors.danger} />
+                <Text style={[styles.profileEditStatusText, styles.profileEditStatusTextError]}>
+                  {saveStatus}
+                </Text>
+              </View>
+            ) : null}
           </View>
         </Pressable>
       </Pressable>
@@ -390,7 +744,7 @@ function SecurityPinModal({
             keyboardType="number-pad"
             secureTextEntry
             style={styles.securityInput}
-            maxLength={8}
+            maxLength={4}
             autoFocus
           />
           <View style={styles.securityActions}>
@@ -428,6 +782,7 @@ export function ProfileScreen({ navigation }: Props) {
   const [paneVisible, setPaneVisible] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<FeedPost | null>(null);
+  const [profileEditOpen, setProfileEditOpen] = useState(false);
   const [securityModalOpen, setSecurityModalOpen] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState("uz");
   const paneTranslateX = useRef(new Animated.Value(screenWidth)).current;
@@ -521,13 +876,43 @@ export function ProfileScreen({ navigation }: Props) {
   const appLockMutation = useMutation({
     mutationFn: async (pin: string) => {
       if (appLockQuery.data?.enabled) {
-        return usersApi.removeAppLockPin({ pin });
+        const response = await usersApi.removeAppLockPin({ pin });
+        return {
+          ...response,
+          unlockToken: null,
+        };
       }
 
-      return usersApi.setAppLockPin({ pin });
+      const response = await usersApi.setAppLockPin({ pin });
+      let unlockToken: string | null = null;
+
+      try {
+        const verification = await usersApi.verifyAppLockPin({ pin });
+        if (verification?.valid && verification.unlockToken) {
+          unlockToken = verification.unlockToken;
+        }
+      } catch {
+        unlockToken = null;
+      }
+
+      return {
+        ...response,
+        unlockToken,
+      };
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setSecurityModalOpen(false);
+      const appLockEnabled = Boolean(result.enabled);
+      await setAppUnlockToken(result.unlockToken || null);
+      if (user) {
+        setUser({
+          ...user,
+          appLockEnabled,
+          appLockSessionUnlocked: appLockEnabled
+            ? Boolean(result.unlockToken)
+            : true,
+        });
+      }
       await queryClient.invalidateQueries({ queryKey: ["app-lock"] });
     },
   });
@@ -553,28 +938,28 @@ export function ProfileScreen({ navigation }: Props) {
     [articlesQuery.data?.length, ownedCourses.length, postsQuery.data?.length, user?.followersCount],
   );
   const headerProgress = profileScrollY.interpolate({
-    inputRange: [84, 170],
+    inputRange: [PROFILE_HEADER_FADE_START, PROFILE_HEADER_FADE_END],
     outputRange: [0, 1],
     extrapolate: "clamp",
   });
   const headerBackdropOpacity = profileScrollY.interpolate({
-    inputRange: [56, 148],
+    inputRange: [PROFILE_HEADER_FADE_START - 24, PROFILE_HEADER_FADE_END - 18],
     outputRange: [0, 1],
     extrapolate: "clamp",
   });
   const headerContentTranslateY = profileScrollY.interpolate({
-    inputRange: [84, 170],
-    outputRange: [12, 0],
+    inputRange: [PROFILE_HEADER_FADE_START, PROFILE_HEADER_FADE_END],
+    outputRange: [16, 0],
     extrapolate: "clamp",
   });
   const summaryOpacity = profileScrollY.interpolate({
-    inputRange: [0, 112],
-    outputRange: [1, 0.18],
+    inputRange: [PROFILE_SUMMARY_FADE_START, PROFILE_SUMMARY_FADE_END],
+    outputRange: [1, 0.08],
     extrapolate: "clamp",
   });
   const summaryTranslateY = profileScrollY.interpolate({
-    inputRange: [0, 160],
-    outputRange: [0, -26],
+    inputRange: [PROFILE_SUMMARY_FADE_START, PROFILE_SUMMARY_FADE_END + 20],
+    outputRange: [0, -22],
     extrapolate: "clamp",
   });
 
@@ -604,6 +989,13 @@ export function ProfileScreen({ navigation }: Props) {
   const handleLogout = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await logout();
+  };
+
+  const handleProfileSaved = async (updatedUser: User) => {
+    setUser(updatedUser);
+    await queryClient.invalidateQueries({ queryKey: ["profile-decorations"] });
+    await queryClient.invalidateQueries({ queryKey: ["liked-posts"] });
+    await queryClient.invalidateQueries({ queryKey: ["liked-articles"] });
   };
 
   const openPane = (tab: Exclude<ProfileTab, null>) => {
@@ -716,7 +1108,7 @@ export function ProfileScreen({ navigation }: Props) {
           <View style={styles.coverShade} />
           <Pressable
             style={styles.coverAction}
-            onPress={() => openPane("appearance")}
+            onPress={() => setProfileEditOpen(true)}
           >
             <Pencil size={15} color="#fff" />
           </Pressable>
@@ -765,38 +1157,52 @@ export function ProfileScreen({ navigation }: Props) {
 
       <View style={styles.tabRailContent}>
         <View style={styles.tabCard}>
-          {PRIMARY_TABS.map((item) => {
+          {PRIMARY_TABS.map((item, index) => {
             const Icon = item.icon;
+            const isActive = activeTab === item.key;
             return (
               <Pressable
                 key={item.key}
-                style={styles.tabRow}
+                style={[styles.tabRow, isActive && styles.tabRowActive]}
                 onPress={() => openPane(item.key)}
               >
-                <View style={[styles.tabIcon, { backgroundColor: Colors.input }]}>
-                  <Icon size={15} color={item.color} />
+                <View
+                  style={[
+                    styles.tabIcon,
+                    isActive ? styles.tabIconActive : null,
+                  ]}
+                >
+                  <Icon size={15} color={isActive ? Colors.text : Colors.mutedText} />
                 </View>
                 <Text style={styles.tabLabel}>{item.label}</Text>
-                <ChevronRight size={16} color={Colors.subtleText} />
+                <ChevronRight size={16} color={Colors.subtleText} style={styles.tabChevron} />
+                {index < PRIMARY_TABS.length - 1 ? <View style={styles.tabDivider} /> : null}
               </Pressable>
             );
           })}
         </View>
 
         <View style={styles.tabCard}>
-          {UTILITY_TABS.map((item) => {
+          {UTILITY_TABS.map((item, index) => {
             const Icon = item.icon;
+            const isActive = activeTab === item.key;
             return (
               <Pressable
                 key={item.key}
-                style={styles.tabRow}
+                style={[styles.tabRow, isActive && styles.tabRowActive]}
                 onPress={() => openPane(item.key)}
               >
-                <View style={[styles.tabIcon, { backgroundColor: Colors.input }]}>
-                  <Icon size={15} color={item.color} />
+                <View
+                  style={[
+                    styles.tabIcon,
+                    isActive ? styles.tabIconActive : null,
+                  ]}
+                >
+                  <Icon size={15} color={isActive ? Colors.text : Colors.mutedText} />
                 </View>
                 <Text style={styles.tabLabel}>{item.label}</Text>
-                <ChevronRight size={16} color={Colors.subtleText} />
+                <ChevronRight size={16} color={Colors.subtleText} style={styles.tabChevron} />
+                {index < UTILITY_TABS.length - 1 ? <View style={styles.tabDivider} /> : null}
               </Pressable>
             );
           })}
@@ -806,7 +1212,7 @@ export function ProfileScreen({ navigation }: Props) {
           <View style={styles.footerRow}>
             <View>
               <Text style={styles.footerTitle}>App version</Text>
-              <Text style={styles.footerSubtitle}>Native mobile build</Text>
+              <Text style={styles.footerSubtitle}>Current production version</Text>
             </View>
             <Text style={styles.versionBadge}>Expo</Text>
           </View>
@@ -1445,6 +1851,13 @@ export function ProfileScreen({ navigation }: Props) {
         onSubmit={handleCreateOrUpdatePost}
       />
 
+      <ProfileEditModal
+        visible={profileEditOpen}
+        user={user}
+        onClose={() => setProfileEditOpen(false)}
+        onSaved={handleProfileSaved}
+      />
+
       <SecurityPinModal
         visible={securityModalOpen}
         enabled={Boolean(appLockQuery.data?.enabled)}
@@ -1517,9 +1930,7 @@ const styles = StyleSheet.create({
   overviewContent: {
     paddingBottom: 120,
   },
-  tabRailContent: {
-    paddingBottom: 110,
-  },
+
   cover: {
     height: 132,
     backgroundColor: Colors.primary,
@@ -1620,6 +2031,9 @@ const styles = StyleSheet.create({
     color: Colors.mutedText,
     fontSize: 12,
   },
+  tabRailContent: {
+    paddingBottom: 20,
+  },
   tabCard: {
     marginHorizontal: 14,
     marginTop: 14,
@@ -1632,11 +2046,14 @@ const styles = StyleSheet.create({
   tabRow: {
     minHeight: 52,
     flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 10,
+    position: "relative",
     paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    paddingVertical: 10,
+  },
+  tabRowActive: {
+    backgroundColor: Colors.hover,
   },
   tabIcon: {
     width: 28,
@@ -1644,16 +2061,41 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    flexShrink: 0,
+  },
+  tabIconActive: {
+    backgroundColor: Colors.hover,
   },
   tabLabel: {
     flex: 1,
     color: Colors.text,
     fontSize: 14,
     fontWeight: "500",
+    lineHeight: 18,
+    paddingTop: 3,
+    textAlign: "left",
+  },
+  tabChevron: {
+    opacity: 0.5,
+    marginTop: 5,
+    flexShrink: 0,
+  },
+  tabDivider: {
+    position: "absolute",
+    left: 52,
+    right: 0,
+    bottom: 0,
+    height: 1,
+    backgroundColor: Colors.border,
+    opacity: 0.3,
   },
   footerCard: {
     marginHorizontal: 14,
     marginTop: 14,
+    marginBottom: 18,
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: 12,
@@ -2166,6 +2608,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 20,
   },
+  modalOverlayStrong: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.78)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
   modalCard: {
     width: "100%",
     maxWidth: 420,
@@ -2175,6 +2624,144 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     padding: 16,
     gap: 14,
+  },
+  profileEditCard: {
+    width: "100%",
+    maxWidth: 560,
+    maxHeight: "88%",
+    borderRadius: 22,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: "hidden",
+  },
+  profileEditHeader: {
+    minHeight: 60,
+    paddingHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  profileEditTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  profileEditClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileEditBody: {
+    flexGrow: 0,
+  },
+  profileEditBodyContent: {
+    paddingHorizontal: 20,
+    paddingTop: 22,
+    paddingBottom: 24,
+  },
+  profileEditAvatarWrap: {
+    width: 92,
+    height: 92,
+    alignSelf: "flex-start",
+    marginBottom: 22,
+  },
+  profileEditAvatarOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 46,
+    backgroundColor: "rgba(0,0,0,0.52)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileEditField: {
+    marginBottom: 18,
+  },
+  profileEditLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 6,
+  },
+  profileEditLabel: {
+    color: Colors.mutedText,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  profileEditInput: {
+    width: "100%",
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    color: Colors.text,
+    fontSize: 14,
+    paddingHorizontal: 14,
+  },
+  profileEditTextArea: {
+    width: "100%",
+    minHeight: 76,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    color: Colors.text,
+    fontSize: 14,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    textAlignVertical: "top",
+  },
+  profileEditCounterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  profileEditCounter: {
+    color: Colors.mutedText,
+    fontSize: 11,
+  },
+  profileEditCounterDanger: {
+    color: Colors.danger,
+  },
+  profileEditPremiumBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(250,166,26,0.14)",
+  },
+  profileEditPremiumBadgeText: {
+    color: "#faa61a",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  profileEditSaveBar: {
+    paddingHorizontal: 20,
+    paddingBottom: 22,
+    gap: 12,
+  },
+  profileEditSaveInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  profileEditStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  profileEditStatusText: {
+    color: Colors.accent,
+    fontSize: 13,
+  },
+  profileEditStatusTextError: {
+    color: Colors.danger,
   },
   modalHeader: {
     flexDirection: "row",

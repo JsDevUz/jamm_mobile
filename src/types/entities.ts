@@ -19,6 +19,8 @@ export type User = {
   officialBadgeLabel?: string | null;
   officialBadgeKey?: string | null;
   disableGroupInvites?: boolean;
+  appLockEnabled?: boolean;
+  appLockSessionUnlocked?: boolean;
   followersCount?: number;
   followingCount?: number;
   isFollowing?: boolean;
@@ -95,4 +97,13 @@ export type PaginatedMessages = {
   data?: Message[];
   nextCursor?: string | null;
   hasMore?: boolean;
+};
+
+export type MeetSummary = {
+  _id?: string;
+  roomId: string;
+  title: string;
+  creator?: string;
+  isPrivate?: boolean;
+  createdAt?: string;
 };

@@ -4,6 +4,7 @@ import {
   Alert,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -11,6 +12,7 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { io, type Socket } from "socket.io-client";
+import { Image } from "expo-image";
 import {
   CameraOff,
   Camera as CameraIcon,
@@ -18,6 +20,8 @@ import {
   MicOff,
   PhoneOff,
   RefreshCcw,
+  Shield,
+  Timer,
 } from "lucide-react-native";
 import {
   mediaDevices,
@@ -29,7 +33,12 @@ import {
   type MediaStream,
 } from "react-native-webrtc";
 import { chatsApi } from "../../lib/api";
-import { buildSocketNamespaceUrl } from "../../config/env";
+import {
+  buildSocketNamespaceUrl,
+  TURN_CREDENTIAL,
+  TURN_URLS,
+  TURN_USERNAME,
+} from "../../config/env";
 import { realtime } from "../../lib/realtime";
 import { getAuthToken } from "../../lib/session";
 import type { RootStackParamList } from "../../navigation/types";
@@ -44,7 +53,28 @@ type Props = NativeStackScreenProps<RootStackParamList, "PrivateMeet">;
 const ICE_CONFIG = {
   iceServers: [
     { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+    ...(TURN_URLS.length > 0
+      ? [
+          {
+            urls: TURN_URLS,
+            username: TURN_USERNAME,
+            credential: TURN_CREDENTIAL,
+          },
+        ]
+      : []),
   ],
+};
+
+const formatDuration = (elapsedSeconds: number) => {
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+
+  if (hours > 0) {
+    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+  }
+
+  return [minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
 };
 
 export function PrivateMeetScreen({ navigation, route }: Props) {
@@ -54,32 +84,85 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const remoteUserId = getEntityId(remoteUser);
   const displayName =
     currentUser?.nickname || currentUser?.username || currentUser?.email || "User";
+  const remoteDisplayName =
+    remoteUser.nickname || remoteUser.username || remoteUser.email || title || "User";
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
   const [callStatus, setCallStatus] = useState(
-    isCaller ? "Qo'ng'iroq yuborilmoqda..." : "Ulanmoqda...",
+    isCaller ? "Private qo'ng'iroq yuborilmoqda..." : "Private qo'ng'iroqqa ulanmoqda...",
   );
   const [loadingMedia, setLoadingMedia] = useState(true);
+  const [roomTitle, setRoomTitle] = useState(title || "Private meet");
+  const [roomIsPrivate, setRoomIsPrivate] = useState(true);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const socketRef = useRef<Socket | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remotePeerIdRef = useRef<string | null>(null);
+  const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([]);
+  const pendingKnockPeerIdRef = useRef<string | null>(null);
+  const remoteAcceptedRef = useRef(!isCaller);
   const hangupStartedRef = useRef(false);
   const callRequestSentRef = useRef(false);
+  const callConnectedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     localStreamRef.current = localStream;
   }, [localStream]);
 
+  useEffect(() => {
+    if (callStatus !== "Ulandi") {
+      callConnectedAtRef.current = null;
+      setElapsedSeconds(0);
+      return;
+    }
+
+    if (!callConnectedAtRef.current) {
+      callConnectedAtRef.current = Date.now();
+    }
+
+    const interval = setInterval(() => {
+      if (!callConnectedAtRef.current) {
+        return;
+      }
+
+      setElapsedSeconds(
+        Math.max(0, Math.floor((Date.now() - callConnectedAtRef.current) / 1000)),
+      );
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [callStatus]);
+
   const cleanupPeerConnection = useCallback(() => {
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
     remotePeerIdRef.current = null;
+    pendingIceCandidatesRef.current = [];
+    pendingKnockPeerIdRef.current = null;
     setRemoteStream(null);
+  }, []);
+
+  const flushPendingIceCandidates = useCallback(async () => {
+    const connection = peerConnectionRef.current;
+    if (!connection?.remoteDescription || !pendingIceCandidatesRef.current.length) {
+      return;
+    }
+
+    const queuedCandidates = [...pendingIceCandidatesRef.current];
+    pendingIceCandidatesRef.current = [];
+
+    for (const candidate of queuedCandidates) {
+      try {
+        await connection.addIceCandidate(candidate);
+      } catch {
+        continue;
+      }
+    }
   }, []);
 
   const cleanupCall = useCallback(
@@ -101,6 +184,9 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
       setLocalStream(null);
+      setRemoteStream(null);
+      setElapsedSeconds(0);
+      callConnectedAtRef.current = null;
 
       if (isCaller && chatId) {
         void chatsApi.endVideoCall(chatId).catch(() => undefined);
@@ -251,7 +337,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
       const socket = io(buildSocketNamespaceUrl("/video"), {
         auth: { token: authToken },
-        transports: ["websocket", "polling"],
+        transports: ["websocket"],
         withCredentials: true,
         reconnection: true,
         reconnectionAttempts: 10,
@@ -265,8 +351,8 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           socket.emit("create-room", {
             roomId,
             displayName,
-            isPrivate: false,
-            title,
+            isPrivate: true,
+            title: title || "Private meet",
           });
         } else {
           socket.emit("join-room", {
@@ -286,6 +372,40 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         setCallStatus("Javob kutilmoqda...");
       });
 
+      socket.on("room-info", ({ title: nextTitle, isPrivate: nextIsPrivate }) => {
+        if (typeof nextTitle === "string" && nextTitle.trim()) {
+          setRoomTitle(nextTitle.trim());
+        }
+        if (typeof nextIsPrivate === "boolean") {
+          setRoomIsPrivate(nextIsPrivate);
+        }
+      });
+
+      socket.on("knock-request", ({ peerId }) => {
+        if (!isCaller || !peerId) {
+          return;
+        }
+
+        const normalizedPeerId = String(peerId);
+        if (!remoteAcceptedRef.current) {
+          pendingKnockPeerIdRef.current = normalizedPeerId;
+          return;
+        }
+
+        socket.emit("approve-knock", {
+          roomId,
+          peerId: normalizedPeerId,
+        });
+      });
+
+      socket.on("waiting-for-approval", () => {
+        setCallStatus("Qabul tasdiqlanmoqda...");
+      });
+
+      socket.on("knock-approved", () => {
+        setCallStatus("Ulanmoqda...");
+      });
+
       socket.on("existing-peers", ({ peers }) => {
         const nextPeer = Array.isArray(peers)
           ? peers.find((peer) => String(peer?.peerId || "") && String(peer.peerId) !== socket.id)
@@ -295,21 +415,38 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           return;
         }
 
+        remotePeerIdRef.current = String(nextPeer.peerId);
         setCallStatus("Ulanmoqda...");
-        void createOfferForPeer(String(nextPeer.peerId));
+        if (isCaller && remoteAcceptedRef.current) {
+          void createOfferForPeer(String(nextPeer.peerId));
+        }
       });
 
       socket.on("peer-joined", ({ peerId }) => {
         if (peerId) {
           remotePeerIdRef.current = String(peerId);
           setCallStatus("Ulanmoqda...");
+          if (isCaller && remoteAcceptedRef.current) {
+            void createOfferForPeer(String(peerId));
+          }
         }
       });
 
       socket.on("offer", async ({ senderId, sdp }) => {
         try {
           const connection = createPeerConnection(String(senderId));
-          await connection.setRemoteDescription(new RTCSessionDescription(sdp));
+          const nextDescription = new RTCSessionDescription(sdp);
+          const currentRemoteDescription = connection.remoteDescription;
+
+          if (
+            currentRemoteDescription?.type === "offer" &&
+            currentRemoteDescription.sdp === nextDescription.sdp
+          ) {
+            return;
+          }
+
+          await connection.setRemoteDescription(nextDescription);
+          await flushPendingIceCandidates();
           const answer = await connection.createAnswer();
           await connection.setLocalDescription(answer);
           socket.emit("answer", { targetId: senderId, sdp: answer });
@@ -324,12 +461,28 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       socket.on("answer", async ({ senderId, sdp }) => {
         try {
           remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
-          if (!peerConnectionRef.current) {
+          const connection = peerConnectionRef.current;
+          if (!connection) {
             return;
           }
-          await peerConnectionRef.current.setRemoteDescription(
-            new RTCSessionDescription(sdp),
-          );
+
+          const nextDescription = new RTCSessionDescription(sdp);
+          const currentRemoteDescription = connection.remoteDescription;
+          const signalingState = connection.signalingState;
+
+          if (
+            currentRemoteDescription?.type === "answer" &&
+            currentRemoteDescription.sdp === nextDescription.sdp
+          ) {
+            return;
+          }
+
+          if (signalingState !== "have-local-offer") {
+            return;
+          }
+
+          await connection.setRemoteDescription(nextDescription);
+          await flushPendingIceCandidates();
           setCallStatus("Ulandi");
         } catch (error) {
           Alert.alert(
@@ -348,14 +501,24 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           if (!peerConnectionRef.current) {
             createPeerConnection(String(senderId));
           }
-          await peerConnectionRef.current?.addIceCandidate(new RTCIceCandidate(candidate));
+
+          const normalizedCandidate = new RTCIceCandidate(candidate);
+          if (!peerConnectionRef.current?.remoteDescription) {
+            pendingIceCandidatesRef.current = [
+              ...pendingIceCandidatesRef.current,
+              normalizedCandidate,
+            ];
+            return;
+          }
+
+          await peerConnectionRef.current?.addIceCandidate(normalizedCandidate);
         } catch {
           return;
         }
       });
 
       socket.on("peer-left", () => {
-        setCallStatus("Suhbat tugadi");
+        setCallStatus("Qo'ng'iroq tugadi");
         setRemoteStream(null);
         cleanupPeerConnection();
         if (!hangupStartedRef.current) {
@@ -366,7 +529,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       });
 
       socket.on("error", ({ message }) => {
-        Alert.alert("Meet xatosi", String(message || "Noma'lum xatolik"));
+        Alert.alert("Private meet xatosi", String(message || "Noma'lum xatolik"));
       });
     };
 
@@ -380,6 +543,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     createOfferForPeer,
     createPeerConnection,
     displayName,
+    flushPendingIceCandidates,
     isCaller,
     localStream,
     navigation,
@@ -392,7 +556,17 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     const subscriptions = [
       realtime.onPresenceEvent("call:accepted", (payload) => {
         if (String(payload?.roomId || "") === roomId) {
+          remoteAcceptedRef.current = true;
           setCallStatus("Ulanmoqda...");
+          const pendingKnockPeerId = pendingKnockPeerIdRef.current;
+          if (isCaller && pendingKnockPeerId && socketRef.current) {
+            socketRef.current.emit("approve-knock", {
+              roomId,
+              peerId: pendingKnockPeerId,
+            });
+            pendingKnockPeerIdRef.current = null;
+            void createOfferForPeer(pendingKnockPeerId);
+          }
         }
       }),
       realtime.onPresenceEvent("call:rejected", (payload) => {
@@ -400,7 +574,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           return;
         }
 
-        Alert.alert("Meet", "Qo'ng'iroq rad etildi", [
+        Alert.alert("Private meet", "Qo'ng'iroq rad etildi", [
           { text: "Yopish", onPress: () => navigation.goBack() },
         ]);
       }),
@@ -412,7 +586,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           return;
         }
 
-        Alert.alert("Meet", "Qo'ng'iroq yakunlandi", [
+        Alert.alert("Private meet", "Qo'ng'iroq yakunlandi", [
           { text: "Yopish", onPress: () => navigation.goBack() },
         ]);
       }),
@@ -456,10 +630,8 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   };
 
   const remoteInitial = useMemo(() => {
-    const label =
-      remoteUser.nickname || remoteUser.username || remoteUser.email || title || "P";
-    return label.slice(0, 1).toUpperCase();
-  }, [remoteUser.email, remoteUser.nickname, remoteUser.username, title]);
+    return remoteDisplayName.slice(0, 1).toUpperCase();
+  }, [remoteDisplayName]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
@@ -467,15 +639,29 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         <View style={styles.header}>
           <View style={styles.headerTextWrap}>
             <Text style={styles.title} numberOfLines={1}>
-              {title || "Private meet"}
+              {roomTitle || "Private meet"}
             </Text>
-            <Text style={styles.subtitle} numberOfLines={1}>
-              {callStatus}
-            </Text>
+            <View style={styles.statusRow}>
+              <Text style={styles.subtitle} numberOfLines={1}>
+                {callStatus}
+              </Text>
+              {callStatus === "Ulandi" ? (
+                <View style={styles.durationBadge}>
+                  <Timer size={12} color={Colors.text} />
+                  <Text style={styles.durationText}>{formatDuration(elapsedSeconds)}</Text>
+                </View>
+              ) : null}
+              {roomIsPrivate ? (
+                <View style={styles.privateBadge}>
+                  <Shield size={12} color={Colors.text} />
+                  <Text style={styles.privateBadgeText}>Private</Text>
+                </View>
+              ) : null}
+            </View>
           </View>
-          <Pressable style={styles.endButton} onPress={() => void handleHangup()}>
+          {/* <Pressable style={styles.endButton} onPress={() => void handleHangup()}>
             <PhoneOff size={18} color="#fff" />
-          </Pressable>
+          </Pressable> */}
         </View>
 
         <View style={styles.stage}>
@@ -491,9 +677,20 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
                 <ActivityIndicator color={Colors.primary} />
               ) : (
                 <>
-                  <View style={styles.remoteAvatar}>
-                    <Text style={styles.remoteAvatarText}>{remoteInitial}</Text>
-                  </View>
+                  {remoteUser.avatar ? (
+                    <Image
+                      source={{ uri: remoteUser.avatar }}
+                      style={styles.remoteAvatarImage}
+                      contentFit="cover"
+                    />
+                  ) : (
+                    <View style={styles.remoteAvatar}>
+                      <Text style={styles.remoteAvatarText}>{remoteInitial}</Text>
+                    </View>
+                  )}
+                  <Text style={styles.remoteName} numberOfLines={1}>
+                    {remoteDisplayName}
+                  </Text>
                   <Text style={styles.remotePlaceholderText}>{callStatus}</Text>
                 </>
               )}
@@ -512,7 +709,13 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           ) : null}
         </View>
 
-        <View style={styles.controls}>
+        <ScrollView
+          horizontal
+          style={styles.controlsScroll}
+          contentContainerStyle={styles.controls}
+          showsHorizontalScrollIndicator={false}
+          bounces={false}
+        >
           <Pressable
             style={[styles.controlButton, !isMicOn && styles.controlButtonMuted]}
             onPress={handleToggleMic}
@@ -541,7 +744,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           <Pressable style={[styles.controlButton, styles.controlButtonDanger]} onPress={() => void handleHangup()}>
             <PhoneOff size={20} color="#fff" />
           </Pressable>
-        </View>
+        </ScrollView>
       </View>
     </SafeAreaView>
   );
@@ -576,6 +779,41 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.7)",
     fontSize: 13,
     marginTop: 4,
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 4,
+  },
+  durationBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.1)",
+  },
+  durationText: {
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  privateBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(122,162,255,0.16)",
+  },
+  privateBadgeText: {
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: "700",
   },
   endButton: {
     width: 42,
@@ -617,6 +855,18 @@ const styles = StyleSheet.create({
     fontSize: 30,
     fontWeight: "800",
   },
+  remoteAvatarImage: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  remoteName: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
   remotePlaceholderText: {
     color: "rgba(255,255,255,0.72)",
     fontSize: 14,
@@ -638,6 +888,9 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: "#000",
   },
+  controlsScroll: {
+    flexGrow: 0,
+  },
   controls: {
     flexDirection: "row",
     alignItems: "center",
@@ -645,6 +898,7 @@ const styles = StyleSheet.create({
     gap: 14,
     paddingHorizontal: 16,
     paddingBottom: 18,
+    minWidth: "100%",
   },
   controlButton: {
     width: 54,

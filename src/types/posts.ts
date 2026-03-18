@@ -39,6 +39,7 @@ export type PostCommentReply = {
   user: User;
   content: string;
   createdAt: string;
+  updatedAt?: string;
   replyToUser?: string | null;
 };
 
@@ -47,6 +48,7 @@ export type PostComment = {
   user: User;
   content: string;
   createdAt: string;
+  updatedAt?: string;
   replies?: PostCommentReply[];
 };
 

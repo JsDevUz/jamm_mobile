@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -6,6 +6,8 @@ import {
   Keyboard,
   Linking,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   PanResponder,
   Platform,
   Pressable,
@@ -48,7 +50,17 @@ import { Avatar } from "../../components/Avatar";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { EditGroupDialog } from "./GroupDialogs";
+import { APP_BASE_URL } from "../../config/env";
 import { chatsApi } from "../../lib/api";
+import {
+  loadCachedChats,
+  loadCachedMessages,
+  loadChatScrollPosition,
+  saveCachedChats,
+  saveCachedMessages,
+  saveChatScrollPosition,
+} from "../../lib/chat-cache";
+import { setActiveNotificationChatId } from "../../lib/notifications";
 import { realtime } from "../../lib/realtime";
 import type { RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
@@ -80,6 +92,7 @@ type MessagesInfiniteData = InfiniteData<{
 }, string | null>;
 
 const ONLINE_PRESENCE_WINDOW_MS = 45_000;
+const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
 
 const getNormalizedSenderId = (senderId?: string | User | null) =>
   typeof senderId === "string" ? senderId : getEntityId(senderId);
@@ -671,6 +684,9 @@ export function ChatScreen({ navigation, route }: Props) {
   const [messageMenuOpen, setMessageMenuOpen] = useState(false);
   const [messageMenuMounted, setMessageMenuMounted] = useState(false);
   const [messageListVisible, setMessageListVisible] = useState(false);
+  const [chatCacheHydrated, setChatCacheHydrated] = useState(false);
+  const [messagesCacheHydrated, setMessagesCacheHydrated] = useState(false);
+  const [savedScrollOffset, setSavedScrollOffset] = useState<number | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [selectedMessageLayout, setSelectedMessageLayout] = useState<MessageMenuLayout | null>(
     null,
@@ -689,6 +705,9 @@ export function ChatScreen({ navigation, route }: Props) {
     targetUser?: User | null;
   }>({ queued: false, targetUser: undefined });
   const initialScrollDoneRef = useRef(false);
+  const scrollOffsetRef = useRef(0);
+  const scrollRestorePendingRef = useRef<number | null>(null);
+  const scrollPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageMenuAnim = useRef(new Animated.Value(0)).current;
   const infoPageTranslateX = useRef(new Animated.Value(screenWidth)).current;
   const infoPageBackdropOpacity = useRef(new Animated.Value(0)).current;
@@ -714,6 +733,7 @@ export function ChatScreen({ navigation, route }: Props) {
       ) || null,
     [chatsQuery.data, route.params.chatId],
   );
+  const hasChatsSnapshot = Array.isArray(chatsQuery.data);
 
   const chatTitle = currentChat
     ? getChatTitle(currentChat, currentUserId)
@@ -732,6 +752,17 @@ export function ChatScreen({ navigation, route }: Props) {
     });
     return Array.from(map.values());
   }, [chatsQuery.data]);
+  const currentChatMemberIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (currentChat?.members || [])
+            .map((member) => getEntityId(member))
+            .filter((memberId) => memberId && memberId !== currentUserId),
+        ),
+      ),
+    [currentChat?.members, currentUserId],
+  );
 
   const myAdminRecord = currentChat?.admins?.find(
     (admin) => (admin.userId || admin.id || admin._id) === currentUserId,
@@ -740,6 +771,10 @@ export function ChatScreen({ navigation, route }: Props) {
     Boolean(currentChat?.isGroup) &&
     (String(currentChat?.createdBy || "") === currentUserId ||
       Boolean(myAdminRecord?.permissions?.length));
+  const groupLinkSlug = String(currentChat?.privateurl || currentChat?.urlSlug || "").trim();
+  const groupLinkUrl = groupLinkSlug
+    ? `${APP_BASE_URL}/${groupLinkSlug.replace(/^\/+/, "")}`
+    : "";
   const canDeleteOthersMessages =
     String(currentChat?.createdBy || "") === currentUserId ||
     Boolean(myAdminRecord?.permissions?.includes("delete_others_messages"));
@@ -768,6 +803,47 @@ export function ChatScreen({ navigation, route }: Props) {
     : currentChat?.isSavedMessages
       ? "Saved Messages"
       : "Guruh ma'lumotlari";
+
+  useEffect(() => {
+    let cancelled = false;
+    setChatCacheHydrated(false);
+
+    if (!currentUserId) {
+      setChatCacheHydrated(true);
+      return;
+    }
+
+    const hydrateCachedChatList = async () => {
+      try {
+        const cachedChats = await loadCachedChats(currentUserId);
+        if (!cancelled && cachedChats && !queryClient.getQueryData(["chats"])) {
+          queryClient.setQueryData(["chats"], cachedChats);
+        }
+      } catch (error) {
+        console.warn("Failed to hydrate cached chats", error);
+      } finally {
+        if (!cancelled) {
+          setChatCacheHydrated(true);
+        }
+      }
+    };
+
+    void hydrateCachedChatList();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, queryClient]);
+
+  useEffect(() => {
+    if (!currentUserId || !hasChatsSnapshot) {
+      return;
+    }
+
+    void saveCachedChats(currentUserId, chatsQuery.data || []).catch((error) => {
+      console.warn("Failed to persist chats cache", error);
+    });
+  }, [currentUserId, chatsQuery.data, hasChatsSnapshot]);
 
   useEffect(() => {
     if (!infoDrawerOpen && !infoPageMounted) {
@@ -865,6 +941,7 @@ export function ChatScreen({ navigation, route }: Props) {
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
   });
+  const hasMessagesSnapshot = Boolean(messagesQuery.data);
 
   const messagesPages = messagesQuery.data?.pages || [];
   const messageItems = useMemo(() => {
@@ -874,7 +951,9 @@ export function ChatScreen({ navigation, route }: Props) {
     return buildMessageItems(flattenedMessages);
   }, [messagesPages]);
   const initialMessageIndex =
-    !initialScrollDoneRef.current && messageItems.length > 0
+    !initialScrollDoneRef.current &&
+    savedScrollOffset === null &&
+    messageItems.length > 0
       ? messageItems.length - 1
       : undefined;
 
@@ -1025,6 +1104,41 @@ export function ChatScreen({ navigation, route }: Props) {
   const isComposerDisabled = messagesQuery.isLoading;
   const dismissKeyboard = () => {
     Keyboard.dismiss();
+  };
+  const flushSavedScrollOffset = useCallback(() => {
+    if (!currentUserId) {
+      return;
+    }
+
+    if (scrollPersistTimeoutRef.current) {
+      clearTimeout(scrollPersistTimeoutRef.current);
+      scrollPersistTimeoutRef.current = null;
+    }
+
+    void saveChatScrollPosition(
+      currentUserId,
+      route.params.chatId,
+      scrollOffsetRef.current,
+    ).catch((error) => {
+      console.warn("Failed to persist chat scroll position", error);
+    });
+  }, [currentUserId, route.params.chatId]);
+  const scheduleScrollOffsetPersist = () => {
+    if (!currentUserId) {
+      return;
+    }
+
+    if (scrollPersistTimeoutRef.current) {
+      clearTimeout(scrollPersistTimeoutRef.current);
+    }
+
+    scrollPersistTimeoutRef.current = setTimeout(() => {
+      scrollPersistTimeoutRef.current = null;
+      flushSavedScrollOffset();
+    }, 180);
+  };
+  const handleMessagesScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollOffsetRef.current = Math.max(0, event.nativeEvent.contentOffset?.y || 0);
   };
   const scrollToLatestMessage = (animated = true) => {
     requestAnimationFrame(() => {
@@ -1207,17 +1321,25 @@ export function ChatScreen({ navigation, route }: Props) {
     }
 
     try {
-      const result = await chatsApi.startVideoCall(getEntityId(currentChat));
+      const chatId = getEntityId(currentChat);
+      const activeCall = await chatsApi.getCallStatus(chatId);
+      const hasActiveCall = Boolean(activeCall.active && activeCall.roomId);
+      const result = hasActiveCall
+        ? { roomId: String(activeCall.roomId || "") }
+        : await chatsApi.startVideoCall(chatId);
+
       navigation.navigate("PrivateMeet", {
-        chatId: getEntityId(currentChat),
+        chatId,
         roomId: result.roomId,
         title: getDirectChatUserLabel(otherMember),
-        isCaller: true,
+        isCaller: hasActiveCall
+          ? String(activeCall.creatorId || "") === currentUserId
+          : true,
         remoteUser: otherMember,
       });
     } catch (error) {
       Alert.alert(
-        "Meet ochilmadi",
+        "Private meet ochilmadi",
         error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
       );
     }
@@ -1376,6 +1498,15 @@ export function ChatScreen({ navigation, route }: Props) {
     closeMessageMenu();
   };
 
+  const handleCopyGroupLink = async () => {
+    if (!groupLinkUrl) {
+      return;
+    }
+
+    await Clipboard.setStringAsync(groupLinkUrl);
+    void Haptics.selectionAsync();
+  };
+
   const handleDeleteMessage = () => {
     if (!selectedMessage || selectedMessage.type !== "message") return;
     const targetId = selectedMessage.message.id;
@@ -1461,6 +1592,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
     return `${labels.join(", ")} yozmoqda...`;
   }, [typingMembers]);
+  const typingUserIdSet = useMemo(() => new Set(typingUserIds), [typingUserIds]);
   const onlineUserIdSet = useMemo(() => new Set(onlineUserIds), [onlineUserIds]);
   const isUserCurrentlyOnline = (targetUser?: User | null) => {
     const targetUserId = getEntityId(targetUser);
@@ -1468,7 +1600,7 @@ export function ChatScreen({ navigation, route }: Props) {
       return false;
     }
 
-    if (onlineUserIdSet.has(targetUserId)) {
+    if (onlineUserIdSet.has(targetUserId) || typingUserIdSet.has(targetUserId)) {
       return true;
     }
 
@@ -1485,6 +1617,7 @@ export function ChatScreen({ navigation, route }: Props) {
     return Date.now() - lastSeenDate.getTime() <= ONLINE_PRESENCE_WINDOW_MS;
   };
   const isOtherMemberOnline = isUserCurrentlyOnline(otherMember);
+  const isDrawerUserOnline = isUserCurrentlyOnline(drawerUser);
   const groupOnlineCount = useMemo(() => {
     if (!currentChat?.isGroup) {
       return 0;
@@ -1496,7 +1629,7 @@ export function ChatScreen({ navigation, route }: Props) {
         return memberId && memberId !== currentUserId && isUserCurrentlyOnline(member);
       }).length || 0
     );
-  }, [currentChat?.isGroup, currentChat?.members, currentUserId, onlineUserIdSet]);
+  }, [currentChat?.isGroup, currentChat?.members, currentUserId, onlineUserIdSet, typingUserIdSet]);
   const headerStatusLabel = useMemo(() => {
     if (typingSubtitle) {
       return typingSubtitle;
@@ -1539,6 +1672,10 @@ export function ChatScreen({ navigation, route }: Props) {
       return drawerUser.officialBadgeLabel || "Rasmiy";
     }
 
+    if (drawerUser && isDrawerUserOnline) {
+      return "Online";
+    }
+
     if (drawerUser?.lastSeen) {
       const date = new Date(drawerUser.lastSeen);
       if (!Number.isNaN(date.getTime())) {
@@ -1560,7 +1697,12 @@ export function ChatScreen({ navigation, route }: Props) {
     }
 
     return `${currentChat?.members?.length || 0} a'zo`;
-  }, [currentChat?.isSavedMessages, currentChat?.members?.length, drawerUser]);
+  }, [
+    currentChat?.isSavedMessages,
+    currentChat?.members?.length,
+    drawerUser,
+    isDrawerUserOnline,
+  ]);
   const drawerProfileMeta = useMemo(() => {
     if (drawerUser && !currentChat?.isGroup) {
       return drawerUser.bio?.trim() || drawerStatusLabel;
@@ -1573,6 +1715,11 @@ export function ChatScreen({ navigation, route }: Props) {
     return () => {
       if (openInfoTimeoutRef.current) {
         clearTimeout(openInfoTimeoutRef.current);
+      }
+
+      if (scrollPersistTimeoutRef.current) {
+        clearTimeout(scrollPersistTimeoutRef.current);
+        scrollPersistTimeoutRef.current = null;
       }
     };
   }, []);
@@ -1662,6 +1809,113 @@ export function ChatScreen({ navigation, route }: Props) {
       subscriptions.forEach((unsubscribe) => unsubscribe?.());
     };
   }, []);
+
+  useEffect(() => {
+    if (!currentChatMemberIds.length) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncPresenceSnapshot = async () => {
+      try {
+        const nextOnlineUserIds = await realtime.syncOnlineUsers(currentChatMemberIds);
+        if (!cancelled) {
+          setOnlineUserIds(nextOnlineUserIds);
+        }
+      } catch (error) {
+        console.warn("Failed to sync presence statuses", error);
+      }
+    };
+
+    void syncPresenceSnapshot();
+    const interval = setInterval(() => {
+      void syncPresenceSnapshot();
+    }, PRESENCE_RESYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [currentChatMemberIds]);
+
+  useEffect(() => {
+    if (navigation.isFocused()) {
+      setActiveNotificationChatId(route.params.chatId);
+    }
+
+    const unsubscribeFocus = navigation.addListener("focus", () => {
+      setActiveNotificationChatId(route.params.chatId);
+    });
+    const unsubscribeBlur = navigation.addListener("blur", () => {
+      setActiveNotificationChatId(null);
+    });
+
+    return () => {
+      unsubscribeFocus();
+      unsubscribeBlur();
+      setActiveNotificationChatId(null);
+    };
+  }, [navigation, route.params.chatId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMessagesCacheHydrated(false);
+    setSavedScrollOffset(null);
+    scrollRestorePendingRef.current = null;
+    scrollOffsetRef.current = 0;
+
+    if (!currentUserId) {
+      setMessagesCacheHydrated(true);
+      return;
+    }
+
+    const hydrateCachedMessages = async () => {
+      try {
+        const [cachedMessages, cachedScrollOffset] = await Promise.all([
+          loadCachedMessages(currentUserId, route.params.chatId),
+          loadChatScrollPosition(currentUserId, route.params.chatId),
+        ]);
+
+        if (!cancelled && cachedMessages && !queryClient.getQueryData(["messages", route.params.chatId])) {
+          queryClient.setQueryData(["messages", route.params.chatId], cachedMessages);
+        }
+
+        if (!cancelled) {
+          const nextScrollOffset =
+            typeof cachedScrollOffset === "number" ? cachedScrollOffset : null;
+          setSavedScrollOffset(nextScrollOffset);
+          scrollRestorePendingRef.current = nextScrollOffset;
+          scrollOffsetRef.current = nextScrollOffset ?? 0;
+        }
+      } catch (error) {
+        console.warn("Failed to hydrate cached messages", error);
+      } finally {
+        if (!cancelled) {
+          setMessagesCacheHydrated(true);
+        }
+      }
+    };
+
+    void hydrateCachedMessages();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, queryClient, route.params.chatId]);
+
+  useEffect(() => {
+    const messagesSnapshot = messagesQuery.data;
+    if (!currentUserId || !messagesSnapshot) {
+      return;
+    }
+
+    void saveCachedMessages(currentUserId, route.params.chatId, messagesSnapshot).catch(
+      (error) => {
+        console.warn("Failed to persist messages cache", error);
+      },
+    );
+  }, [currentUserId, hasMessagesSnapshot, messagesQuery.data, route.params.chatId]);
 
   useEffect(() => {
     const chatId = route.params.chatId;
@@ -1755,6 +2009,13 @@ export function ChatScreen({ navigation, route }: Props) {
           return;
         }
 
+        const typingUserId = String(payload?.userId || "");
+        if (payload?.isTyping && typingUserId) {
+          setOnlineUserIds((previous) =>
+            previous.includes(typingUserId) ? previous : [...previous, typingUserId],
+          );
+        }
+
         setTypingUserIds((previous) => {
           const next = new Set(previous);
           if (payload?.isTyping) {
@@ -1798,7 +2059,15 @@ export function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     initialScrollDoneRef.current = false;
     setMessageListVisible(false);
+    scrollOffsetRef.current = 0;
+    scrollRestorePendingRef.current = null;
   }, [route.params.chatId]);
+
+  useEffect(() => {
+    return () => {
+      flushSavedScrollOffset();
+    };
+  }, [flushSavedScrollOffset]);
 
   useEffect(() => {
     if (!messagesQuery.isLoading && !messageItems.length) {
@@ -1920,12 +2189,12 @@ export function ChatScreen({ navigation, route }: Props) {
           </View>
         </View>
 
-        {messagesQuery.isLoading ? (
+        {!chatCacheHydrated || !messagesCacheHydrated || (messagesQuery.isLoading && !hasMessagesSnapshot) ? (
           <View style={styles.centerState}>
             <ActivityIndicator color={Colors.primary} />
             <Text style={styles.helperText}>Xabarlar yuklanmoqda...</Text>
           </View>
-        ) : messagesQuery.isError ? (
+        ) : messagesQuery.isError && !hasMessagesSnapshot ? (
           <View style={styles.centerState}>
             <Ionicons name="alert-circle-outline" size={28} color={Colors.warning} />
             <Text style={styles.helperText}>
@@ -1950,7 +2219,18 @@ export function ChatScreen({ navigation, route }: Props) {
 
               initialScrollDoneRef.current = true;
               requestAnimationFrame(() => {
-                listRef.current?.scrollToEnd({ animated: false });
+                const nextScrollOffset = scrollRestorePendingRef.current;
+                if (nextScrollOffset !== null) {
+                  scrollOffsetRef.current = nextScrollOffset;
+                  listRef.current?.scrollToOffset({
+                    offset: nextScrollOffset,
+                    animated: false,
+                  });
+                } else {
+                  listRef.current?.scrollToEnd({ animated: false });
+                }
+                scrollRestorePendingRef.current = null;
+
                 requestAnimationFrame(() => {
                   setMessageListVisible(true);
                 });
@@ -1958,6 +2238,10 @@ export function ChatScreen({ navigation, route }: Props) {
             }}
             keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
             keyboardShouldPersistTaps="handled"
+            onScroll={handleMessagesScroll}
+            onScrollEndDrag={scheduleScrollOffsetPersist}
+            onMomentumScrollEnd={scheduleScrollOffsetPersist}
+            scrollEventThrottle={16}
             onStartReached={() => {
               if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
                 void messagesQuery.fetchNextPage();
@@ -2368,12 +2652,23 @@ export function ChatScreen({ navigation, route }: Props) {
                   ) : (
                     <>
                       <View style={styles.infoCard}>
-                        <View style={styles.infoItem}>
-                          <Text style={styles.infoLabel}>A'ZOLAR</Text>
-                          <Text style={styles.infoValue}>
-                            {currentChat?.members?.length || 0} ta
-                          </Text>
-                        </View>
+                        {groupLinkUrl ? (
+                          <>
+                            <View style={styles.infoItem}>
+                              <Text style={styles.infoLabel}>HAVOLANI ULASHISH</Text>
+                              <View style={styles.infoLinkRow}>
+                                <Text style={styles.infoLinkValue}>{groupLinkUrl}</Text>
+                                <Pressable
+                                  onPress={() => void handleCopyGroupLink()}
+                                  style={styles.infoCopyButton}
+                                  hitSlop={8}
+                                >
+                                  <Ionicons name="copy-outline" size={18} color={Colors.text} />
+                                </Pressable>
+                              </View>
+                            </View>
+                          </>
+                        ) : null}
 
                         {currentChat?.description ? (
                           <>
@@ -2384,18 +2679,6 @@ export function ChatScreen({ navigation, route }: Props) {
                                 content={currentChat.description}
                                 onPressMention={handleMentionPress}
                               />
-                            </View>
-                          </>
-                        ) : null}
-
-                        {currentChat?.urlSlug || currentChat?.privateurl ? (
-                          <>
-                            <View style={styles.infoDivider} />
-                            <View style={styles.infoItem}>
-                              <Text style={styles.infoLabel}>CHAT MANZILI</Text>
-                              <Text style={styles.infoValue}>
-                                /{currentChat.privateurl || currentChat.urlSlug}
-                              </Text>
                             </View>
                           </>
                         ) : null}
@@ -3046,8 +3329,8 @@ const styles = StyleSheet.create({
     maxHeight: "78%",
   },
   infoCard: {
-    backgroundColor: Colors.background,
-    borderRadius: 16,
+    backgroundColor: Colors.surfaceMuted,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: Colors.border,
     overflow: "hidden",
@@ -3055,18 +3338,37 @@ const styles = StyleSheet.create({
   infoItem: {
     paddingHorizontal: 16,
     paddingVertical: 14,
-    gap: 6,
+    gap: 4,
   },
   infoLabel: {
-    color: Colors.subtleText,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
+    color: Colors.mutedText,
+    fontSize: 12,
+    textTransform: "uppercase",
   },
   infoValue: {
     color: Colors.text,
     fontSize: 14,
     lineHeight: 20,
+  },
+  infoLinkRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  infoLinkValue: {
+    flex: 1,
+    color: Colors.primary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  infoCopyButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: -4,
   },
   infoDivider: {
     height: 1,

@@ -1,10 +1,16 @@
 import { API_BASE_URL } from "../config/env";
-import { getAuthToken, setAuthToken } from "./session";
+import {
+  getAppUnlockToken,
+  getAuthToken,
+  getStoredAuthUser,
+  setAuthToken,
+} from "./session";
 import type {
   AuthResponse,
   ChatAdmin,
   ProfileDecoration,
   ChatSummary,
+  MeetSummary,
   Message,
   PaginatedMessages,
   User,
@@ -25,6 +31,7 @@ import type {
 } from "../types/articles";
 import type {
   Course,
+  CourseLessonAttendanceResponse,
   CourseCommentsResponse,
   CourseLinkedTestAttemptResult,
   CourseLessonGradingResponse,
@@ -33,6 +40,23 @@ import type {
   CourseLessonMaterialsResponse,
   CoursesResponse,
 } from "../types/courses";
+import type {
+  ArenaFlashcardDeck,
+  ArenaFlashcardDecksResponse,
+  ArenaFlashcardMutationPayload,
+  ArenaMnemonicLeaderboardResponse,
+  ArenaMnemonicMode,
+  ArenaMnemonicSavePayload,
+  ArenaFlashcardReviewResponse,
+  ArenaSentenceBuilderCheckResult,
+  ArenaSentenceBuilderDeck,
+  ArenaSentenceBuilderDecksResponse,
+  ArenaSentenceBuilderMutationPayload,
+  ArenaSentenceBuilderResultsResponse,
+  ArenaSentenceBuilderShareLink,
+  ArenaSentenceBuilderSubmitResult,
+  ArenaTestResultsResponse,
+} from "../types/arena";
 
 export class ApiError extends Error {
   status: number;
@@ -46,9 +70,51 @@ export class ApiError extends Error {
   }
 }
 
+const APP_LOCK_EXEMPT_PATHS = [
+  "/auth/me",
+  "/auth/mobile-session",
+  "/auth/logout",
+  "/users/me/app-lock/verify",
+  "/users/me/app-lock/logout-clear",
+  "/users/me/app-lock/lock-session",
+];
+
+let onAppLockRequired: (() => void) | null = null;
+const appUnlockWaiters = new Set<() => void>();
+
+export const setAppLockRequiredHandler = (handler: (() => void) | null) => {
+  onAppLockRequired = handler;
+};
+
+export const releaseAppLockWaiters = () => {
+  const waiters = Array.from(appUnlockWaiters);
+  appUnlockWaiters.clear();
+  waiters.forEach((resolve) => resolve());
+};
+
+const waitForAppUnlock = () =>
+  new Promise<void>((resolve) => {
+    appUnlockWaiters.add(resolve);
+  });
+
 const buildUrl = (path: string) => {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${API_BASE_URL}${normalizedPath}`;
+};
+
+const normalizePathname = (rawPath = "") => {
+  try {
+    return new URL(rawPath, API_BASE_URL).pathname;
+  } catch {
+    return String(rawPath || "");
+  }
+};
+
+const isAppLockExemptPath = (path: string) => {
+  const normalizedPath = normalizePathname(path);
+  return APP_LOCK_EXEMPT_PATHS.some((exemptPath) =>
+    normalizedPath.startsWith(exemptPath),
+  );
 };
 
 const extractMessage = (payload: unknown, fallback: string) => {
@@ -68,11 +134,23 @@ const extractMessage = (payload: unknown, fallback: string) => {
   return fallback;
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  appLockRetryCount = 0,
+): Promise<T> {
   const headers = new Headers(init?.headers);
   const authToken = await getAuthToken();
+  const authUser = await getStoredAuthUser();
+  const appUnlockToken = await getAppUnlockToken();
   const isFormDataBody =
     typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const isAppLockEnabled = Boolean(authUser?.appLockEnabled);
+  const isAppLocked =
+    isAppLockEnabled &&
+    authUser?.appLockSessionUnlocked === false &&
+    !appUnlockToken;
+
   if (!headers.has("Accept")) {
     headers.set("Accept", "application/json");
   }
@@ -81,6 +159,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (authToken && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${authToken}`);
+  }
+  if (appUnlockToken && !headers.has("X-App-Unlock-Token")) {
+    headers.set("X-App-Unlock-Token", appUnlockToken);
+  }
+  if (authToken && isAppLocked && !isAppLockExemptPath(path)) {
+    onAppLockRequired?.();
+    await waitForAppUnlock();
+    return request<T>(path, init, appLockRetryCount);
   }
 
   const response = await fetch(buildUrl(path), {
@@ -94,14 +180,62 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = hasJson ? await response.json() : null;
 
   if (!response.ok) {
+    const message = extractMessage(
+      payload,
+      `Request failed with ${response.status}`,
+    );
+    if (response.status === 423 && message === "APP_LOCK_REQUIRED") {
+      onAppLockRequired?.();
+
+      if (!isAppLockExemptPath(path) && onAppLockRequired && appLockRetryCount < 1) {
+        await waitForAppUnlock();
+        return request<T>(path, init, appLockRetryCount + 1);
+      }
+    }
     throw new ApiError(
-      extractMessage(payload, `Request failed with ${response.status}`),
+      message,
       response.status,
       payload,
     );
   }
 
   return payload as T;
+}
+
+type RequestFallbackEntry = {
+  path: string;
+  init?: RequestInit;
+};
+
+async function requestWithFallback<T>(
+  entries: Array<string | RequestFallbackEntry>,
+  init?: RequestInit,
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const path = typeof entry === "string" ? entry : entry.path;
+    const nextInit = typeof entry === "string" ? init : entry.init;
+
+    try {
+      return await request<T>(path, nextInit);
+    } catch (error) {
+      lastError = error;
+      const canRetry =
+        error instanceof ApiError &&
+        (error.status === 404 || error.status === 405) &&
+        index < entries.length - 1;
+
+      if (!canRetry) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Request failed for all fallback paths");
 }
 
 const normalizeChatSummary = (chat: ChatSummary): ChatSummary => ({
@@ -276,6 +410,17 @@ export const chatsApi = {
     request(`/chats/${chatId}/leave`, {
       method: "POST",
     }),
+  joinGroupByLink: async (slugOrId: string) => {
+    const payload = await request<ChatSummary>(
+      `/chats/${encodeURIComponent(slugOrId)}/join-link`,
+      {
+        method: "POST",
+      },
+    );
+    return normalizeChatSummary(payload);
+  },
+  resolveSlug: (slug: string) =>
+    request<{ jammId: number }>(`/chats/resolve/${encodeURIComponent(slug)}`),
   fetchMessages: (chatId: string, before?: string | null) => {
     const suffix = before ? `?before=${encodeURIComponent(before)}` : "";
     return request<PaginatedMessages>(`/chats/${chatId}/messages${suffix}`);
@@ -367,16 +512,37 @@ export const usersApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  uploadAvatar: (fileUri: string) =>
+    request<{ avatar?: string }>("/users/upload-avatar", {
+      method: "POST",
+      body: appendFileToFormData("file", fileUri),
+    }),
   getAppLockStatus: () => request<{ enabled: boolean }>("/users/me/app-lock"),
   setAppLockPin: (payload: { pin: string; currentPin?: string }) =>
     request<{ enabled: boolean }>("/users/me/app-lock", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  verifyAppLockPin: (payload: { pin: string }) =>
+    request<{ valid: boolean; unlockToken?: string }>(
+      "/users/me/app-lock/verify",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
   removeAppLockPin: (payload: { pin: string }) =>
     request<{ enabled: boolean }>("/users/me/app-lock/remove", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  lockAppSession: () =>
+    request<{ locked: boolean }>("/users/me/app-lock/lock-session", {
+      method: "POST",
+    }),
+  clearAppLockOnLogout: () =>
+    request<{ enabled: boolean }>("/users/me/app-lock/logout-clear", {
+      method: "POST",
     }),
   updateProfileDecoration: (decorationId?: string | null) =>
     request<User>("/users/me/profile-decoration", {
@@ -398,6 +564,14 @@ export const usersApi = {
       body: JSON.stringify(payload || {}),
     }),
   getProfileDecorations: () => request<ProfileDecoration[]>("/users/profile-decorations"),
+};
+
+export const presenceApi = {
+  getBulkStatus: (userIds: string[]) =>
+    request<{ statuses: Record<string, boolean> }>("/presence/status/bulk", {
+      method: "POST",
+      body: JSON.stringify({ userIds }),
+    }),
 };
 
 export const postsApi = {
@@ -426,6 +600,64 @@ export const postsApi = {
       method: "POST",
       body: JSON.stringify({ content, replyToUser }),
     }),
+  updateComment: (postId: string, commentId: string, content: string) =>
+    requestWithFallback<{ updated: boolean }>([
+      {
+        path: `/posts/${postId}/comments/${commentId}`,
+        init: {
+          method: "PATCH",
+          body: JSON.stringify({ content }),
+        },
+      },
+      {
+        path: `/post/${postId}/comments/${commentId}`,
+        init: {
+          method: "PATCH",
+          body: JSON.stringify({ content }),
+        },
+      },
+      {
+        path: `/posts/${postId}/comments/${commentId}/update`,
+        init: {
+          method: "POST",
+          body: JSON.stringify({ content }),
+        },
+      },
+      {
+        path: `/post/${postId}/comments/${commentId}/update`,
+        init: {
+          method: "POST",
+          body: JSON.stringify({ content }),
+        },
+      },
+    ]),
+  deleteComment: (postId: string, commentId: string) =>
+    requestWithFallback<{ comments: number }>([
+      {
+        path: `/posts/${postId}/comments/${commentId}`,
+        init: {
+          method: "DELETE",
+        },
+      },
+      {
+        path: `/post/${postId}/comments/${commentId}`,
+        init: {
+          method: "DELETE",
+        },
+      },
+      {
+        path: `/posts/${postId}/comments/${commentId}/delete`,
+        init: {
+          method: "POST",
+        },
+      },
+      {
+        path: `/post/${postId}/comments/${commentId}/delete`,
+        init: {
+          method: "POST",
+        },
+      },
+    ]),
   uploadImage: (file: UploadableFile) =>
     request<{ url: string }>("/posts/upload-image", {
       method: "POST",
@@ -642,6 +874,14 @@ export const coursesApi = {
     request<Course>(`/courses/${courseId}/enroll`, {
       method: "POST",
     }),
+  approveCourseMember: (courseId: string, userId: string) =>
+    request<Course>(`/courses/${courseId}/members/${userId}/approve`, {
+      method: "PATCH",
+    }),
+  removeCourseMember: (courseId: string, userId: string) =>
+    request<Course>(`/courses/${courseId}/members/${userId}`, {
+      method: "DELETE",
+    }),
   incrementViews: (courseId: string, lessonId: string) =>
     request(`/courses/${courseId}/lessons/${lessonId}/views`, {
       method: "PATCH",
@@ -726,6 +966,23 @@ export const coursesApi = {
         body: JSON.stringify(payload),
       },
     ),
+  getLessonAttendance: (courseId: string, lessonId: string) =>
+    request<CourseLessonAttendanceResponse>(
+      `/courses/${courseId}/lessons/${lessonId}/attendance`,
+    ),
+  setLessonAttendanceStatus: (
+    courseId: string,
+    lessonId: string,
+    userId: string,
+    status: "present" | "late" | "absent",
+  ) =>
+    request<CourseLessonAttendanceResponse>(
+      `/courses/${courseId}/lessons/${lessonId}/attendance/${userId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      },
+    ),
   getLessonHomework: (courseId: string, lessonId: string) =>
     request<CourseLessonHomeworkResponse>(
       `/courses/${courseId}/lessons/${lessonId}/homework`,
@@ -783,16 +1040,37 @@ export const coursesApi = {
     request<CourseLessonGradingResponse>(
       `/courses/${courseId}/lessons/${lessonId}/grading`,
     ),
-  getLessonPlaybackToken: (courseId: string, lessonId: string, mediaId?: string) =>
+  setLessonOralAssessment: (
+    courseId: string,
+    lessonId: string,
+    userId: string,
+    payload: {
+      score?: number | null;
+      note?: string;
+    },
+  ) =>
+    request<CourseLessonGradingResponse>(
+      `/courses/${courseId}/lessons/${lessonId}/oral-assessment/${userId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      },
+    ),
+  getLessonPlaybackToken: (
+    courseId: string,
+    lessonId: string,
+    mediaId?: string,
+    client = "mobile-native",
+  ) =>
     request<{
       streamType?: "direct" | "hls";
       streamUrl?: string;
       playbackToken?: string;
       expiresIn?: number;
     }>(
-      `/courses/${courseId}/lessons/${lessonId}/playback-token${
-        mediaId ? `?mediaId=${encodeURIComponent(mediaId)}` : ""
-      }`,
+      `/courses/${courseId}/lessons/${lessonId}/playback-token?client=${encodeURIComponent(
+        client,
+      )}${mediaId ? `&mediaId=${encodeURIComponent(mediaId)}` : ""}`,
     ),
   getLessonComments: (courseId: string, lessonId: string, page = 1, limit = 10) =>
     request<CourseCommentsResponse>(
@@ -819,23 +1097,259 @@ export const coursesApi = {
 };
 
 export const arenaApi = {
+  createTest: (payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>("/arena/tests", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateTest: (testId: string, payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/arena/tests/${testId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  fetchMyTests: (page = 1, limit = 20) =>
+    request<{
+      data?: Array<Record<string, unknown>>;
+      total?: number;
+      page?: number;
+      limit?: number;
+      totalPages?: number;
+    }>(`/arena/tests/my?page=${page}&limit=${limit}`),
   fetchTestById: (testId: string) => request<Record<string, unknown>>(`/arena/tests/${testId}`),
+  deleteTest: (testId: string) =>
+    request<Record<string, unknown>>(`/arena/tests/${testId}`, {
+      method: "DELETE",
+    }),
+  fetchTestResults: (testId: string, page = 1, limit = 30, search = "") =>
+    request<ArenaTestResultsResponse>(
+      `/arena/tests/${testId}/results?page=${page}&limit=${limit}${
+        search ? `&search=${encodeURIComponent(search)}` : ""
+      }`,
+    ),
   fetchSharedTestByCode: (shortCode: string) =>
     request<Record<string, unknown>>(`/arena/tests/shared/${shortCode}`),
+  fetchTestShareLinks: (testId: string) =>
+    request<Array<Record<string, unknown>>>(`/arena/tests/${testId}/share-links`),
+  createTestShareLink: (
+    testId: string,
+    payload: {
+      persistResults?: boolean;
+      groupName?: string;
+      showResults?: boolean;
+      timeLimit?: number;
+    },
+  ) =>
+    request<Record<string, unknown>>(`/arena/tests/${testId}/share-links`, {
+      method: "POST",
+      body: JSON.stringify({
+        persistResults: payload.persistResults !== false,
+        groupName: payload.groupName || "",
+        showResults: payload.showResults !== false,
+        timeLimit: Number(payload.timeLimit) || 0,
+      }),
+    }),
+  deleteTestShareLink: (testId: string, shareLinkId: string) =>
+    request<Record<string, unknown>>(`/arena/tests/${testId}/share-links/${shareLinkId}`, {
+      method: "DELETE",
+    }),
+  submitTestAnswers: (
+    testId: string,
+    payload: { answers?: number[]; shareShortCode?: string | null },
+  ) =>
+    request<Record<string, unknown>>(`/arena/tests/${testId}/submit`, {
+      method: "POST",
+      body: JSON.stringify({
+        answers: payload.answers || [],
+        shareShortCode: payload.shareShortCode || null,
+      }),
+    }),
+  fetchFlashcards: (page = 1, limit = 20) =>
+    request<ArenaFlashcardDecksResponse>(`/arena/flashcards?page=${page}&limit=${limit}`),
+  fetchFlashcardDeck: (deckId: string) =>
+    request<ArenaFlashcardDeck>(`/arena/flashcards/${deckId}`),
+  createFlashcardDeck: (payload: ArenaFlashcardMutationPayload) =>
+    request<ArenaFlashcardDeck>("/arena/flashcards", {
+      method: "POST",
+      body: JSON.stringify({
+        title: payload.title,
+        cards: payload.cards || [],
+        isPublic: payload.isPublic !== false,
+      }),
+    }),
+  updateFlashcardDeck: (deckId: string, payload: ArenaFlashcardMutationPayload) =>
+    request<ArenaFlashcardDeck>(`/arena/flashcards/${deckId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: payload.title,
+        cards: payload.cards || [],
+        isPublic: payload.isPublic !== false,
+      }),
+    }),
+  deleteFlashcardDeck: (deckId: string) =>
+    request<{ success?: boolean; deletedDeckId?: string }>(`/arena/flashcards/${deckId}`, {
+      method: "DELETE",
+    }),
+  joinFlashcardDeck: (deckId: string) =>
+    request<Record<string, unknown>>(`/arena/flashcards/${deckId}/join`, {
+      method: "POST",
+    }),
+  leaveFlashcardDeck: (deckId: string) =>
+    request<Record<string, unknown>>(`/arena/flashcards/${deckId}/leave`, {
+      method: "DELETE",
+    }),
+  reviewFlashcard: (deckId: string, cardId: string, quality: number) =>
+    request<ArenaFlashcardReviewResponse>(
+      `/arena/flashcards/${deckId}/cards/${cardId}/review`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          quality,
+        }),
+      },
+    ),
+  fetchMnemonicLeaderboard: (mode: ArenaMnemonicMode = "digits") =>
+    request<ArenaMnemonicLeaderboardResponse>(
+      `/arena/mnemonics/leaderboard?mode=${encodeURIComponent(mode)}`,
+    ),
+  saveMnemonicBestResult: (payload: ArenaMnemonicSavePayload) =>
+    request<ArenaMnemonicLeaderboardResponse>("/arena/mnemonics/result", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: payload.mode,
+        score: Number(payload.score) || 0,
+        total: Number(payload.total) || 0,
+        elapsedMemorizeMs: Number(payload.elapsedMemorizeMs) || 0,
+      }),
+    }),
+  fetchSentenceBuilders: (page = 1, limit = 20) =>
+    request<ArenaSentenceBuilderDecksResponse>(
+      `/arena/sentence-builders?page=${page}&limit=${limit}`,
+    ),
+  createSentenceBuilderDeck: (payload: ArenaSentenceBuilderMutationPayload) =>
+    request<ArenaSentenceBuilderDeck>("/arena/sentence-builders", {
+      method: "POST",
+      body: JSON.stringify({
+        title: payload.title,
+        description: payload.description || "",
+        items: payload.items || undefined,
+        pattern: payload.pattern || "",
+      }),
+    }),
+  updateSentenceBuilderDeck: (
+    deckId: string,
+    payload: ArenaSentenceBuilderMutationPayload,
+  ) =>
+    request<ArenaSentenceBuilderDeck>(`/arena/sentence-builders/${deckId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: payload.title,
+        description: payload.description || "",
+        items: payload.items || undefined,
+        pattern: payload.pattern || "",
+      }),
+    }),
   fetchSentenceBuilderDeck: (deckId: string) =>
-    request<Record<string, unknown>>(`/arena/sentence-builders/${deckId}`),
+    request<ArenaSentenceBuilderDeck | { deck?: ArenaSentenceBuilderDeck }>(
+      `/arena/sentence-builders/${deckId}`,
+    ),
   fetchSharedSentenceBuilderDeck: (shortCode: string) =>
-    request<Record<string, unknown>>(`/arena/sentence-builders/shared/${shortCode}`),
+    request<{
+      deck?: ArenaSentenceBuilderDeck;
+      shareLink?: ArenaSentenceBuilderShareLink;
+    }>(`/arena/sentence-builders/shared/${shortCode}`),
   checkSentenceBuilderAnswer: (
     deckId: string,
     questionIndex: number,
     selectedTokens: string[],
   ) =>
-    request<Record<string, unknown>>(`/arena/sentence-builders/${deckId}/check`, {
+    request<ArenaSentenceBuilderCheckResult>(`/arena/sentence-builders/${deckId}/check`, {
       method: "POST",
       body: JSON.stringify({
         questionIndex,
         selectedTokens,
       }),
+    }),
+  deleteSentenceBuilderDeck: (deckId: string) =>
+    request<{ success?: boolean }>(`/arena/sentence-builders/${deckId}`, {
+      method: "DELETE",
+    }),
+  fetchSentenceBuilderResults: (deckId: string, page = 1, limit = 30, search = "") =>
+    request<ArenaSentenceBuilderResultsResponse>(
+      `/arena/sentence-builders/${deckId}/results?page=${page}&limit=${limit}${
+        search ? `&search=${encodeURIComponent(search)}` : ""
+      }`,
+    ),
+  fetchSentenceBuilderShareLinks: (deckId: string) =>
+    request<ArenaSentenceBuilderShareLink[]>(
+      `/arena/sentence-builders/${deckId}/share-links`,
+    ),
+  createSentenceBuilderShareLink: (
+    deckId: string,
+    payload: {
+      persistResults?: boolean;
+      groupName?: string;
+      showResults?: boolean;
+      timeLimit?: number;
+    },
+  ) =>
+    request<ArenaSentenceBuilderShareLink>(
+      `/arena/sentence-builders/${deckId}/share-links`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          persistResults: payload.persistResults !== false,
+          groupName: payload.groupName || "",
+          showResults: payload.showResults !== false,
+          timeLimit: Number(payload.timeLimit) || 0,
+        }),
+      },
+    ),
+  deleteSentenceBuilderShareLink: (deckId: string, shareLinkId: string) =>
+    request<{ success?: boolean }>(
+      `/arena/sentence-builders/${deckId}/share-links/${shareLinkId}`,
+      {
+        method: "DELETE",
+      },
+    ),
+  submitSentenceBuilderAttempt: (
+    deckId: string,
+    payload: {
+      answers?: Array<{ questionIndex: number; selectedTokens: string[] }>;
+      guestName?: string | null;
+      shareShortCode?: string | null;
+    },
+  ) =>
+    request<ArenaSentenceBuilderSubmitResult>(
+      `/arena/sentence-builders/${deckId}/submit`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          answers: payload.answers || [],
+          guestName: payload.guestName || null,
+          shareShortCode: payload.shareShortCode || null,
+        }),
+      },
+    ),
+};
+
+export const meetsApi = {
+  fetchMyMeets: () => request<MeetSummary[]>("/meets"),
+  createMeet: (payload: {
+    roomId: string;
+    title: string;
+    isPrivate: boolean;
+  }) =>
+    request<MeetSummary>("/meets", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteMeet: (roomId: string) =>
+    request<{ success: boolean }>(`/meets/${encodeURIComponent(roomId)}`, {
+      method: "DELETE",
+    }),
+  updateMeetPrivacy: (roomId: string, isPrivate: boolean) =>
+    request<MeetSummary>(`/meets/${encodeURIComponent(roomId)}/privacy`, {
+      method: "PATCH",
+      body: JSON.stringify({ isPrivate }),
     }),
 };

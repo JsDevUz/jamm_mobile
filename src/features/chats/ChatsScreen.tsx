@@ -5,7 +5,6 @@ import {
   useState,
 } from "react";
 import {
-  Alert,
   ActivityIndicator,
   Animated,
   Pressable,
@@ -20,19 +19,23 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { FlashList } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { Plus, Video } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
+import { CreateMeetDialog } from "../calls/CreateMeetDialog";
 import { CreateGroupDialog } from "./GroupDialogs";
-import { chatsApi } from "../../lib/api";
+import { chatsApi, meetsApi } from "../../lib/api";
+import { loadCachedChats, saveCachedChats } from "../../lib/chat-cache";
+import { buildJoinUrl } from "../../config/env";
 import { realtime } from "../../lib/realtime";
 import type { MainTabScreenProps, RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
-import type { ChatSummary, User } from "../../types/entities";
+import type { ChatSummary, MeetSummary, User } from "../../types/entities";
 import {
   formatChatTime,
   getChatAvatarUri,
@@ -47,6 +50,22 @@ import {
 type Props = MainTabScreenProps<"Chats">;
 type ChatTab = "private" | "group";
 const ONLINE_PRESENCE_WINDOW_MS = 45_000;
+const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
+const MEET_ROOM_ID_PATTERN = /^[a-z0-9_-]{4,128}$/i;
+
+const randomMeetToken = () =>
+  Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
+
+const buildMeetPayload = () => {
+  const token = randomMeetToken().toLowerCase();
+  const roomId = `meet-${token}`;
+
+  return {
+    roomId,
+    title: roomId,
+    isPrivate: false,
+  } satisfies Pick<MeetSummary, "roomId" | "title" | "isPrivate">;
+};
 
 export function ChatsScreen({ navigation }: Props) {
   const { width: screenWidth } = useWindowDimensions();
@@ -55,6 +74,13 @@ export function ChatsScreen({ navigation }: Props) {
   const [activeTab, setActiveTab] = useState<ChatTab>("private");
   const [searchQuery, setSearchQuery] = useState("");
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
+  const [createMeetOpen, setCreateMeetOpen] = useState(false);
+  const [meetDialogLoading, setMeetDialogLoading] = useState(false);
+  const [meetDialogError, setMeetDialogError] = useState("");
+  const [activeMeet, setActiveMeet] = useState<MeetSummary | null>(null);
+  const [meetCopied, setMeetCopied] = useState(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [chatCacheHydrated, setChatCacheHydrated] = useState(false);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() => realtime.getOnlineUserIds());
   const deferredSearchQuery = searchQuery.trim().toLowerCase();
   const pagerRef = useRef<ScrollView>(null);
@@ -70,8 +96,51 @@ export function ChatsScreen({ navigation }: Props) {
   const currentUserId = getEntityId(user);
   const rootNavigation = navigation.getParent<NativeStackNavigationProp<RootStackParamList>>();
   const activeTabRef = useRef<ChatTab>("private");
+  const meetCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasChatsSnapshot = Array.isArray(chatsQuery.data);
 
   activeTabRef.current = activeTab;
+
+  useEffect(() => {
+    let cancelled = false;
+    setChatCacheHydrated(false);
+
+    if (!currentUserId) {
+      setChatCacheHydrated(true);
+      return;
+    }
+
+    const hydrateCachedChatList = async () => {
+      try {
+        const cachedChats = await loadCachedChats(currentUserId);
+        if (!cancelled && cachedChats && !queryClient.getQueryData(["chats"])) {
+          queryClient.setQueryData(["chats"], cachedChats);
+        }
+      } catch (error) {
+        console.warn("Failed to hydrate cached chats", error);
+      } finally {
+        if (!cancelled) {
+          setChatCacheHydrated(true);
+        }
+      }
+    };
+
+    void hydrateCachedChatList();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, queryClient]);
+
+  useEffect(() => {
+    if (!currentUserId || !hasChatsSnapshot) {
+      return;
+    }
+
+    void saveCachedChats(currentUserId, chatsQuery.data || []).catch((error) => {
+      console.warn("Failed to persist chats cache", error);
+    });
+  }, [currentUserId, hasChatsSnapshot, chatsQuery.data]);
 
   useEffect(() => {
     const nextIndex = activeTab === "group" ? 1 : 0;
@@ -83,6 +152,26 @@ export function ChatsScreen({ navigation }: Props) {
       });
     });
   }, [activeTab, screenWidth]);
+
+  useEffect(() => {
+    return () => {
+      if (meetCopyTimeoutRef.current) {
+        clearTimeout(meetCopyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    navigation.setOptions({
+      tabBarStyle: createGroupOpen ? { display: "none" } : undefined,
+    });
+
+    return () => {
+      navigation.setOptions({
+        tabBarStyle: undefined,
+      });
+    };
+  }, [createGroupOpen, navigation]);
 
   const knownUsers = useMemo(() => {
     const map = new Map<string, NonNullable<ChatSummary["members"]>[number]>();
@@ -99,6 +188,17 @@ export function ChatsScreen({ navigation }: Props) {
 
     return Array.from(map.values());
   }, [chatsQuery.data, currentUserId]);
+  const knownUserIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          knownUsers
+            .map((member) => getEntityId(member))
+            .filter((memberId) => memberId && memberId !== currentUserId),
+        ),
+      ),
+    [currentUserId, knownUsers],
+  );
 
   const privateUnreadTotal = useMemo(
     () =>
@@ -168,6 +268,35 @@ export function ChatsScreen({ navigation }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!knownUserIds.length) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncPresenceSnapshot = async () => {
+      try {
+        const nextOnlineUserIds = await realtime.syncOnlineUsers(knownUserIds);
+        if (!cancelled) {
+          setOnlineUserIds(nextOnlineUserIds);
+        }
+      } catch (error) {
+        console.warn("Failed to sync presence statuses", error);
+      }
+    };
+
+    void syncPresenceSnapshot();
+    const interval = setInterval(() => {
+      void syncPresenceSnapshot();
+    }, PRESENCE_RESYNC_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [knownUserIds]);
+
   const filteredChats = useMemo(() => {
     return (chatsQuery.data || []).filter((chat) => {
       if (!deferredSearchQuery) {
@@ -220,11 +349,83 @@ export function ChatsScreen({ navigation }: Props) {
     });
   };
 
-  const handleOpenMeet = () => {
-    Alert.alert(
-      "Yangi meet",
-      "Meet yaratish oqimini chat/call moduli bilan keyingi bosqichda ulaymiz.",
-    );
+  const handleRefreshChats = async () => {
+    if (isPullRefreshing) {
+      return;
+    }
+
+    setIsPullRefreshing(true);
+    try {
+      await chatsQuery.refetch();
+    } finally {
+      setIsPullRefreshing(false);
+    }
+  };
+
+  const loadMeetDialog = async () => {
+    setMeetDialogLoading(true);
+    setMeetDialogError("");
+    setActiveMeet(null);
+
+    try {
+      const existingMeets = await meetsApi.fetchMyMeets();
+      const existingMeet = Array.isArray(existingMeets) ? existingMeets[0] : null;
+
+      if (existingMeet?.roomId && MEET_ROOM_ID_PATTERN.test(existingMeet.roomId)) {
+        setActiveMeet(existingMeet);
+        return;
+      }
+
+      if (existingMeet?.roomId) {
+        await meetsApi.deleteMeet(existingMeet.roomId);
+      }
+
+      const payload = buildMeetPayload();
+      const createdMeet = await meetsApi.createMeet(payload);
+      setActiveMeet(createdMeet || payload);
+    } catch (error) {
+      setMeetDialogError(
+        error instanceof Error
+          ? error.message
+          : "Meet tayyorlab bo'lmadi. Qaytadan urinib ko'ring.",
+      );
+    } finally {
+      setMeetDialogLoading(false);
+    }
+  };
+
+  const handleOpenMeet = async () => {
+    await Haptics.selectionAsync();
+    setMeetCopied(false);
+    setCreateMeetOpen(true);
+    void loadMeetDialog();
+  };
+
+  const handleCopyMeet = async () => {
+    if (!activeMeet?.roomId) {
+      return;
+    }
+
+    await Clipboard.setStringAsync(buildJoinUrl(activeMeet.roomId));
+    setMeetCopied(true);
+    if (meetCopyTimeoutRef.current) {
+      clearTimeout(meetCopyTimeoutRef.current);
+    }
+    meetCopyTimeoutRef.current = setTimeout(() => setMeetCopied(false), 1800);
+  };
+
+  const handleStartMeet = () => {
+    if (!activeMeet?.roomId) {
+      return;
+    }
+
+    setCreateMeetOpen(false);
+    rootNavigation?.navigate("GroupMeet", {
+      roomId: activeMeet.roomId,
+      title: activeMeet.title || activeMeet.roomId,
+      isCreator: true,
+      isPrivate: Boolean(activeMeet.isPrivate),
+    });
   };
 
   const handleCreateGroup = async (draft: {
@@ -267,12 +468,12 @@ export function ChatsScreen({ navigation }: Props) {
 
   const renderChatList = (tab: ChatTab, chats: ChatSummary[]) => (
     <>
-      {chatsQuery.isLoading ? (
+      {!chatCacheHydrated || (chatsQuery.isLoading && !hasChatsSnapshot) ? (
         <View style={styles.centerState}>
           <ActivityIndicator color={Colors.primary} />
           <Text style={styles.helperText}>Chatlar yuklanmoqda...</Text>
         </View>
-      ) : chatsQuery.isError ? (
+      ) : chatsQuery.isError && !hasChatsSnapshot ? (
         <View style={styles.centerState}>
           <Ionicons name="cloud-offline-outline" size={28} color={Colors.warning} />
           <Text style={styles.errorTitle}>Serverga ulanib bo'lmadi</Text>
@@ -293,8 +494,8 @@ export function ChatsScreen({ navigation }: Props) {
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
-              refreshing={chatsQuery.isRefetching}
-              onRefresh={() => chatsQuery.refetch()}
+              refreshing={isPullRefreshing}
+              onRefresh={() => void handleRefreshChats()}
               tintColor={Colors.primary}
             />
           }
@@ -527,6 +728,18 @@ export function ChatsScreen({ navigation }: Props) {
         users={knownUsers}
         onClose={() => setCreateGroupOpen(false)}
         onCreate={handleCreateGroup}
+      />
+      <CreateMeetDialog
+        visible={createMeetOpen}
+        meet={activeMeet}
+        meetUrl={activeMeet?.roomId ? buildJoinUrl(activeMeet.roomId) : ""}
+        loading={meetDialogLoading}
+        copied={meetCopied}
+        error={meetDialogError}
+        onClose={() => setCreateMeetOpen(false)}
+        onRetry={() => void loadMeetDialog()}
+        onCopy={() => void handleCopyMeet()}
+        onStart={handleStartMeet}
       />
     </SafeAreaView>
   );

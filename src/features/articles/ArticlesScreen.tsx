@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -9,13 +10,17 @@ import {
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -23,6 +28,7 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   ArrowLeft,
   Bold,
+  Code2,
   Eye,
   Heading1,
   Heading2,
@@ -42,12 +48,17 @@ import {
 } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
+import {
+  APP_LIMITS,
+  countWords,
+  getTierLimit,
+} from "../../constants/appLimits";
 import { articlesApi } from "../../lib/api";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
@@ -61,7 +72,7 @@ import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Articles">;
 
-type EditorMode = "write" | "preview";
+type EditorMode = "write" | "preview" | "split";
 
 type InlineToken =
   | { type: "text"; value: string }
@@ -80,11 +91,6 @@ type MarkdownBlock =
   | { type: "hr" }
   | { type: "image"; alt: string; src: string };
 
-const ARTICLE_WORD_LIMIT = 1000;
-const ARTICLE_TITLE_LIMIT = 120;
-const ARTICLE_EXCERPT_LIMIT = 220;
-const ARTICLE_TAG_LIMIT = 10;
-
 function timeAgo(iso?: string) {
   if (!iso) return "";
   const diff = Date.now() - new Date(iso).getTime();
@@ -99,13 +105,6 @@ function timeAgo(iso?: string) {
     day: "numeric",
     month: "short",
   });
-}
-
-function countWords(value = "") {
-  return String(value)
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
 }
 
 function parseInline(text: string): InlineToken[] {
@@ -689,6 +688,7 @@ function ArticleCommentsModal({
 function ArticleEditorModal({
   visible,
   initialArticle,
+  articleWordLimit,
   onClose,
   onSubmit,
 }: {
@@ -700,6 +700,7 @@ function ArticleEditorModal({
     coverImage: string;
     tags: string[];
   } | null;
+  articleWordLimit: number;
   onClose: () => void;
   onSubmit: (payload: {
     title: string;
@@ -709,6 +710,8 @@ function ArticleEditorModal({
     tags: string[];
   }) => Promise<void>;
 }) {
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<EditorMode>("write");
   const [title, setTitle] = useState("");
   const [excerpt, setExcerpt] = useState("");
@@ -718,6 +721,9 @@ function ArticleEditorModal({
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  const editorScrollRef = useRef<ScrollView>(null);
+  const editorFieldOffsetsRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     if (!visible) {
@@ -736,12 +742,62 @@ function ArticleEditorModal({
     });
   }, [initialArticle, visible]);
 
+  useEffect(() => {
+    if (!visible) {
+      setKeyboardInset(0);
+      return;
+    }
+
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+
+    const handleKeyboardShow = (event: { endCoordinates?: { height?: number } }) => {
+      if (Platform.OS !== "android") {
+        return;
+      }
+
+      const nextInset = Math.max(0, Number(event.endCoordinates?.height || 0) - insets.bottom);
+      setKeyboardInset(nextInset);
+    };
+
+    const handleKeyboardHide = () => {
+      setKeyboardInset(0);
+    };
+
+    const showSubscription = Keyboard.addListener(showEvent, handleKeyboardShow);
+    const hideSubscription = Keyboard.addListener(hideEvent, handleKeyboardHide);
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [insets.bottom, visible]);
+
   const wordCount = countWords(markdown);
+  const isCompactLayout = width < 960;
+  const isTabletLayout = width < 820;
+  const isPhoneLayout = width < 640;
+  const showEditorPane = mode !== "preview";
+  const showPreviewPane = mode !== "write";
   const tags = tagsText
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)
-    .slice(0, ARTICLE_TAG_LIMIT);
+    .slice(0, APP_LIMITS.articleTagCount);
+
+  const scrollEditorToField = useCallback((fieldKey: string) => {
+    const targetY = editorFieldOffsetsRef.current[fieldKey];
+    if (typeof targetY !== "number") {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      editorScrollRef.current?.scrollTo({
+        y: Math.max(targetY - 24, 0),
+        animated: true,
+      });
+    });
+  }, []);
 
   const insertSnippet = (prefix: string, suffix = "") => {
     const before = markdown.slice(0, selection.start);
@@ -814,23 +870,64 @@ function ArticleEditorModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.editorOverlay} onPress={onClose}>
-        <Pressable style={styles.editorDialog} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.editorHeader}>
-            <View style={styles.editorHeaderMeta}>
+      <KeyboardAvoidingView
+        style={styles.editorKeyboard}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Pressable
+          style={[styles.editorOverlay, isPhoneLayout && styles.editorOverlayPhone]}
+          onPress={onClose}
+        >
+          <Pressable
+            style={[
+              styles.editorDialog,
+              isPhoneLayout && styles.editorDialogPhone,
+              Platform.OS === "android" && keyboardInset > 0
+                ? { paddingBottom: keyboardInset }
+                : null,
+            ]}
+            onPress={(event) => event.stopPropagation()}
+          >
+          <View
+            style={[
+              styles.editorHeader,
+              isTabletLayout && styles.editorHeaderStacked,
+              isPhoneLayout && [
+                styles.editorHeaderPhone,
+                {
+                  paddingTop: insets.top + 14,
+                },
+              ],
+            ]}
+          >
+            <View style={[styles.editorHeaderMeta, isPhoneLayout && styles.editorHeaderMetaPhone]}>
               <Text style={styles.editorTitle}>
                 {initialArticle ? "Maqolani tahrirlash" : "Yangi maqola"}
               </Text>
               <Text style={styles.editorSubtitle}>
-                Sarlavha, excerpt va markdown kontent yozing.
+                Medium uslubidagi markdown editor: cover, inline image, preview va publish.
               </Text>
             </View>
-            <View style={styles.editorHeaderActions}>
-              <View style={styles.modeSwitch}>
+            <View
+              style={[
+                styles.editorHeaderActions,
+                isTabletLayout && styles.editorHeaderActionsStacked,
+                isPhoneLayout && styles.editorHeaderActionsPhone,
+              ]}
+            >
+              <View style={[styles.modeSwitch, isPhoneLayout && styles.modeSwitchPhone]}>
                 <Pressable
-                  style={[styles.modeButton, mode === "write" && styles.modeButtonActive]}
+                  style={[
+                    styles.modeButton,
+                    isPhoneLayout && styles.modeButtonPhone,
+                    mode === "write" && styles.modeButtonActive,
+                  ]}
                   onPress={() => setMode("write")}
                 >
+                  <Pencil
+                    size={14}
+                    color={mode === "write" ? Colors.text : Colors.mutedText}
+                  />
                   <Text
                     style={[
                       styles.modeButtonText,
@@ -841,9 +938,38 @@ function ArticleEditorModal({
                   </Text>
                 </Pressable>
                 <Pressable
-                  style={[styles.modeButton, mode === "preview" && styles.modeButtonActive]}
+                  style={[
+                    styles.modeButton,
+                    isPhoneLayout && styles.modeButtonPhone,
+                    mode === "split" && styles.modeButtonActive,
+                  ]}
+                  onPress={() => setMode("split")}
+                >
+                  <PanelRight
+                    size={14}
+                    color={mode === "split" ? Colors.text : Colors.mutedText}
+                  />
+                  <Text
+                    style={[
+                      styles.modeButtonText,
+                      mode === "split" && styles.modeButtonTextActive,
+                    ]}
+                  >
+                    Split
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.modeButton,
+                    isPhoneLayout && styles.modeButtonPhone,
+                    mode === "preview" && styles.modeButtonActive,
+                  ]}
                   onPress={() => setMode("preview")}
                 >
+                  <Eye
+                    size={14}
+                    color={mode === "preview" ? Colors.text : Colors.mutedText}
+                  />
                   <Text
                     style={[
                       styles.modeButtonText,
@@ -854,146 +980,324 @@ function ArticleEditorModal({
                   </Text>
                 </Pressable>
               </View>
-              <Pressable style={styles.closeCircle} onPress={onClose}>
-                <X size={18} color={Colors.mutedText} />
+              <Pressable
+                style={[
+                  styles.headerPublishButton,
+                  isTabletLayout && styles.headerPublishButtonWide,
+                  (!title.trim() || !markdown.trim() || saving) &&
+                    styles.publishButtonDisabled,
+                ]}
+                disabled={!title.trim() || !markdown.trim() || saving}
+                onPress={() => void handleSubmit()}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.headerPublishButtonText}>
+                    {initialArticle ? "Saqlash" : "Publish"}
+                  </Text>
+                )}
               </Pressable>
             </View>
+            <Pressable
+              style={[
+                styles.editorCloseCircle,
+                isPhoneLayout && styles.editorCloseCirclePhone,
+                isPhoneLayout ? { top: insets.top + 12 } : null,
+              ]}
+              onPress={onClose}
+            >
+              <X size={18} color={Colors.text} />
+            </Pressable>
           </View>
 
-          <View style={styles.editorContent}>
-            {mode === "write" ? (
-              <ScrollView style={styles.editorPane} contentContainerStyle={styles.editorPaneContent}>
-                <TextInput
-                  value={title}
-                  onChangeText={setTitle}
-                  placeholder="Sarlavha"
-                  placeholderTextColor={Colors.subtleText}
-                  style={styles.titleInput}
-                  maxLength={ARTICLE_TITLE_LIMIT}
-                />
-                <TextInput
-                  value={excerpt}
-                  onChangeText={setExcerpt}
-                  placeholder="Qisqacha mazmun"
-                  placeholderTextColor={Colors.subtleText}
-                  style={styles.excerptInput}
-                  multiline
-                  maxLength={ARTICLE_EXCERPT_LIMIT}
-                />
-                <TextInput
-                  value={tagsText}
-                  onChangeText={setTagsText}
-                  placeholder="tag1, tag2, tag3"
-                  placeholderTextColor={Colors.subtleText}
-                  style={styles.tagsInput}
-                />
-
-                <View style={styles.toolbar}>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("**", "**")}>
-                    <Bold size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("_", "_")}>
-                    <Italic size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n# ")}>
-                    <Heading1 size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n## ")}>
-                    <Heading2 size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n- ")}>
-                    <List size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n1. ")}>
-                    <ListOrdered size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n> ")}>
-                    <Quote size={16} color={Colors.text} />
-                  </Pressable>
-                  <Pressable
-                    style={styles.toolButton}
-                    onPress={() => void handleUploadInlineImage()}
+          <View
+            style={[
+              styles.editorContent,
+              mode === "split" &&
+                (isCompactLayout ? styles.editorContentStacked : styles.editorContentSplit),
+            ]}
+          >
+            {showEditorPane ? (
+              <View
+                style={[
+                  styles.editorPane,
+                  mode === "split" && !isCompactLayout && styles.editorPaneSplit,
+                ]}
+              >
+                <View style={styles.toolbarCard}>
+                  <View style={styles.editorFieldHeader}>
+                    <Text style={styles.editorFieldLabel}>Markdown asboblari</Text>
+                    <Text style={styles.editorFieldMeta}>
+                      {uploading ? "Yuklanmoqda..." : `${wordCount}/${articleWordLimit} so'z`}
+                    </Text>
+                  </View>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.toolbar}
+                    keyboardShouldPersistTaps="handled"
+                    style={styles.toolbarScroller}
                   >
-                    <ImagePlus size={16} color={uploading ? Colors.subtleText : Colors.text} />
-                  </Pressable>
-                  <Pressable style={styles.toolButton} onPress={() => void handleUploadCover()}>
-                    <PanelRight size={16} color={uploading ? Colors.subtleText : Colors.text} />
-                  </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("**", "**")}>
+                      <Bold size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("_", "_")}>
+                      <Italic size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n# ")}>
+                      <Heading1 size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n## ")}>
+                      <Heading2 size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n- ")}>
+                      <List size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n1. ")}>
+                      <ListOrdered size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable style={styles.toolButton} onPress={() => insertSnippet("\n> ")}>
+                      <Quote size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable
+                      style={styles.toolButton}
+                      onPress={() => insertSnippet("\n```txt\n", "\n```\n")}
+                    >
+                      <Code2 size={16} color={Colors.text} />
+                    </Pressable>
+                    <Pressable
+                      style={styles.toolButton}
+                      onPress={() => void handleUploadInlineImage()}
+                    >
+                      <ImagePlus size={16} color={uploading ? Colors.subtleText : Colors.text} />
+                    </Pressable>
+                  </ScrollView>
                 </View>
 
-                {coverImage ? (
-                  <View style={styles.coverPreviewWrap}>
+                <ScrollView
+                  ref={editorScrollRef}
+                  style={styles.editorScroll}
+                  contentContainerStyle={[
+                    styles.editorPaneContent,
+                    isPhoneLayout && styles.editorPaneContentPhone,
+                  ]}
+                  keyboardShouldPersistTaps="handled"
+                  keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+                >
+                  <View
+                    style={styles.editorFieldCard}
+                    onLayout={(event) => {
+                      editorFieldOffsetsRef.current.title = event.nativeEvent.layout.y;
+                    }}
+                  >
+                    <View style={styles.editorFieldHeader}>
+                      <Text style={styles.editorFieldLabel}>Maqola sarlavhasi</Text>
+                      <Text style={styles.editorFieldMeta}>
+                        {title.trim().length}/{APP_LIMITS.articleTitleChars}
+                      </Text>
+                    </View>
+                    <TextInput
+                      value={title}
+                      onChangeText={setTitle}
+                      onFocus={() => scrollEditorToField("title")}
+                      placeholder="Sarlavha"
+                      placeholderTextColor={Colors.subtleText}
+                      style={styles.titleInput}
+                      maxLength={APP_LIMITS.articleTitleChars}
+                    />
+                  </View>
+
+                  <View
+                    style={styles.editorFieldCard}
+                    onLayout={(event) => {
+                      editorFieldOffsetsRef.current.excerpt = event.nativeEvent.layout.y;
+                    }}
+                  >
+                    <View style={styles.editorFieldHeader}>
+                      <Text style={styles.editorFieldLabel}>Qisqacha mazmun</Text>
+                      <Text style={styles.editorFieldMeta}>
+                        {excerpt.trim().length}/{APP_LIMITS.articleExcerptChars}
+                      </Text>
+                    </View>
+                    <TextInput
+                      value={excerpt}
+                      onChangeText={setExcerpt}
+                      onFocus={() => scrollEditorToField("excerpt")}
+                      placeholder="Qisqacha mazmun"
+                      placeholderTextColor={Colors.subtleText}
+                      style={styles.excerptInput}
+                      multiline
+                      maxLength={APP_LIMITS.articleExcerptChars}
+                    />
+                  </View>
+
+                  <View
+                    style={styles.editorFieldCard}
+                    onLayout={(event) => {
+                      editorFieldOffsetsRef.current.tags = event.nativeEvent.layout.y;
+                    }}
+                  >
+                    <View style={styles.editorFieldHeader}>
+                      <Text style={styles.editorFieldLabel}>Teglar</Text>
+                      <Text style={styles.editorFieldMeta}>
+                        {tags.length}/{APP_LIMITS.articleTagCount}
+                      </Text>
+                    </View>
+                    <TextInput
+                      value={tagsText}
+                      onChangeText={setTagsText}
+                      onFocus={() => scrollEditorToField("tags")}
+                      placeholder="tag1, tag2, tag3"
+                      placeholderTextColor={Colors.subtleText}
+                      style={styles.tagsInput}
+                    />
+                  </View>
+
+                  <View
+                    style={styles.editorFieldCard}
+                    onLayout={(event) => {
+                      editorFieldOffsetsRef.current.cover = event.nativeEvent.layout.y;
+                    }}
+                  >
+                    <View style={styles.editorFieldHeader}>
+                      <Text style={styles.editorFieldLabel}>Cover image</Text>
+                      <Text style={styles.editorFieldMeta}>
+                        {uploading ? "Yuklanmoqda..." : coverImage ? "Tayyor" : "Ixtiyoriy"}
+                      </Text>
+                    </View>
+                    <Pressable
+                      style={[styles.coverUploadCard, isPhoneLayout && styles.coverUploadCardPhone]}
+                      onPress={() => void handleUploadCover()}
+                    >
+                      {coverImage ? (
+                        <PersistentCachedImage
+                          remoteUri={coverImage}
+                          style={styles.coverPreview}
+                          requireManualDownload
+                        />
+                      ) : (
+                        <View style={styles.coverUploadHint}>
+                          <ImagePlus size={26} color={Colors.text} />
+                          <Text style={styles.coverUploadHintTitle}>
+                            {uploading ? "Cover yuklanmoqda..." : "Cover rasm yuklash"}
+                          </Text>
+                          <Text style={styles.coverUploadHintText}>
+                            Frontenddagi kabi hero cover shu yerdan tanlanadi.
+                          </Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  </View>
+
+                  <View
+                    style={styles.editorFieldCard}
+                    onLayout={(event) => {
+                      editorFieldOffsetsRef.current.markdown = event.nativeEvent.layout.y;
+                    }}
+                  >
+                    <View style={styles.editorFieldHeader}>
+                      <Text style={styles.editorFieldLabel}>Markdown kontent</Text>
+                      <Text style={styles.editorFieldMeta}>
+                        {markdown.trim() ? "Live preview tayyor" : "Kontent yozishni boshlang"}
+                      </Text>
+                    </View>
+                    <TextInput
+                      value={markdown}
+                      onChangeText={setMarkdown}
+                      onFocus={() => scrollEditorToField("markdown")}
+                      onSelectionChange={(event) => {
+                        setSelection(event.nativeEvent.selection);
+                      }}
+                      placeholder="Markdown yozing..."
+                      placeholderTextColor={Colors.subtleText}
+                      style={styles.markdownInput}
+                      multiline
+                      textAlignVertical="top"
+                    />
+                  </View>
+                </ScrollView>
+              </View>
+            ) : null}
+
+            {showPreviewPane ? (
+              <ScrollView
+                style={[
+                  styles.previewPane,
+                  mode === "split" && !isCompactLayout && styles.previewPaneSplit,
+                ]}
+                contentContainerStyle={[
+                  styles.previewPaneContent,
+                  isPhoneLayout && styles.previewPaneContentPhone,
+                ]}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              >
+                <View style={styles.previewPanel}>
+                  <View style={styles.previewHeader}>
+                    <View>
+                      <Text style={styles.previewEyebrow}>Live preview</Text>
+                      <Text style={styles.previewHeaderTitle}>Frontend ko'rinishi</Text>
+                    </View>
+                    <View style={styles.previewBadge}>
+                      <Eye size={14} color={Colors.text} />
+                      <Text style={styles.previewBadgeText}>
+                        {mode === "split" ? "Split" : "Preview"}
+                      </Text>
+                    </View>
+                  </View>
+                  {coverImage ? (
                     <PersistentCachedImage
                       remoteUri={coverImage}
-                      style={styles.coverPreview}
+                      style={styles.previewCover}
                       requireManualDownload
                     />
-                    <Text style={styles.coverPreviewLabel}>Cover image</Text>
-                  </View>
-                ) : null}
-
-                <TextInput
-                  value={markdown}
-                  onChangeText={setMarkdown}
-                  onSelectionChange={(event) => {
-                    setSelection(event.nativeEvent.selection);
-                  }}
-                  placeholder="Markdown yozing..."
-                  placeholderTextColor={Colors.subtleText}
-                  style={styles.markdownInput}
-                  multiline
-                  textAlignVertical="top"
-                />
-              </ScrollView>
-            ) : (
-              <ScrollView style={styles.previewPane} contentContainerStyle={styles.previewPaneContent}>
-                {coverImage ? (
-                  <PersistentCachedImage
-                    remoteUri={coverImage}
-                    style={styles.previewCover}
-                    requireManualDownload
+                  ) : null}
+                  <Text style={styles.previewTitle}>{title || "Sarlavha"}</Text>
+                  {excerpt ? <Text style={styles.previewExcerpt}>{excerpt}</Text> : null}
+                  {tags.length ? (
+                    <View style={styles.previewTagRow}>
+                      {tags.map((tag) => (
+                        <View key={tag} style={styles.previewTag}>
+                          <Text style={styles.previewTagText}>#{tag}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+                  <ArticleMarkdownRenderer
+                    content={markdown || "Markdown preview shu yerda chiqadi."}
                   />
-                ) : null}
-                <Text style={styles.previewTitle}>{title || "Sarlavha"}</Text>
-                {excerpt ? <Text style={styles.previewExcerpt}>{excerpt}</Text> : null}
-                <ArticleMarkdownRenderer content={markdown || "Markdown preview shu yerda chiqadi."} />
+                </View>
               </ScrollView>
-            )}
+            ) : null}
           </View>
 
-          <View style={styles.editorFooter}>
+          <View
+            style={[
+              styles.editorFooter,
+              { paddingBottom: Math.max(insets.bottom, 14) },
+            ]}
+          >
+            <Text style={styles.editorCounter}>
+              {uploading ? "Media yuklanmoqda..." : "Markdown va preview doim birga yangilanadi"}
+            </Text>
             <Text
               style={[
                 styles.editorCounter,
-                wordCount > ARTICLE_WORD_LIMIT && styles.editorCounterDanger,
+                wordCount > articleWordLimit && styles.editorCounterDanger,
               ]}
             >
-              {wordCount}/{ARTICLE_WORD_LIMIT} so'z
+              {wordCount}/{articleWordLimit} so'z
             </Text>
-            <Pressable
-              style={[
-                styles.publishButton,
-                (!title.trim() || !markdown.trim() || saving) && styles.publishButtonDisabled,
-              ]}
-              disabled={!title.trim() || !markdown.trim() || saving}
-              onPress={() => void handleSubmit()}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.publishButtonText}>
-                  {initialArticle ? "Saqlash" : "Publish"}
-                </Text>
-              )}
-            </Pressable>
           </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
-export function ArticlesScreen({ navigation }: Props) {
+export function ArticlesScreen({ navigation, route }: Props) {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
@@ -1085,6 +1389,16 @@ export function ArticlesScreen({ navigation }: Props) {
   });
 
   useEffect(() => {
+    const deepLinkedArticleId = String(route.params?.articleId || "").trim();
+    if (!deepLinkedArticleId) {
+      return;
+    }
+
+    setSelectedArticleIdentifier(deepLinkedArticleId);
+    navigation.setParams({ articleId: undefined });
+  }, [navigation, route.params?.articleId]);
+
+  useEffect(() => {
     const currentArticle = selectedArticleQuery.data;
     if (!currentArticle?._id) {
       return;
@@ -1130,6 +1444,10 @@ export function ArticlesScreen({ navigation }: Props) {
   const isOwnArticle = Boolean(
     currentArticle?.author && getEntityId(currentArticle.author) === currentUserId,
   );
+  const articleWordLimit = getTierLimit(
+    APP_LIMITS.articleWords,
+    user?.premiumStatus,
+  );
 
   const handleOpenArticle = async (identifier: string) => {
     await Haptics.selectionAsync();
@@ -1158,8 +1476,8 @@ export function ArticlesScreen({ navigation }: Props) {
     coverImage: string;
     tags: string[];
   }) => {
-    if (countWords(payload.markdown) > ARTICLE_WORD_LIMIT) {
-      Alert.alert("Limit", `Maqola maksimal ${ARTICLE_WORD_LIMIT} so'z bo'lishi kerak.`);
+    if (countWords(payload.markdown) > articleWordLimit) {
+      Alert.alert("Limit", `Maqola maksimal ${articleWordLimit} so'z bo'lishi kerak.`);
       return;
     }
 
@@ -1326,6 +1644,7 @@ export function ArticlesScreen({ navigation }: Props) {
 
         <ArticleEditorModal
           visible={editorOpen}
+          articleWordLimit={articleWordLimit}
           initialArticle={
             editingArticle
               ? {
@@ -1351,7 +1670,16 @@ export function ArticlesScreen({ navigation }: Props) {
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
         <View style={styles.listHeader}>
-          <Text style={styles.screenTitle}>Articles</Text>
+          <View style={styles.headerSearchWrap}>
+            <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Maqola qidirish..."
+              placeholderTextColor={Colors.subtleText}
+              style={styles.searchInput}
+            />
+          </View>
           <View style={styles.listHeaderActions}>
             <Pressable
               style={styles.addButton}
@@ -1360,20 +1688,9 @@ export function ArticlesScreen({ navigation }: Props) {
                 setEditorOpen(true);
               }}
             >
-              <Plus size={16} color="#fff" />
+              <Plus size={18} color={Colors.text} />
             </Pressable>
           </View>
-        </View>
-
-        <View style={styles.searchWrap}>
-          <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Maqola qidirish"
-            placeholderTextColor={Colors.subtleText}
-            style={styles.searchInput}
-          />
         </View>
 
         <ScrollView
@@ -1446,6 +1763,7 @@ export function ArticlesScreen({ navigation }: Props) {
 
       <ArticleEditorModal
         visible={editorOpen}
+        articleWordLimit={articleWordLimit}
         initialArticle={null}
         onClose={() => {
           setEditorOpen(false);
@@ -1467,36 +1785,19 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
   },
   listHeader: {
-    minHeight: 56,
+    minHeight: 66,
     paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 8,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
   },
-  screenTitle: {
-    color: Colors.text,
-    fontSize: 20,
-    fontWeight: "800",
-  },
-  listHeaderActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  addButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: Colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchWrap: {
-    marginHorizontal: 16,
-    marginTop: 14,
+  headerSearchWrap: {
+    flex: 1,
+    minWidth: 0,
     paddingHorizontal: 12,
     height: 42,
     borderRadius: 14,
@@ -1506,6 +1807,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  listHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  addButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
   },
   searchInput: {
     flex: 1,
@@ -1994,28 +2307,59 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 12,
   },
+  editorKeyboard: {
+    flex: 1,
+  },
+  editorOverlayPhone: {
+    padding: 0,
+  },
   editorDialog: {
     width: "100%",
-    maxHeight: "94%",
-    backgroundColor: Colors.surface,
-    borderRadius: 24,
+    height: "100%",
+    maxHeight: "100%",
+    backgroundColor: "#121A27",
+    borderRadius: 28,
     borderWidth: 1,
     borderColor: Colors.border,
     overflow: "hidden",
   },
+  editorDialogPhone: {
+    borderRadius: 0,
+    borderWidth: 0,
+  },
   editorHeader: {
-    paddingHorizontal: 18,
-    paddingVertical: 16,
+    paddingHorizontal: 22,
+    paddingVertical: 18,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 16,
+    backgroundColor: "rgba(18,26,39,0.94)",
+  },
+  editorHeaderStacked: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 14,
+  },
+  editorHeaderPhone: {
+    paddingLeft: 12,
+    paddingBottom: 12,
+    position: "relative",
   },
   editorHeaderMeta: {
     flex: 1,
     minWidth: 0,
+  },
+  editorHeaderMetaPhone: {
+    width: "100%",
+    flexGrow: 0,
+    flexShrink: 0,
+    paddingRight: 52,
+    zIndex: 1,
   },
   editorTitle: {
     color: Colors.text,
@@ -2024,7 +2368,7 @@ const styles = StyleSheet.create({
   },
   editorSubtitle: {
     color: Colors.mutedText,
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 4,
     lineHeight: 18,
   },
@@ -2032,20 +2376,42 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    flexShrink: 1,
+  },
+  editorHeaderActionsStacked: {
+    width: "100%",
+    flexWrap: "wrap",
+  },
+  editorHeaderActionsPhone: {
+    alignItems: "stretch",
+    width: "100%",
   },
   modeSwitch: {
     flexDirection: "row",
-    backgroundColor: Colors.input,
+    backgroundColor: "rgba(8,15,28,0.38)",
     borderRadius: 999,
     padding: 4,
+    flexShrink: 1,
+  },
+  modeSwitchPhone: {
+    width: "100%",
+    borderRadius: 18,
   },
   modeButton: {
-    minWidth: 72,
+    minWidth: 78,
     height: 34,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 12,
+    flexDirection: "row",
+    gap: 6,
+  },
+  modeButtonPhone: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 14,
+    paddingHorizontal: 8,
   },
   modeButtonActive: {
     backgroundColor: Colors.surface,
@@ -2058,15 +2424,91 @@ const styles = StyleSheet.create({
   modeButtonTextActive: {
     color: Colors.text,
   },
+  editorCloseCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "rgba(8,15,28,0.38)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  editorCloseCirclePhone: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    zIndex: 3,
+  },
+  headerPublishButton: {
+    minWidth: 108,
+    height: 40,
+    borderRadius: 999,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  headerPublishButtonWide: {
+    flexGrow: 1,
+  },
+  headerPublishButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
   editorContent: {
-    maxHeight: 620,
+    flex: 1,
+    minHeight: 0,
+  },
+  editorContentSplit: {
+    flexDirection: "row",
+  },
+  editorContentStacked: {
+    flexDirection: "column",
   },
   editorPane: {
-    maxHeight: 620,
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: "rgba(18,26,39,0.82)",
+  },
+  editorPaneSplit: {
+    flex: 1.08,
+    borderRightWidth: 1,
+    borderRightColor: Colors.border,
+  },
+  editorScroll: {
+    flex: 1,
+    minHeight: 0,
   },
   editorPaneContent: {
-    padding: 16,
+    padding: 22,
+    gap: 14,
+  },
+  editorPaneContentPhone: {
+    paddingHorizontal: 12,
+    paddingTop: 14,
+    paddingBottom: 24,
+  },
+  editorFieldCard: {
+    gap: 8,
+  },
+  editorFieldHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
+  },
+  editorFieldLabel: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  editorFieldMeta: {
+    color: Colors.mutedText,
+    fontSize: 11,
+    fontWeight: "600",
   },
   titleInput: {
     minHeight: 52,
@@ -2101,13 +2543,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     paddingHorizontal: 14,
   },
+  toolbarCard: {
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingBottom: 12,
+    gap: 12,
+    backgroundColor: "rgba(18,26,39,0.88)",
+  },
+  toolbarScroller: {
+    flexGrow: 0,
+  },
   toolbar: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: 8,
+    paddingRight: 8,
   },
   toolButton: {
-    width: 38,
+    minWidth: 38,
     height: 38,
     borderRadius: 12,
     backgroundColor: Colors.input,
@@ -2115,18 +2569,44 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 10,
   },
-  coverPreviewWrap: {
-    gap: 8,
+  coverUploadCard: {
+    minHeight: 180,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "rgba(88,101,242,0.36)",
+    backgroundColor: "rgba(88,101,242,0.08)",
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  coverUploadCardPhone: {
+    minHeight: 148,
+    borderRadius: 18,
+  },
+  coverUploadHint: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 18,
+  },
+  coverUploadHintTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  coverUploadHintText: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
   },
   coverPreview: {
     width: "100%",
-    aspectRatio: 1.8,
-    borderRadius: 18,
-  },
-  coverPreviewLabel: {
-    color: Colors.mutedText,
-    fontSize: 12,
+    height: "100%",
   },
   markdownInput: {
     minHeight: 320,
@@ -2141,27 +2621,93 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   previewPane: {
-    maxHeight: 620,
+    flex: 1,
+    minHeight: 0,
+  },
+  previewPaneSplit: {
+    flex: 0.92,
   },
   previewPaneContent: {
-    padding: 18,
+    padding: 28,
     gap: 12,
+  },
+  previewPaneContentPhone: {
+    paddingHorizontal: 14,
+    paddingTop: 18,
+    paddingBottom: 36,
+  },
+  previewPanel: {
+    gap: 12,
+  },
+  previewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingBottom: 12,
+  },
+  previewEyebrow: {
+    color: Colors.primary,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.7,
+  },
+  previewHeaderTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+    marginTop: 3,
+  },
+  previewBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    height: 30,
+    borderRadius: 999,
+    backgroundColor: "rgba(8,15,28,0.42)",
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  previewBadgeText: {
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: "700",
   },
   previewCover: {
     width: "100%",
     aspectRatio: 1.8,
-    borderRadius: 20,
+    borderRadius: 28,
   },
   previewTitle: {
     color: Colors.text,
-    fontSize: 26,
+    fontSize: 30,
     fontWeight: "800",
-    lineHeight: 32,
+    lineHeight: 36,
   },
   previewExcerpt: {
     color: Colors.mutedText,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 17,
+    lineHeight: 28,
+  },
+  previewTagRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  previewTag: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(8,15,28,0.42)",
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  previewTagText: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "700",
   },
   editorFooter: {
     paddingHorizontal: 18,
@@ -2172,29 +2718,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
+    backgroundColor: "rgba(18,26,39,0.96)",
   },
   editorCounter: {
     color: Colors.mutedText,
     fontSize: 12,
+    flex: 1,
   },
   editorCounterDanger: {
     color: Colors.danger,
   },
-  publishButton: {
-    minWidth: 112,
-    height: 42,
-    borderRadius: 999,
-    backgroundColor: Colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 18,
-  },
   publishButtonDisabled: {
     opacity: 0.5,
-  },
-  publishButtonText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "700",
   },
 });

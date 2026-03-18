@@ -1,5 +1,13 @@
 export type CourseMember = {
-  userId?: string;
+  userId?:
+    | string
+    | {
+        _id?: string;
+        id?: string;
+        username?: string;
+        nickname?: string;
+        avatar?: string;
+      };
   name?: string;
   avatar?: string;
   status?: "approved" | "pending" | string;
@@ -59,6 +67,27 @@ export type CourseLessonMaterial = {
   fileSize?: number;
 };
 
+export type CourseLessonAttendanceMember = {
+  userId?: string;
+  userName?: string;
+  userAvatar?: string;
+  status?: "present" | "late" | "absent" | string;
+  progressPercent?: number;
+  source?: "auto" | "manual" | string;
+  markedAt?: string | null;
+};
+
+export type CourseLessonAttendanceResponse = {
+  lessonId?: string;
+  summary?: {
+    present?: number;
+    late?: number;
+    absent?: number;
+  };
+  self?: CourseLessonAttendanceMember | null;
+  members?: CourseLessonAttendanceMember[];
+};
+
 export type CourseLinkedTestProgress = {
   userId?: string;
   userName?: string;
@@ -101,6 +130,9 @@ export type CourseLesson = {
   fileName?: string;
   fileSize?: number;
   durationSeconds?: number;
+  streamType?: "direct" | "hls";
+  streamAssets?: string[];
+  hlsKeyAsset?: string;
   status?: string;
   publishedAt?: string | null;
   views?: number;
@@ -137,7 +169,16 @@ export type Course = {
   accessType?: "paid" | "free_request" | "free_open" | string;
   price?: number;
   rating?: number;
-  createdBy?: string;
+  createdBy?:
+    | string
+    | {
+        _id?: string;
+        id?: string;
+        name?: string;
+        nickname?: string;
+        username?: string;
+        avatar?: string;
+      };
   members?: CourseMember[];
   membersCount?: number;
   pendingMembersCount?: number;
@@ -222,6 +263,8 @@ export type CourseLessonGradingRow = {
   homeworkPercent?: number | null;
   reviewedHomework?: boolean;
   oralScore?: number | null;
+  oralNote?: string;
+  oralUpdatedAt?: string | null;
   lessonScore?: number;
   performance?: string;
   feedback?: string;

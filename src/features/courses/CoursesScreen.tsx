@@ -3,8 +3,10 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,12 +16,19 @@ import {
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import DateTimePicker, {
+} from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useVideoPlayer, VideoView } from "expo-video";
 import {
   ArrowLeft,
+  AlertCircle,
   Brain,
   BookOpen,
+  Check,
   CheckCircle2,
+  Clock3,
   Copy,
   ChevronDown,
   ChevronUp,
@@ -30,28 +39,47 @@ import {
   Globe2,
   Heart,
   Layers,
+  LogIn,
   Lock,
   MessageCircle,
   Pencil,
   Play,
   Plus,
+  Pause,
   Send,
   Shield,
   Swords,
+  UserPlus,
+  ListVideo,
   Trash2,
   Type as TypeIcon,
   Upload,
   Users,
   X,
 } from "lucide-react-native";
+import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
+import { allowScreenCaptureAsync, preventScreenCaptureAsync } from "expo-screen-capture";
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerStateChangeEvent,
+} from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
+import { API_BASE_URL, APP_BASE_URL } from "../../config/env";
+import { APP_LIMITS } from "../../constants/appLimits";
 import { arenaApi, coursesApi } from "../../lib/api";
+import {
+  downloadOfflineLessonPlayback,
+  getOfflineLessonPlayback,
+  removeOfflineLessonPlayback,
+  type OfflineLessonPlayback,
+} from "../../lib/secure-course-video-cache";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -60,38 +88,92 @@ import type {
   CourseComment,
   CourseHomeworkAssignment,
   CourseLinkedTest,
+  CourseLessonAttendanceResponse,
   CourseLessonGradingResponse,
+  CourseLessonGradingRow,
   CourseLessonMaterial,
   CourseLesson,
   CourseMember,
 } from "../../types/courses";
+import type { ArenaTestPayload } from "../../types/arena";
 import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Courses">;
 type CourseViewMode = "courses" | "arena";
 type LessonMediaMode = "upload" | "url";
+type CourseAdminTab = "tests" | "homework" | "attendance" | "grading" | "members";
+type HomeworkType = "text" | "audio" | "video" | "pdf" | "photo";
 
 type ArenaItem = {
   key: string;
   title: string;
   description: string;
   icon: typeof BookOpen;
-  gradient: string;
 };
 
-type ArenaTestQuestion = {
-  question?: string;
-  prompt?: string;
-  options?: string[];
-};
+const HOMEWORK_TYPE_OPTIONS: Array<{
+  value: HomeworkType;
+  label: string;
+  hint: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}> = [
+  {
+    value: "text",
+    label: "Text",
+    hint: "Talaba matn yoki havola bilan javob yuboradi.",
+    icon: "document-text-outline",
+  },
+  {
+    value: "audio",
+    label: "Audio",
+    hint: "Talaba audio yozuv yoki fayl yuklaydi.",
+    icon: "mic-outline",
+  },
+  {
+    value: "video",
+    label: "Video",
+    hint: "Talaba video fayl yoki havola yuboradi.",
+    icon: "videocam-outline",
+  },
+  {
+    value: "pdf",
+    label: "PDF",
+    hint: "Talaba PDF hujjat yoki link yuklaydi.",
+    icon: "document-attach-outline",
+  },
+  {
+    value: "photo",
+    label: "Photo",
+    hint: "Talaba rasm yoki surat yuboradi.",
+    icon: "image-outline",
+  },
+];
 
-type ArenaTestPayload = {
-  _id?: string;
-  title?: string;
-  questions?: ArenaTestQuestion[];
-  displayMode?: "single" | "list" | string;
-  timeLimit?: number;
-  showResults?: boolean;
+const HOMEWORK_FILE_CONFIG: Partial<
+  Record<
+    HomeworkType,
+    {
+      extensions: string;
+      maxBytes: number;
+    }
+  >
+> = {
+  audio: {
+    extensions: "MP3, WAV, M4A, AAC, OGG",
+    maxBytes: APP_LIMITS.homeworkAudioBytes,
+  },
+  video: {
+    extensions: "MP4, MOV, WEBM, MKV, M4V",
+    maxBytes: APP_LIMITS.homeworkVideoBytes,
+  },
+  pdf: {
+    extensions: "PDF",
+    maxBytes: APP_LIMITS.homeworkPdfBytes,
+  },
+  photo: {
+    extensions: "JPG, JPEG, PNG, WEBP, GIF",
+    maxBytes: APP_LIMITS.homeworkPhotoBytes,
+  },
 };
 
 type SentenceBuilderQuestion = {
@@ -108,42 +190,38 @@ type SentenceBuilderDeck = {
 const ARENA_ITEMS: ArenaItem[] = [
   {
     key: "tests",
-    title: "Testlar",
-    description: "Arena quiz mashqlari va tezkor sinovlar.",
+    title: "Tests",
+    description: "Practice open tests",
     icon: BookOpen,
-    gradient: "linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%)",
   },
   {
     key: "flashcards",
     title: "Flashcards",
-    description: "Kartochkalar bilan yodlash va takrorlash.",
+    description: "Memorize vocabulary",
     icon: Layers,
-    gradient: "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
   },
   {
     key: "sentenceBuilders",
-    title: "Sentence Builder",
-    description: "Gap tuzish mashqlari va grammatik drillar.",
+    title: "Sentence builder",
+    description: "Build sentences from pieces",
     icon: TypeIcon,
-    gradient: "linear-gradient(135deg, #22c55e 0%, #14b8a6 100%)",
   },
   {
     key: "mnemonics",
     title: "Mnemonics",
-    description: "Eslab qolish uchun mnemonic mashqlar.",
+    description: "Memorize number sequences",
     icon: Brain,
-    gradient: "linear-gradient(135deg, #64748b 0%, #334155 100%)",
   },
   {
     key: "battles",
-    title: "Battles",
-    description: "Bilimlar bellashuvi va duel rejimi.",
+    title: "Knowledge battles",
+    description: "Real-time competition",
     icon: Swords,
-    gradient: "linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)",
   },
 ];
 
 const COURSE_CATEGORIES = ["IT", "Design", "Language", "Business", "Science"];
+const DEFAULT_COURSE_GRADIENT = ["#667eea", "#764ba2"] as const;
 
 function timeAgo(value?: string | null) {
   if (!value) return "";
@@ -201,10 +279,174 @@ function formatFileSize(bytes?: number | null) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function toLocalDateTimeValue(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("-") + `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function parseLocalDateTimeValue(value?: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function formatHomeworkDeadlineLabel(value?: string | null) {
+  const parsed = parseLocalDateTimeValue(value);
+  if (!parsed) {
+    return "Deadline tanlanmagan";
+  }
+
+  return parsed.toLocaleString("uz-UZ", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatAccessType(value?: string | null) {
   if (value === "free_open") return "Open";
   if (value === "paid") return "Paid";
   return "Request";
+}
+
+function formatCourseStatus(status?: string | null) {
+  if (status === "approved") return "A'zo";
+  if (status === "pending") return "Kutilmoqda";
+  if (status === "admin") return "Admin";
+  return "";
+}
+
+function getCourseLessonCount(course?: Course | null) {
+  return course?.lessonCount ?? course?.lessons?.length ?? 0;
+}
+
+function getCourseOwnerId(course?: Course | null) {
+  if (!course?.createdBy) return "";
+  if (typeof course.createdBy === "string") return course.createdBy;
+  return getEntityId(course.createdBy);
+}
+
+function getCourseMemberUserId(member?: CourseMember | null) {
+  if (!member?.userId) return "";
+  if (typeof member.userId === "string") {
+    return member.userId;
+  }
+  return getEntityId(member.userId);
+}
+
+function getCourseMemberStatus(course?: Course | null, currentUserId?: string | null) {
+  const normalizedUserId = String(currentUserId || "");
+  if (!course || !normalizedUserId) return null;
+  if (getCourseOwnerId(course) === normalizedUserId) {
+    return "admin";
+  }
+
+  return (
+    course.members?.find(
+      (member) => String(getCourseMemberUserId(member) || "") === normalizedUserId,
+    )?.status || null
+  );
+}
+
+function getCourseMemberName(member?: CourseMember | null) {
+  if (!member) return "Talaba";
+  if (member.name) return member.name;
+  if (typeof member.userId === "object" && member.userId) {
+    return member.userId.nickname || member.userId.username || "Talaba";
+  }
+  return "Talaba";
+}
+
+function getCourseMemberAvatar(member?: CourseMember | null) {
+  if (!member) return "";
+  if (member.avatar) return member.avatar;
+  if (typeof member.userId === "object" && member.userId) {
+    return member.userId.avatar || "";
+  }
+  return "";
+}
+
+function formatDurationCompact(seconds?: number | null) {
+  const total = Math.max(0, Math.round(Number(seconds || 0)));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  if (mins < 1) return `${secs}s`;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatPlaybackClock(seconds?: number | null) {
+  const total = Math.max(0, Math.round(Number(seconds || 0)));
+  const hours = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function resolveApiUrl(path?: string | null) {
+  const value = String(path || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return `${API_BASE_URL}${value.startsWith("/") ? value : `/${value}`}`;
+}
+
+function getOfflineLessonMediaKey(
+  courseId?: string | null,
+  lessonId?: string | null,
+  mediaId?: string | null,
+) {
+  return `${String(courseId || "")}:${String(lessonId || "")}:${String(mediaId || "primary")}`;
+}
+
+function resolveJammWebCourseLessonUrl(course?: Course | null, lesson?: CourseLesson | null) {
+  const courseSlug = course?.urlSlug || course?._id || course?.id;
+  const lessonSlug = lesson?.urlSlug || lesson?._id || lesson?.id;
+  if (!courseSlug || !lessonSlug) {
+    return `${APP_BASE_URL}/courses`;
+  }
+  return `${APP_BASE_URL}/courses/${courseSlug}/${lessonSlug}`;
+}
+
+function getCourseMemberCount(course?: Course | null) {
+  return (
+    course?.membersCount ??
+    course?.totalMembersCount ??
+    course?.members?.filter((member) => member.status === "approved").length ??
+    0
+  );
+}
+
+function getCourseGradientColors(gradient?: string | null): readonly [string, string] {
+  const matches = String(gradient || "").match(
+    /(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\))/g,
+  );
+
+  if (matches && matches.length >= 2) {
+    return [matches[0], matches[1]] as const;
+  }
+
+  if (matches && matches.length === 1) {
+    return [matches[0], matches[0]] as const;
+  }
+
+  return DEFAULT_COURSE_GRADIENT;
 }
 
 function CommentsModal({
@@ -863,43 +1105,50 @@ function MaterialEditorModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>Material qo'shish</Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-          <View style={styles.createContent}>
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Material nomi"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <Pressable style={styles.mediaPicker} onPress={() => void pickPdf()}>
-              <FileText size={16} color={Colors.primary} />
-              <Text style={styles.mediaPickerText}>
-                {file ? file.name : "PDF tanlash"}
-              </Text>
-            </Pressable>
-          </View>
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, (!title.trim() || !file || saving) && styles.sendButtonDisabled]}
-              disabled={!title.trim() || !file || saving}
-              onPress={() => void handleSave()}
-            >
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Saqlash</Text>}
-            </Pressable>
-          </View>
+      <KeyboardAvoidingView
+        style={styles.modalKeyboardAvoid}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <Pressable style={styles.modalOverlay} onPress={onClose}>
+          <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
+            <View style={styles.createHeader}>
+              <Text style={styles.createTitle}>Material qo'shish</Text>
+              <Pressable style={styles.iconCircle} onPress={onClose}>
+                <X size={18} color={Colors.mutedText} />
+              </Pressable>
+            </View>
+            <View style={styles.createContent}>
+              <TextInput
+                value={title}
+                onChangeText={setTitle}
+                placeholder="Material nomi"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.fieldInput}
+              />
+              <Pressable style={styles.mediaPicker} onPress={() => void pickPdf()}>
+                <FileText size={16} color={Colors.primary} />
+                <Text style={styles.mediaPickerText}>{file ? file.name : "PDF tanlash"}</Text>
+              </Pressable>
+            </View>
+            <View style={styles.createFooter}>
+              <Pressable style={styles.secondaryButton} onPress={onClose}>
+                <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryButton, (!title.trim() || !file || saving) && styles.sendButtonDisabled]}
+                disabled={!title.trim() || !file || saving}
+                onPress={() => void handleSave()}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.primaryButtonText}>Saqlash</Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -951,49 +1200,58 @@ function LinkedTestModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>Arena mashqi qo'shish</Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-          <View style={styles.createContent}>
-            <TextInput
-              value={url}
-              onChangeText={setUrl}
-              placeholder="Arena test yoki sentence-builder URL"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={minimumScore}
-              onChangeText={setMinimumScore}
-              placeholder="Minimum score"
-              placeholderTextColor={Colors.subtleText}
-              keyboardType="number-pad"
-              style={styles.fieldInput}
-            />
-            <Pressable style={styles.inlineToggle} onPress={() => setRequired((value) => !value)}>
-              <View style={[styles.checkbox, required && styles.checkboxActive]} />
-              <Text style={styles.inlineToggleText}>Keyingi darsni ochish uchun majburiy</Text>
-            </Pressable>
-          </View>
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, (!url.trim() || saving) && styles.sendButtonDisabled]}
-              disabled={!url.trim() || saving}
-              onPress={() => void handleSave()}
-            >
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Saqlash</Text>}
-            </Pressable>
-          </View>
+      <KeyboardAvoidingView
+        style={styles.modalKeyboardAvoid}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <Pressable style={styles.modalOverlay} onPress={onClose}>
+          <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
+            <View style={styles.createHeader}>
+              <Text style={styles.createTitle}>Arena mashqi qo'shish</Text>
+              <Pressable style={styles.iconCircle} onPress={onClose}>
+                <X size={18} color={Colors.mutedText} />
+              </Pressable>
+            </View>
+            <View style={styles.createContent}>
+              <TextInput
+                value={url}
+                onChangeText={setUrl}
+                placeholder="Arena test yoki sentence-builder URL"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.fieldInput}
+              />
+              <TextInput
+                value={minimumScore}
+                onChangeText={setMinimumScore}
+                placeholder="Minimum score"
+                placeholderTextColor={Colors.subtleText}
+                keyboardType="number-pad"
+                style={styles.fieldInput}
+              />
+              <Pressable style={styles.inlineToggle} onPress={() => setRequired((value) => !value)}>
+                <View style={[styles.checkbox, required && styles.checkboxActive]} />
+                <Text style={styles.inlineToggleText}>Keyingi darsni ochish uchun majburiy</Text>
+              </Pressable>
+            </View>
+            <View style={styles.createFooter}>
+              <Pressable style={styles.secondaryButton} onPress={onClose}>
+                <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryButton, (!url.trim() || saving) && styles.sendButtonDisabled]}
+                disabled={!url.trim() || saving}
+                onPress={() => void handleSave()}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.primaryButtonText}>Saqlash</Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -1015,8 +1273,16 @@ function HomeworkEditorModal({
   const [description, setDescription] = useState("");
   const [deadline, setDeadline] = useState("");
   const [maxScore, setMaxScore] = useState("100");
-  const [type, setType] = useState<"text" | "audio" | "video" | "pdf" | "photo">("text");
+  const [type, setType] = useState<HomeworkType>("text");
   const [saving, setSaving] = useState(false);
+  const [showDeadlinePickerModal, setShowDeadlinePickerModal] = useState(false);
+  const [deadlineDraft, setDeadlineDraft] = useState<Date>(new Date());
+
+  const selectedTypeOption = useMemo(
+    () => HOMEWORK_TYPE_OPTIONS.find((option) => option.value === type) || HOMEWORK_TYPE_OPTIONS[0],
+    [type],
+  );
+  const selectedFileConfig = HOMEWORK_FILE_CONFIG[type];
 
   useEffect(() => {
     if (!visible) {
@@ -1026,8 +1292,26 @@ function HomeworkEditorModal({
       setMaxScore("100");
       setType("text");
       setSaving(false);
+      setShowDeadlinePickerModal(false);
+      setDeadlineDraft(new Date());
     }
   }, [visible]);
+
+  const openDeadlinePicker = useCallback(() => {
+    const baseDate = parseLocalDateTimeValue(deadline) || new Date();
+    setDeadlineDraft(baseDate);
+    setShowDeadlinePickerModal(true);
+  }, [deadline]);
+
+  const applyDeadlineDraft = useCallback(() => {
+    setDeadline(toLocalDateTimeValue(deadlineDraft));
+    setShowDeadlinePickerModal(false);
+  }, [deadlineDraft]);
+
+  const clearDeadline = useCallback(() => {
+    setDeadline("");
+    setShowDeadlinePickerModal(false);
+  }, []);
 
   const handleSave = async () => {
     if (!courseId || !lessonId || !title.trim() || saving) return;
@@ -1051,66 +1335,102 @@ function HomeworkEditorModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>Homework qo'shish</Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-          <ScrollView contentContainerStyle={styles.createContent} showsVerticalScrollIndicator={false}>
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Topshiriq sarlavhasi"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Tavsif"
-              placeholderTextColor={Colors.subtleText}
-              style={[styles.fieldInput, styles.textArea]}
-              multiline
-            />
-            <TextInput
-              value={deadline}
-              onChangeText={setDeadline}
-              placeholder="Deadline (2026-03-30)"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={maxScore}
-              onChangeText={setMaxScore}
-              placeholder="Max score"
-              placeholderTextColor={Colors.subtleText}
-              keyboardType="number-pad"
-              style={styles.fieldInput}
-            />
-            <View style={styles.accessRow}>
-              {(["text", "audio", "video", "pdf", "photo"] as const).map((option) => (
-                <Pressable
-                  key={option}
-                  style={[styles.accessChip, type === option && styles.accessChipActive]}
-                  onPress={() => setType(option)}
-                >
-                  <Text
-                    style={[
-                      styles.accessChipText,
-                      type === option && styles.accessChipTextActive,
-                    ]}
+    <>
+      <DraggableBottomSheet
+        visible={visible}
+        title={title.trim() ? "Homeworkni tahrirlash" : "Homework qo'shish"}
+        onClose={onClose}
+        minHeight={560}
+        initialHeightRatio={0.86}
+        overlay={
+          Platform.OS !== "web" && showDeadlinePickerModal ? (
+            <View style={styles.homeworkPickerOverlay}>
+              <Pressable
+                style={styles.homeworkPickerBackdrop}
+                onPress={() => setShowDeadlinePickerModal(false)}
+              />
+              <View style={styles.deadlinePickerModalCard}>
+                <View style={styles.createHeader}>
+                  <Text style={styles.createTitle}>Deadline tanlash</Text>
+                  <Pressable
+                    style={styles.iconCircle}
+                    onPress={() => setShowDeadlinePickerModal(false)}
                   >
-                    {option}
-                  </Text>
-                </Pressable>
-              ))}
+                    <X size={18} color={Colors.mutedText} />
+                  </Pressable>
+                </View>
+
+                <View style={styles.deadlinePickerModalBody}>
+                  <Text style={styles.deadlinePickerModalLabel}>Sana</Text>
+                  <View style={styles.deadlinePickerCard}>
+                    <DateTimePicker
+                      value={deadlineDraft}
+                      mode="date"
+                      display={Platform.OS === "ios" ? "spinner" : "spinner"}
+                      onChange={(_event, selectedDate) => {
+                        if (!selectedDate) {
+                          return;
+                        }
+
+                        setDeadlineDraft((prev) => {
+                          const next = new Date(prev);
+                          next.setFullYear(
+                            selectedDate.getFullYear(),
+                            selectedDate.getMonth(),
+                            selectedDate.getDate(),
+                          );
+                          return next;
+                        });
+                      }}
+                    />
+                  </View>
+
+                  <Text style={styles.deadlinePickerModalLabel}>Vaqt</Text>
+                  <View style={styles.deadlinePickerCard}>
+                    <DateTimePicker
+                      value={deadlineDraft}
+                      mode="time"
+                      display="spinner"
+                      is24Hour
+                      onChange={(_event, selectedDate) => {
+                        if (!selectedDate) {
+                          return;
+                        }
+
+                        setDeadlineDraft((prev) => {
+                          const next = new Date(prev);
+                          next.setHours(selectedDate.getHours(), selectedDate.getMinutes(), 0, 0);
+                          return next;
+                        });
+                      }}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.deadlinePickerActions}>
+                  <Pressable style={styles.deadlinePickerGhostButton} onPress={clearDeadline}>
+                    <Text style={styles.deadlinePickerGhostText}>Tozalash</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.deadlinePickerGhostButton}
+                    onPress={() => setShowDeadlinePickerModal(false)}
+                  >
+                    <Text style={styles.deadlinePickerGhostText}>Bekor qilish</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.deadlinePickerPrimaryButton}
+                    onPress={applyDeadlineDraft}
+                  >
+                    <Text style={styles.deadlinePickerPrimaryText}>Tayyor</Text>
+                  </Pressable>
+                </View>
+              </View>
             </View>
-          </ScrollView>
-          <View style={styles.createFooter}>
+          ) : null
+        }
+        footer={
+          showDeadlinePickerModal ? null : (
+          <View style={styles.homeworkEditorFooter}>
             <Pressable style={styles.secondaryButton} onPress={onClose}>
               <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
             </Pressable>
@@ -1119,12 +1439,200 @@ function HomeworkEditorModal({
               disabled={!title.trim() || saving}
               onPress={() => void handleSave()}
             >
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryButtonText}>Saqlash</Text>}
+              {saving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.primaryButtonText}>Saqlash</Text>
+              )}
             </Pressable>
           </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+          )
+        }
+      >
+        <View style={styles.homeworkEditorBody}>
+          <ScrollView
+            style={styles.homeworkEditorScroll}
+            contentContainerStyle={styles.homeworkEditorContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.homeworkEditorIntro}>
+              <Text style={styles.homeworkEditorIntroTitle}>
+                Topshiriq turi, deadline va maksimal balni belgilang.
+              </Text>
+              <Text style={styles.homeworkEditorIntroText}>
+                Frontenddagi homework editor oqimiga yaqinlashtirilgan sheet.
+              </Text>
+            </View>
+
+            <View style={styles.homeworkEditorField}>
+              <Text style={styles.homeworkEditorLabel}>Sarlavha</Text>
+              <TextInput
+                value={title}
+                onChangeText={setTitle}
+                placeholder="Topshiriq sarlavhasi"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.fieldInput}
+              />
+            </View>
+
+            <View style={styles.homeworkEditorField}>
+              <Text style={styles.homeworkEditorLabel}>Tavsif</Text>
+              <TextInput
+                value={description}
+                onChangeText={setDescription}
+                placeholder="Topshiriq tavsifi"
+                placeholderTextColor={Colors.subtleText}
+                style={[styles.fieldInput, styles.textArea]}
+                multiline
+              />
+            </View>
+
+            <View style={styles.homeworkEditorField}>
+              <Text style={styles.homeworkEditorLabel}>Topshiriq turi</Text>
+              <View style={styles.homeworkTypeList}>
+                {HOMEWORK_TYPE_OPTIONS.map((option) => {
+                  const isActive = type === option.value;
+
+                  return (
+                    <Pressable
+                      key={option.value}
+                      style={[
+                        styles.homeworkTypeCard,
+                        isActive && styles.homeworkTypeCardActive,
+                      ]}
+                      onPress={() => setType(option.value)}
+                    >
+                      <View
+                        style={[
+                          styles.homeworkTypeIconWrap,
+                          isActive && styles.homeworkTypeIconWrapActive,
+                        ]}
+                      >
+                        <Ionicons
+                          name={option.icon}
+                          size={18}
+                          color={isActive ? "#fff" : Colors.primary}
+                        />
+                      </View>
+                      <View style={styles.homeworkTypeCopy}>
+                        <Text
+                          style={[
+                            styles.homeworkTypeTitle,
+                            isActive && styles.homeworkTypeTitleActive,
+                          ]}
+                        >
+                          {option.label}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.homeworkTypeHint,
+                            isActive && styles.homeworkTypeHintActive,
+                          ]}
+                        >
+                          {option.hint}
+                        </Text>
+                      </View>
+                      {isActive ? <CheckCircle2 size={18} color={Colors.primary} /> : null}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={styles.homeworkUploadHintCard}>
+              <View style={styles.homeworkUploadHintHeader}>
+                <View style={styles.homeworkUploadHintIcon}>
+                  <Upload size={18} color={Colors.primary} />
+                </View>
+                <View style={styles.homeworkUploadHintCopy}>
+                  <Text style={styles.homeworkUploadHintTitle}>
+                    {selectedTypeOption.label} topshirish oqimi
+                  </Text>
+                  <Text style={styles.homeworkUploadHintText}>
+                    {selectedTypeOption.hint}
+                  </Text>
+                </View>
+              </View>
+              {selectedFileConfig ? (
+                <>
+                  <View style={styles.homeworkUploadHintMetaRow}>
+                    <Text style={styles.homeworkUploadHintMetaLabel}>Formatlar</Text>
+                    <Text style={styles.homeworkUploadHintMetaValue}>
+                      {selectedFileConfig.extensions}
+                    </Text>
+                  </View>
+                  <View style={styles.homeworkUploadHintMetaRow}>
+                    <Text style={styles.homeworkUploadHintMetaLabel}>Limit</Text>
+                    <Text style={styles.homeworkUploadHintMetaValue}>
+                      {formatFileSize(selectedFileConfig.maxBytes)} gacha
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.homeworkUploadHintText}>
+                  Bu turda talaba matn yoki link bilan javob yuboradi.
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.homeworkEditorRow}>
+              <View style={[styles.homeworkEditorField, styles.homeworkEditorHalfField]}>
+                <Text style={styles.homeworkEditorLabel}>Deadline</Text>
+                {Platform.OS === "web" ? (
+                  <TextInput
+                    value={deadline}
+                    onChangeText={setDeadline}
+                    placeholder="2026-03-30T18:00"
+                    placeholderTextColor={Colors.subtleText}
+                    style={styles.fieldInput}
+                  />
+                ) : (
+                  <>
+                    <Pressable style={styles.deadlineFieldButton} onPress={openDeadlinePicker}>
+                      <View style={styles.deadlineFieldLeft}>
+                        <View style={styles.deadlineFieldIcon}>
+                          <Clock3 size={16} color={Colors.primary} />
+                        </View>
+                        <View style={styles.deadlineFieldCopy}>
+                          <Text style={styles.deadlineFieldLabel}>Sana va vaqt</Text>
+                          <Text
+                            style={[
+                              styles.deadlineFieldValue,
+                              !deadline && styles.deadlineFieldValuePlaceholder,
+                            ]}
+                          >
+                            {formatHomeworkDeadlineLabel(deadline)}
+                          </Text>
+                        </View>
+                      </View>
+                      <ChevronDown size={16} color={Colors.mutedText} />
+                    </Pressable>
+                    {deadline ? (
+                      <Pressable style={styles.deadlineClearButton} onPress={clearDeadline}>
+                        <Text style={styles.deadlineClearButtonText}>Tozalash</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                )}
+              </View>
+
+              <View style={[styles.homeworkEditorField, styles.homeworkEditorHalfField]}>
+                <Text style={styles.homeworkEditorLabel}>Max ball</Text>
+                <TextInput
+                  value={maxScore}
+                  onChangeText={setMaxScore}
+                  placeholder="100"
+                  placeholderTextColor={Colors.subtleText}
+                  keyboardType="number-pad"
+                  style={styles.fieldInput}
+                />
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      </DraggableBottomSheet>
+    </>
   );
 }
 
@@ -1451,7 +1959,10 @@ function InlineTestPlayerModal({
                   return (
                     <View key={`result-${index}`} style={styles.runnerBreakdownCard}>
                       <Text style={styles.runnerBreakdownQuestion}>
-                        {question?.question || question?.prompt || `${index + 1}-savol`}
+                        {question?.questionText ||
+                          question?.question ||
+                          question?.prompt ||
+                          `${index + 1}-savol`}
                       </Text>
                       {(question?.options || []).map((option, optionIndex) => {
                         const isCorrect = resultItem.correctOptionIndex === optionIndex;
@@ -1481,7 +1992,10 @@ function InlineTestPlayerModal({
             {questions.map((question, questionIndex) => (
               <View key={`question-${questionIndex}`} style={styles.runnerQuestionCard}>
                 <Text style={styles.runnerQuestionText}>
-                  {question.question || question.prompt || `${questionIndex + 1}-savol`}
+                  {question.questionText ||
+                    question.question ||
+                    question.prompt ||
+                    `${questionIndex + 1}-savol`}
                 </Text>
                 <View style={styles.runnerOptionsList}>
                   {(question.options || []).map((option, optionIndex) => (
@@ -1523,7 +2037,10 @@ function InlineTestPlayerModal({
                 {currentIdx + 1} / {questions.length}
               </Text>
               <Text style={styles.runnerQuestionText}>
-                {currentQuestion?.question || currentQuestion?.prompt || "Savol"}
+                {currentQuestion?.questionText ||
+                  currentQuestion?.question ||
+                  currentQuestion?.prompt ||
+                  "Savol"}
               </Text>
               <View style={styles.runnerOptionsList}>
                 {(currentQuestion?.options || []).map((option, optionIndex) => (
@@ -1656,7 +2173,7 @@ function InlineSentenceBuilderModal({
       ),
     );
     setCheckedResult(null);
-  }, [answerMap, currentQuestion, questionIndex, summary]);
+  }, [currentQuestion, questionIndex, summary]);
 
   useEffect(() => {
     if (!visible || !timeLeft || summary || submitting) {
@@ -1874,7 +2391,7 @@ function InlineSentenceBuilderModal({
   );
 }
 
-export function CoursesScreen({ navigation }: Props) {
+export function CoursesScreen({ navigation, route }: Props) {
   const { width: screenWidth } = useWindowDimensions();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
@@ -1882,13 +2399,16 @@ export function CoursesScreen({ navigation }: Props) {
   const [viewMode, setViewMode] = useState<CourseViewMode>("courses");
   const pagerRef = useRef<ScrollView>(null);
   const pagerScrollX = useRef(new Animated.Value(0)).current;
+  const courseDetailTranslateX = useRef(new Animated.Value(0)).current;
+  const adminPaneTranslateX = useRef(new Animated.Value(screenWidth)).current;
   const currentIndexRef = useRef(0);
   const [tabsWidth, setTabsWidth] = useState(0);
-  const [activeArenaTab, setActiveArenaTab] = useState("tests");
   const [query, setQuery] = useState("");
   const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const [lessonAdminPanelOpen, setLessonAdminPanelOpen] = useState(false);
+  const [adminActiveTab, setAdminActiveTab] = useState<CourseAdminTab>("homework");
   const [createOpen, setCreateOpen] = useState(false);
   const [lessonEditorOpen, setLessonEditorOpen] = useState(false);
   const [editingLesson, setEditingLesson] = useState<CourseLesson | null>(null);
@@ -1902,10 +2422,85 @@ export function CoursesScreen({ navigation }: Props) {
   const [homeworkExpanded, setHomeworkExpanded] = useState(true);
   const [gradingExpanded, setGradingExpanded] = useState(false);
   const [playlistCollapsed, setPlaylistCollapsed] = useState(false);
+  const [lessonDescriptionSheetOpen, setLessonDescriptionSheetOpen] = useState(false);
+  const [studentExtrasOpen, setStudentExtrasOpen] = useState(false);
+  const [editingOralRows, setEditingOralRows] = useState<Record<string, boolean>>({});
+  const [oralScoreDrafts, setOralScoreDrafts] = useState<Record<string, string>>({});
+  const [oralNoteDrafts, setOralNoteDrafts] = useState<Record<string, string>>({});
+  const [memberActionTargetId, setMemberActionTargetId] = useState<string | null>(null);
+  const [attendanceActionTargetId, setAttendanceActionTargetId] = useState<string | null>(null);
+  const [oralSavingUserId, setOralSavingUserId] = useState<string | null>(null);
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const [activeLinkedTest, setActiveLinkedTest] = useState<CourseLinkedTest | null>(null);
   const [activeArenaTest, setActiveArenaTest] = useState<ArenaTestPayload | null>(null);
   const [activeSentenceDeck, setActiveSentenceDeck] = useState<SentenceBuilderDeck | null>(null);
   const [arenaLoading, setArenaLoading] = useState(false);
+  const [deletingCourseId, setDeletingCourseId] = useState<string | null>(null);
+  const [playbackStreamUrl, setPlaybackStreamUrl] = useState("");
+  const [playbackStreamType, setPlaybackStreamType] = useState<"direct" | "hls" | "">("");
+  const [playbackLoading, setPlaybackLoading] = useState(false);
+  const [playbackError, setPlaybackError] = useState("");
+  const [playbackRetryNonce, setPlaybackRetryNonce] = useState(0);
+  const [offlinePlaybackMap, setOfflinePlaybackMap] = useState<
+    Record<string, OfflineLessonPlayback>
+  >({});
+  const [offlinePlaybackBypassKeys, setOfflinePlaybackBypassKeys] = useState<
+    Record<string, true>
+  >({});
+  const [offlinePlaybackLoading, setOfflinePlaybackLoading] = useState(false);
+  const [offlineLookupScopeKey, setOfflineLookupScopeKey] = useState("");
+  const [offlineRefreshNonce, setOfflineRefreshNonce] = useState(0);
+  const [offlineDownloading, setOfflineDownloading] = useState(false);
+  const [offlineRemoving, setOfflineRemoving] = useState(false);
+  const [offlineDownloadProgress, setOfflineDownloadProgress] = useState({
+    current: 0,
+    total: 0,
+  });
+  const [mediaCurrentTime, setMediaCurrentTime] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
+  const [mediaBufferedPosition, setMediaBufferedPosition] = useState(0);
+  const [isLessonVideoPlaying, setIsLessonVideoPlaying] = useState(false);
+  const [isLessonVideoFullscreen, setIsLessonVideoFullscreen] = useState(false);
+  const [offlineTooltipVisible, setOfflineTooltipVisible] = useState(false);
+  const [videoProgressTrackWidth, setVideoProgressTrackWidth] = useState(0);
+  const pendingSeekTimeRef = useRef<number | null>(null);
+  const offlineTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const offlineTooltipSuppressPressRef = useRef(false);
+  const videoViewRef = useRef<VideoView | null>(null);
+  const adminPaneBackdropOpacity = useMemo(
+    () =>
+      adminPaneTranslateX.interpolate({
+        inputRange: [0, Math.max(screenWidth, 1)],
+        outputRange: [1, 0],
+        extrapolate: "clamp",
+      }),
+    [adminPaneTranslateX, screenWidth],
+  );
+
+  const clearOfflineTooltipTimer = useCallback(() => {
+    if (offlineTooltipTimerRef.current) {
+      clearTimeout(offlineTooltipTimerRef.current);
+      offlineTooltipTimerRef.current = null;
+    }
+  }, []);
+
+  const showOfflineTooltip = useCallback(() => {
+    clearOfflineTooltipTimer();
+    setOfflineTooltipVisible(true);
+    offlineTooltipTimerRef.current = setTimeout(() => {
+      setOfflineTooltipVisible(false);
+      offlineTooltipSuppressPressRef.current = false;
+      offlineTooltipTimerRef.current = null;
+    }, 1800);
+  }, [clearOfflineTooltipTimer]);
+
+  useEffect(() => {
+    return () => {
+      clearOfflineTooltipTimer();
+    };
+  }, [clearOfflineTooltipTimer]);
+  const isExpoWebPlaybackFallback = Platform.OS === "web";
+  const canUseOfflineLessonCache = Platform.OS !== "web";
 
   const coursesQuery = useQuery({
     queryKey: ["courses"],
@@ -1944,6 +2539,32 @@ export function CoursesScreen({ navigation }: Props) {
     },
   });
 
+  const approveCourseMemberMutation = useMutation({
+    mutationFn: ({ courseId, userId }: { courseId: string; userId: string }) =>
+      coursesApi.approveCourseMember(courseId, userId),
+    onSuccess: async () => {
+      await invalidateCourseDetail();
+    },
+  });
+
+  const removeCourseMemberMutation = useMutation({
+    mutationFn: ({ courseId, userId }: { courseId: string; userId: string }) =>
+      coursesApi.removeCourseMember(courseId, userId),
+    onSuccess: async () => {
+      await invalidateCourseDetail();
+    },
+  });
+
+  const deleteCourseMutation = useMutation({
+    mutationFn: (courseId: string) => coursesApi.deleteCourse(courseId),
+    onSuccess: async (_data, courseId) => {
+      await queryClient.invalidateQueries({ queryKey: ["courses"] });
+      if (selectedCourseId === courseId) {
+        setSelectedCourseId(null);
+      }
+    },
+  });
+
   const likeLessonMutation = useMutation({
     mutationFn: ({ courseId, lessonId }: { courseId: string; lessonId: string }) =>
       coursesApi.toggleLessonLike(courseId, lessonId),
@@ -1958,12 +2579,14 @@ export function CoursesScreen({ navigation }: Props) {
   const enrolledCourses = useMemo(
     () =>
       allCourses.filter(
-        (course) =>
-          String(course.createdBy || "") === currentUserId ||
-          course.members?.some(
-            (member: CourseMember) =>
-              String(member.userId || "") === currentUserId && member.status === "approved",
-          ),
+        (course) => {
+          const memberStatus = getCourseMemberStatus(course, currentUserId);
+          return (
+            memberStatus === "admin" ||
+            memberStatus === "approved" ||
+            memberStatus === "pending"
+          );
+        },
       ),
     [allCourses, currentUserId],
   );
@@ -1982,17 +2605,74 @@ export function CoursesScreen({ navigation }: Props) {
     );
   }, [allCourses, enrolledCourses, query]);
 
-  const currentCourse = selectedCourseQuery.data || null;
+  const filteredArenaItems = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return ARENA_ITEMS;
+
+    return ARENA_ITEMS.filter((item) =>
+      `${item.title} ${item.description}`.toLowerCase().includes(needle),
+    );
+  }, [query]);
+
+  const selectedCourseListEntry = useMemo(
+    () =>
+      allCourses.find(
+        (course) =>
+          String(course._id || "") === String(selectedCourseId || "") ||
+          String(course.urlSlug || "") === String(selectedCourseId || "") ||
+          String(course.id || "") === String(selectedCourseId || ""),
+      ) || null,
+    [allCourses, selectedCourseId],
+  );
+
+  const currentCourse = useMemo(() => {
+    if (!selectedCourseQuery.data && !selectedCourseListEntry) {
+      return null;
+    }
+
+    if (!selectedCourseQuery.data) {
+      return selectedCourseListEntry;
+    }
+
+    if (!selectedCourseListEntry) {
+      return selectedCourseQuery.data;
+    }
+
+    return {
+      ...selectedCourseListEntry,
+      ...selectedCourseQuery.data,
+      members:
+        selectedCourseQuery.data.members?.length
+          ? selectedCourseQuery.data.members
+          : selectedCourseListEntry.members,
+      lessons:
+        selectedCourseQuery.data.lessons?.length
+          ? selectedCourseQuery.data.lessons
+          : selectedCourseListEntry.lessons,
+    };
+  }, [selectedCourseListEntry, selectedCourseQuery.data]);
+  const currentCourseLessons =
+    (currentCourse?.lessons?.length ? currentCourse.lessons : selectedCourseListEntry?.lessons) ||
+    [];
   const currentLesson =
-    currentCourse?.lessons?.find(
+    currentCourseLessons.find(
       (lesson) =>
         String(lesson._id || "") === String(selectedLessonId || "") ||
         String(lesson.urlSlug || "") === String(selectedLessonId || ""),
     ) ||
-    currentCourse?.lessons?.[0] ||
+    currentCourseLessons[0] ||
     null;
+  const currentLessonIndex = Math.max(
+    0,
+    currentCourseLessons.findIndex(
+      (lesson) =>
+        String(lesson._id || "") === String(currentLesson?._id || "") ||
+        String(lesson.urlSlug || "") === String(currentLesson?.urlSlug || ""),
+    ) ?? 0,
+  );
   const lessonKey =
     currentCourse?._id && currentLesson?._id ? [currentCourse._id, currentLesson._id] : null;
+  const isOwner = Boolean(currentCourse && getCourseOwnerId(currentCourse) === currentUserId);
 
   const materialsQuery = useQuery({
     queryKey: ["course-materials", ...(lessonKey || [])],
@@ -2012,10 +2692,67 @@ export function CoursesScreen({ navigation }: Props) {
     enabled: Boolean(currentCourse?._id && currentLesson?._id),
   });
 
+  const attendanceQuery = useQuery({
+    queryKey: ["course-attendance", ...(lessonKey || [])],
+    queryFn: () =>
+      coursesApi.getLessonAttendance(currentCourse?._id || "", currentLesson?._id || ""),
+    enabled: Boolean(
+      currentCourse?._id &&
+        currentLesson?._id &&
+        lessonAdminPanelOpen &&
+        adminActiveTab === "attendance",
+    ),
+  });
+
   const gradingQuery = useQuery({
     queryKey: ["course-grading", ...(lessonKey || [])],
     queryFn: () => coursesApi.getLessonGrading(currentCourse?._id || "", currentLesson?._id || ""),
-    enabled: Boolean(currentCourse?._id && currentLesson?._id && gradingExpanded),
+    enabled: Boolean(
+      currentCourse?._id &&
+        currentLesson?._id &&
+        (gradingExpanded || (lessonAdminPanelOpen && adminActiveTab === "grading")),
+    ),
+  });
+
+  const attendanceStatusMutation = useMutation({
+    mutationFn: ({
+      courseId,
+      lessonId,
+      userId,
+      status,
+    }: {
+      courseId: string;
+      lessonId: string;
+      userId: string;
+      status: "present" | "late" | "absent";
+    }) => coursesApi.setLessonAttendanceStatus(courseId, lessonId, userId, status),
+    onSuccess: async (data) => {
+      if (lessonKey) {
+        queryClient.setQueryData(["course-attendance", ...lessonKey], data);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["course-grading", ...(lessonKey || [])] });
+    },
+  });
+
+  const oralAssessmentMutation = useMutation({
+    mutationFn: ({
+      courseId,
+      lessonId,
+      userId,
+      score,
+      note,
+    }: {
+      courseId: string;
+      lessonId: string;
+      userId: string;
+      score?: number | null;
+      note?: string;
+    }) => coursesApi.setLessonOralAssessment(courseId, lessonId, userId, { score, note }),
+    onSuccess: (data) => {
+      if (lessonKey) {
+        queryClient.setQueryData(["course-grading", ...lessonKey], data);
+      }
+    },
   });
 
   const invalidateCourseDetail = useCallback(async () => {
@@ -2034,10 +2771,28 @@ export function CoursesScreen({ navigation }: Props) {
   }, [lessonKey, queryClient, selectedCourseId]);
 
   useEffect(() => {
-    if (currentCourse?.lessons?.length && !selectedLessonId) {
-      setSelectedLessonId(currentCourse.lessons[0]._id || currentCourse.lessons[0].urlSlug || null);
+    if (selectedCourseId && currentCourseLessons.length && !selectedLessonId) {
+      setSelectedLessonId(
+        currentCourseLessons[0]._id || currentCourseLessons[0].urlSlug || null,
+      );
     }
-  }, [currentCourse?.lessons, selectedLessonId]);
+  }, [currentCourseLessons, selectedCourseId, selectedLessonId]);
+
+  useEffect(() => {
+    setActiveMediaIndex(0);
+    setLessonDescriptionSheetOpen(false);
+    setStudentExtrasOpen(false);
+    setEditingOralRows({});
+    setOralScoreDrafts({});
+    setOralNoteDrafts({});
+    setMemberActionTargetId(null);
+    setAttendanceActionTargetId(null);
+    setOralSavingUserId(null);
+    setMediaCurrentTime(0);
+    setMediaDuration(0);
+    setMediaBufferedPosition(0);
+    setPlaybackRetryNonce(0);
+  }, [currentLesson?._id, currentLesson?.urlSlug]);
 
   useEffect(() => {
     const nextIndex = viewMode === "arena" ? 1 : 0;
@@ -2050,18 +2805,679 @@ export function CoursesScreen({ navigation }: Props) {
     });
   }, [screenWidth, viewMode]);
 
-  const isOwner = Boolean(currentCourse && String(currentCourse.createdBy || "") === currentUserId);
-  const myMemberRecord = currentCourse?.members?.find(
-    (member) => String(member.userId || "") === currentUserId,
+  useEffect(() => {
+    if (!selectedCourseId) {
+      setIsLessonVideoFullscreen(false);
+      return undefined;
+    }
+
+    void preventScreenCaptureAsync("courses-player").catch(() => undefined);
+
+    return () => {
+      void allowScreenCaptureAsync("courses-player").catch(() => undefined);
+    };
+  }, [selectedCourseId]);
+
+  useEffect(() => {
+    navigation.setOptions({
+      tabBarStyle: selectedCourseId ? { display: "none" } : undefined,
+    });
+
+    return () => {
+      navigation.setOptions({
+        tabBarStyle: undefined,
+      });
+    };
+  }, [navigation, selectedCourseId]);
+
+  const myMemberStatus =
+    getCourseMemberStatus(currentCourse, currentUserId) ||
+    getCourseMemberStatus(selectedCourseListEntry, currentUserId);
+  const isApprovedMember = myMemberStatus === "approved";
+  const isPendingMember = myMemberStatus === "pending";
+  const canOpenLesson = useCallback(
+    (lesson?: CourseLesson | null) => {
+      const hasExplicitTestLock =
+        Array.isArray(lesson?.accessLockedByTests) && lesson.accessLockedByTests.length > 0;
+
+      return Boolean(
+        isOwner ||
+          lesson?.isUnlocked ||
+          (isApprovedMember && lesson?.status !== "draft" && !hasExplicitTestLock),
+      );
+    },
+    [isApprovedMember, isOwner],
   );
-  const isApprovedMember = myMemberRecord?.status === "approved";
-  const isPendingMember = myMemberRecord?.status === "pending";
-  const canAccessCurrentLesson = Boolean(isOwner || currentLesson?.isUnlocked);
+  const canAccessCurrentLesson = canOpenLesson(currentLesson);
   const lessonMaterials = materialsQuery.data?.items || currentLesson?.materials || [];
   const linkedTests = testsQuery.data?.items || currentLesson?.linkedTests || [];
   const homeworkAssignments =
     homeworkQuery.data?.assignments || currentLesson?.homework?.assignments || [];
   const grading = gradingQuery.data as CourseLessonGradingResponse | undefined;
+  const lessonMediaItems = useMemo(() => {
+    if (Array.isArray(currentLesson?.mediaItems) && currentLesson.mediaItems.length) {
+      return currentLesson.mediaItems;
+    }
+
+    if (currentLesson?.videoUrl || currentLesson?.fileUrl) {
+      return [
+        {
+          mediaId: "primary",
+          title: currentLesson.title,
+          videoUrl: currentLesson.videoUrl,
+          fileUrl: currentLesson.fileUrl,
+          fileName: currentLesson.fileName,
+          fileSize: currentLesson.fileSize,
+          durationSeconds: currentLesson.durationSeconds,
+          streamType: currentLesson.streamType,
+          streamAssets: currentLesson.streamAssets,
+          hlsKeyAsset: currentLesson.hlsKeyAsset,
+        },
+      ];
+    }
+
+    return [];
+  }, [currentLesson]);
+  const activeMediaItem = lessonMediaItems[activeMediaIndex] || lessonMediaItems[0] || null;
+  const currentLessonHasMedia = Boolean(lessonMediaItems.length);
+  const canAttemptProtectedPlayback = Boolean(
+    currentLesson &&
+      canAccessCurrentLesson &&
+      (currentLessonHasMedia || isApprovedMember || isOwner),
+  );
+  const lessonMediaSignature = useMemo(
+    () =>
+      lessonMediaItems
+        .map((item, index) => String(item.mediaId || item.fileUrl || item.videoUrl || index))
+        .join("|"),
+    [lessonMediaItems],
+  );
+  const offlineLessonScopeKey = useMemo(
+    () =>
+      `${String(currentCourse?._id || "")}:${String(currentLesson?._id || "")}:${lessonMediaSignature}:${offlineRefreshNonce}`,
+    [currentCourse?._id, currentLesson?._id, lessonMediaSignature, offlineRefreshNonce],
+  );
+  const activeOfflineMediaKey = useMemo(
+    () =>
+      getOfflineLessonMediaKey(
+        currentCourse?._id,
+        currentLesson?._id,
+        activeMediaItem?.mediaId || null,
+      ),
+    [activeMediaItem?.mediaId, currentCourse?._id, currentLesson?._id],
+  );
+  const activeOfflinePlaybackStored = offlinePlaybackMap[activeOfflineMediaKey] || null;
+  const activeOfflinePlayback =
+    offlinePlaybackBypassKeys[activeOfflineMediaKey] !== true
+      ? activeOfflinePlaybackStored
+      : null;
+  const isCurrentMediaOffline = Boolean(activeOfflinePlaybackStored);
+
+  useEffect(() => {
+    setOfflineTooltipVisible(false);
+    offlineTooltipSuppressPressRef.current = false;
+    clearOfflineTooltipTimer();
+  }, [activeOfflineMediaKey, clearOfflineTooltipTimer]);
+  const isUsingOfflinePlayback = Boolean(
+    activeOfflinePlayback?.localUrl &&
+      playbackStreamUrl &&
+      activeOfflinePlayback.localUrl === playbackStreamUrl,
+  );
+  const hasLessonMaterials = Boolean(lessonMaterials.length);
+  const hasLessonTests = Boolean(linkedTests.length);
+  const hasHomeworkBadge = Boolean(homeworkAssignments.length);
+  const hasLessonExtras = Boolean(hasLessonTests || hasHomeworkBadge);
+  const canRenderLessonPlayer = canAttemptProtectedPlayback;
+  const segmentDurations = useMemo(
+    () =>
+      lessonMediaItems.map((item, index) => {
+        const persistedDuration = Number(item.durationSeconds || 0);
+        if (index === activeMediaIndex) {
+          return Math.max(persistedDuration, Number(mediaDuration || 0), 1);
+        }
+
+        return persistedDuration > 0 ? persistedDuration : 1;
+      }),
+    [activeMediaIndex, lessonMediaItems, mediaDuration],
+  );
+  const totalLessonDuration = useMemo(
+    () => segmentDurations.reduce((sum, value) => sum + Number(value || 0), 0),
+    [segmentDurations],
+  );
+  const elapsedBeforeCurrentMedia = useMemo(
+    () =>
+      segmentDurations
+        .slice(0, activeMediaIndex)
+        .reduce((sum, value) => sum + Number(value || 0), 0),
+    [activeMediaIndex, segmentDurations],
+  );
+  const overallCurrentTime = elapsedBeforeCurrentMedia + mediaCurrentTime;
+  const overallProgressPercent = totalLessonDuration
+    ? Math.max(0, Math.min(100, (overallCurrentTime / totalLessonDuration) * 100))
+    : 0;
+  const bufferedProgressPercent = totalLessonDuration
+    ? Math.max(
+        overallProgressPercent,
+        Math.min(
+          100,
+          ((elapsedBeforeCurrentMedia + Math.max(mediaBufferedPosition, mediaCurrentTime)) /
+            totalLessonDuration) *
+            100,
+        ),
+      )
+    : 0;
+  const segmentBoundaries = useMemo(() => {
+    if (!segmentDurations.length || !totalLessonDuration) return [];
+
+    let accumulated = 0;
+    return segmentDurations.slice(0, -1).map((value) => {
+      accumulated += Number(value || 0);
+      return (accumulated / totalLessonDuration) * 100;
+    });
+  }, [segmentDurations, totalLessonDuration]);
+  const courseOwnerName = (() => {
+    if (typeof currentCourse?.createdBy === "object" && currentCourse?.createdBy) {
+      return (
+        currentCourse.createdBy.nickname ||
+        currentCourse.createdBy.name ||
+        currentCourse.createdBy.username ||
+        "Muallif"
+      );
+    }
+
+    if (isOwner) {
+      return user?.nickname || user?.username || "Siz";
+    }
+
+    return "Muallif";
+  })();
+  const courseOwnerAvatar =
+    typeof currentCourse?.createdBy === "object" ? currentCourse?.createdBy?.avatar || "" : "";
+  const approvedMembers = useMemo(
+    () => (currentCourse?.members || []).filter((member) => member.status === "approved"),
+    [currentCourse?.members],
+  );
+  const pendingMembers = useMemo(
+    () => (currentCourse?.members || []).filter((member) => member.status === "pending"),
+    [currentCourse?.members],
+  );
+  const selectedHasMedia = Boolean(
+    (Array.isArray(currentLesson?.mediaItems) && currentLesson.mediaItems.length) ||
+      currentLesson?.videoUrl ||
+      currentLesson?.fileUrl,
+  );
+  const draftLessonsCount = useMemo(
+    () =>
+      currentCourseLessons.filter((lesson) => (lesson.status || "published") === "draft")
+        .length,
+    [currentCourseLessons],
+  );
+  const publishedLessonsCount = Math.max(0, currentCourseLessons.length - draftLessonsCount);
+  const attendanceData = attendanceQuery.data as CourseLessonAttendanceResponse | undefined;
+
+  useEffect(() => {
+    if (
+      !canUseOfflineLessonCache ||
+      !currentCourse?._id ||
+      !currentLesson?._id ||
+      !lessonMediaItems.length
+    ) {
+      setOfflinePlaybackMap({});
+      setOfflinePlaybackLoading(false);
+      setOfflineLookupScopeKey("");
+      return;
+    }
+
+    const courseId = currentCourse._id;
+    const lessonId = currentLesson._id;
+    let cancelled = false;
+    setOfflinePlaybackLoading(true);
+    setOfflineLookupScopeKey("");
+
+    void Promise.all(
+      lessonMediaItems.map(async (item) => {
+        const cacheKey = getOfflineLessonMediaKey(
+          courseId,
+          lessonId,
+          item.mediaId || null,
+        );
+        const playback = await getOfflineLessonPlayback({
+          courseId,
+          lessonId,
+          mediaId: item.mediaId || undefined,
+        });
+        return [cacheKey, playback] as const;
+      }),
+    )
+      .then((entries) => {
+        if (cancelled) return;
+        const nextMap: Record<string, OfflineLessonPlayback> = {};
+        entries.forEach(([cacheKey, playback]) => {
+          if (playback) {
+            nextMap[cacheKey] = playback;
+          }
+        });
+        setOfflinePlaybackMap(nextMap);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOfflinePlaybackMap({});
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setOfflinePlaybackLoading(false);
+          setOfflineLookupScopeKey(offlineLessonScopeKey);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canUseOfflineLessonCache,
+    currentCourse?._id,
+    currentLesson?._id,
+    lessonMediaItems,
+    lessonMediaSignature,
+    offlineLessonScopeKey,
+    offlineRefreshNonce,
+  ]);
+
+  useEffect(() => {
+    setOfflinePlaybackBypassKeys({});
+  }, [currentCourse?._id, currentLesson?._id, offlineRefreshNonce]);
+
+  const securePlaybackSource = useMemo(
+    () =>
+      playbackStreamUrl
+        ? {
+            uri: playbackStreamUrl,
+            contentType: playbackStreamType === "hls" ? ("hls" as const) : ("auto" as const),
+          }
+        : null,
+    [playbackStreamType, playbackStreamUrl],
+  );
+
+  useEffect(() => {
+    if (!currentCourse?._id || !currentLesson?._id || !canAttemptProtectedPlayback) {
+      setPlaybackStreamUrl("");
+      setPlaybackStreamType("");
+      setPlaybackLoading(false);
+      setPlaybackError("");
+      setMediaCurrentTime(0);
+      setMediaDuration(0);
+      setMediaBufferedPosition(0);
+      return;
+    }
+
+    if (
+      canUseOfflineLessonCache &&
+      lessonMediaItems.length &&
+      offlineLookupScopeKey !== offlineLessonScopeKey
+    ) {
+      setPlaybackLoading(true);
+      setPlaybackError("");
+      return;
+    }
+
+    if (canUseOfflineLessonCache && offlinePlaybackLoading) {
+      setPlaybackLoading(true);
+      setPlaybackError("");
+      return;
+    }
+
+    if (canUseOfflineLessonCache && activeOfflinePlayback?.localUrl) {
+      setPlaybackStreamType(activeOfflinePlayback.streamType);
+      setPlaybackStreamUrl(activeOfflinePlayback.localUrl);
+      setPlaybackLoading(false);
+      setPlaybackError("");
+      setMediaCurrentTime(0);
+      setMediaDuration(0);
+      setMediaBufferedPosition(0);
+      return;
+    }
+
+    if (isExpoWebPlaybackFallback) {
+      setPlaybackStreamUrl("");
+      setPlaybackStreamType("");
+      setPlaybackLoading(false);
+      setPlaybackError("Protected video Expo web'da qo'llanmaydi. Uni Jamm web yoki native appda oching.");
+      setMediaCurrentTime(0);
+      setMediaDuration(0);
+      setMediaBufferedPosition(0);
+      return;
+    }
+
+    let cancelled = false;
+    setPlaybackLoading(true);
+    setPlaybackError("");
+    setMediaCurrentTime(0);
+    setMediaDuration(0);
+    setMediaBufferedPosition(0);
+
+    void coursesApi
+      .getLessonPlaybackToken(
+        currentCourse._id,
+        currentLesson._id,
+        activeMediaItem?.mediaId || undefined,
+      )
+      .then((payload) => {
+        if (cancelled) return;
+        setPlaybackStreamType(payload.streamType === "hls" ? "hls" : "direct");
+        setPlaybackStreamUrl(resolveApiUrl(payload.streamUrl));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPlaybackStreamUrl("");
+        setPlaybackStreamType("");
+        setPlaybackError(
+          error instanceof Error
+            ? error.message
+            : "Protected video streamni ochib bo'lmadi.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPlaybackLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeMediaItem?.mediaId,
+    activeOfflinePlayback,
+    canAttemptProtectedPlayback,
+    canUseOfflineLessonCache,
+    currentCourse?._id,
+    currentLesson?._id,
+    isExpoWebPlaybackFallback,
+    lessonMediaItems.length,
+    offlineLessonScopeKey,
+    offlineLookupScopeKey,
+    offlinePlaybackLoading,
+    playbackRetryNonce,
+  ]);
+
+  const lessonVideoPlayer = useVideoPlayer(securePlaybackSource, (player) => {
+    player.loop = false;
+    player.timeUpdateEventInterval = 0.25;
+    player.keepScreenOnWhilePlaying = true;
+  });
+
+  useEffect(() => {
+    setIsLessonVideoPlaying(lessonVideoPlayer.playing);
+
+    const playingSubscription = lessonVideoPlayer.addListener("playingChange", (payload) => {
+      setIsLessonVideoPlaying(payload.isPlaying);
+    });
+
+    return () => {
+      playingSubscription.remove();
+    };
+  }, [lessonVideoPlayer]);
+
+  useEffect(() => {
+    const timeSubscription = lessonVideoPlayer.addListener("timeUpdate", (payload) => {
+      setMediaCurrentTime(payload.currentTime || 0);
+      setMediaBufferedPosition(payload.bufferedPosition || 0);
+    });
+    const sourceLoadSubscription = lessonVideoPlayer.addListener("sourceLoad", (payload) => {
+      setMediaDuration(payload.duration || 0);
+      setMediaCurrentTime(0);
+      setMediaBufferedPosition(0);
+      if (pendingSeekTimeRef.current !== null) {
+        lessonVideoPlayer.currentTime = pendingSeekTimeRef.current;
+        pendingSeekTimeRef.current = null;
+      }
+    });
+    const playToEndSubscription = lessonVideoPlayer.addListener("playToEnd", () => {
+      if (activeMediaIndex < lessonMediaItems.length - 1) {
+        setActiveMediaIndex((value) => value + 1);
+        return;
+      }
+
+      const nextLesson = currentCourseLessons[currentLessonIndex + 1];
+      if (nextLesson && canOpenLesson(nextLesson)) {
+        setSelectedLessonId(nextLesson._id || nextLesson.urlSlug || null);
+      }
+    });
+    const statusSubscription = lessonVideoPlayer.addListener("statusChange", (payload) => {
+      if (payload.status !== "error") {
+        return;
+      }
+
+      if (isUsingOfflinePlayback && activeOfflineMediaKey) {
+        setOfflinePlaybackBypassKeys((current) => {
+          if (current[activeOfflineMediaKey]) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [activeOfflineMediaKey]: true,
+          };
+        });
+        setPlaybackStreamUrl("");
+        setPlaybackStreamType("");
+        setPlaybackLoading(true);
+        setPlaybackError("");
+        return;
+      }
+
+      setPlaybackError(payload.error?.message || "Lesson videoni ochib bo'lmadi.");
+      setPlaybackLoading(false);
+    });
+
+    return () => {
+      timeSubscription.remove();
+      sourceLoadSubscription.remove();
+      playToEndSubscription.remove();
+      statusSubscription.remove();
+    };
+  }, [
+    activeOfflineMediaKey,
+    activeMediaIndex,
+    canOpenLesson,
+    currentCourseLessons,
+    currentLessonIndex,
+    isUsingOfflinePlayback,
+    lessonMediaItems.length,
+    lessonVideoPlayer,
+  ]);
+
+  const handleToggleVideoPlayback = useCallback(() => {
+    if (lessonVideoPlayer.playing) {
+      lessonVideoPlayer.pause();
+      return;
+    }
+
+    lessonVideoPlayer.play();
+  }, [lessonVideoPlayer]);
+
+  const handleEnterVideoFullscreen = useCallback(() => {
+    if (isLessonVideoFullscreen) {
+      void videoViewRef.current?.exitFullscreen();
+      return;
+    }
+
+    void videoViewRef.current?.enterFullscreen();
+  }, [isLessonVideoFullscreen]);
+
+  const handleDownloadLessonOffline = useCallback(async () => {
+    if (
+      !canUseOfflineLessonCache ||
+      !currentCourse?._id ||
+      !currentLesson?._id ||
+      !activeMediaItem
+    ) {
+      return;
+    }
+
+    setOfflineDownloading(true);
+    setOfflineDownloadProgress({
+      current: 0,
+      total: 1,
+    });
+
+    try {
+      setOfflineDownloadProgress({
+        current: 1,
+        total: 1,
+      });
+
+      const payload = await coursesApi.getLessonPlaybackToken(
+        currentCourse._id,
+        currentLesson._id,
+        activeMediaItem.mediaId || undefined,
+      );
+      const streamUrl = resolveApiUrl(payload.streamUrl);
+
+      if (!streamUrl) {
+        throw new Error("Lesson videoni yuklab olish uchun stream topilmadi.");
+      }
+
+      await downloadOfflineLessonPlayback({
+        courseId: currentCourse._id,
+        lessonId: currentLesson._id,
+        mediaId: activeMediaItem.mediaId || undefined,
+        streamType: payload.streamType === "hls" ? "hls" : "direct",
+        streamUrl,
+      });
+
+      setOfflinePlaybackBypassKeys({});
+      setOfflineRefreshNonce((value) => value + 1);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => undefined,
+      );
+    } catch (error) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
+        () => undefined,
+      );
+      Alert.alert(
+        "Offline saqlanmadi",
+        error instanceof Error
+          ? error.message
+          : "Lesson videoni offline yuklab bo'lmadi.",
+      );
+    } finally {
+      setOfflineDownloading(false);
+      setOfflineDownloadProgress({ current: 0, total: 0 });
+    }
+  }, [
+    activeMediaItem,
+    canUseOfflineLessonCache,
+    currentCourse?._id,
+    currentLesson?._id,
+  ]);
+
+  const handleRemoveLessonOffline = useCallback(async () => {
+    if (!currentCourse?._id || !currentLesson?._id || !activeMediaItem) {
+      return;
+    }
+
+    setOfflineRemoving(true);
+
+    try {
+      await removeOfflineLessonPlayback({
+        courseId: currentCourse._id,
+        lessonId: currentLesson._id,
+        mediaId: activeMediaItem.mediaId || undefined,
+      });
+
+      setOfflinePlaybackBypassKeys({});
+      setOfflineRefreshNonce((value) => value + 1);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+        () => undefined,
+      );
+    } catch (error) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
+        () => undefined,
+      );
+      Alert.alert(
+        "Offline nusxa o'chmadi",
+        error instanceof Error
+          ? error.message
+          : "Saqlangan lesson videoni o'chirib bo'lmadi.",
+      );
+    } finally {
+      setOfflineRemoving(false);
+    }
+  }, [activeMediaItem, currentCourse?._id, currentLesson?._id]);
+
+  const handleToggleLessonOffline = useCallback(() => {
+    if (offlineDownloading || offlineRemoving) {
+      return;
+    }
+
+    if (isCurrentMediaOffline) {
+      Alert.alert(
+        "Offline saqlangan lesson",
+        "Hozir ochiq turgan video private storage'dan o'chirilsinmi? O'chirilgandan keyin qayta internet kerak bo'ladi.",
+        [
+          {
+            text: "Bekor qilish",
+            style: "cancel",
+          },
+          {
+            text: "O'chirish",
+            style: "destructive",
+            onPress: () => {
+              void handleRemoveLessonOffline();
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    void handleDownloadLessonOffline();
+  }, [
+    handleDownloadLessonOffline,
+    handleRemoveLessonOffline,
+    isCurrentMediaOffline,
+    offlineDownloading,
+    offlineRemoving,
+  ]);
+
+  const handleSeekLessonProgress = useCallback(
+    (ratio: number) => {
+      if (!segmentDurations.length || !totalLessonDuration) {
+        return;
+      }
+
+      const normalizedRatio = Math.max(0, Math.min(1, ratio));
+      const targetTime = normalizedRatio * totalLessonDuration;
+
+      let accumulated = 0;
+      let targetSegmentIndex = 0;
+      let targetSegmentTime = 0;
+
+      for (let index = 0; index < segmentDurations.length; index += 1) {
+        const segmentDuration = Math.max(1, Number(segmentDurations[index] || 0));
+        const segmentEnd = accumulated + segmentDuration;
+
+        if (targetTime <= segmentEnd || index === segmentDurations.length - 1) {
+          targetSegmentIndex = index;
+          targetSegmentTime = Math.max(0, targetTime - accumulated);
+          break;
+        }
+
+        accumulated = segmentEnd;
+      }
+
+      if (targetSegmentIndex !== activeMediaIndex) {
+        pendingSeekTimeRef.current = targetSegmentTime;
+        setActiveMediaIndex(targetSegmentIndex);
+        return;
+      }
+
+      lessonVideoPlayer.currentTime = targetSegmentTime;
+    },
+    [activeMediaIndex, lessonVideoPlayer, segmentDurations, totalLessonDuration],
+  );
 
   const handleOpenCourse = async (course: Course) => {
     await Haptics.selectionAsync();
@@ -2071,6 +3487,192 @@ export function CoursesScreen({ navigation }: Props) {
     setPlaylistCollapsed(false);
   };
 
+  const handleCloseCourseDetail = useCallback(() => {
+    setIsLessonVideoFullscreen(false);
+    setSelectedCourseId(null);
+    setSelectedLessonId(null);
+    setPlaylistCollapsed(false);
+    setCommentsOpen(false);
+    setLessonAdminPanelOpen(false);
+    setAdminActiveTab("homework");
+    setLessonEditorOpen(false);
+    setEditingLesson(null);
+    setMaterialModalOpen(false);
+    setLinkedTestModalOpen(false);
+    setHomeworkModalOpen(false);
+    setHomeworkSubmitOpen(false);
+    setSelectedHomework(null);
+    setActiveLinkedTest(null);
+    setActiveArenaTest(null);
+    setActiveSentenceDeck(null);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCourseId) {
+      courseDetailTranslateX.setValue(0);
+    }
+  }, [courseDetailTranslateX, selectedCourseId]);
+
+  useEffect(() => {
+    if (!lessonAdminPanelOpen) {
+      adminPaneTranslateX.stopAnimation();
+      adminPaneTranslateX.setValue(screenWidth);
+      return;
+    }
+
+    if (Platform.OS === "web") {
+      adminPaneTranslateX.stopAnimation();
+      adminPaneTranslateX.setValue(0);
+      return;
+    }
+
+    adminPaneTranslateX.stopAnimation();
+    adminPaneTranslateX.setValue(screenWidth);
+    Animated.timing(adminPaneTranslateX, {
+      toValue: 0,
+      duration: 240,
+      useNativeDriver: true,
+    }).start();
+  }, [adminPaneTranslateX, lessonAdminPanelOpen, screenWidth]);
+
+  const animateCourseDetailBack = useCallback(() => {
+    Animated.spring(courseDetailTranslateX, {
+      toValue: 0,
+      damping: 22,
+      stiffness: 260,
+      mass: 0.8,
+      useNativeDriver: true,
+    }).start();
+  }, [courseDetailTranslateX]);
+
+  const handleCourseSwipeGesture = useCallback(
+    (event: { nativeEvent: { translationX: number } }) => {
+      courseDetailTranslateX.setValue(Math.max(0, event.nativeEvent.translationX));
+    },
+    [courseDetailTranslateX],
+  );
+
+  const handleCourseSwipeBack = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      const { state, oldState, translationX, velocityX } = event.nativeEvent;
+
+      if (state === State.BEGAN) {
+        courseDetailTranslateX.stopAnimation();
+        return;
+      }
+
+      if (isLessonVideoFullscreen) {
+        return;
+      }
+
+      if (oldState !== State.ACTIVE) {
+        if (state === State.CANCELLED || state === State.FAILED) {
+          animateCourseDetailBack();
+        }
+        return;
+      }
+
+      const shouldClose = translationX > screenWidth * 0.22 || velocityX > 700;
+      if (!shouldClose) {
+        animateCourseDetailBack();
+        return;
+      }
+
+      void Haptics.selectionAsync().catch(() => undefined);
+      Animated.timing(courseDetailTranslateX, {
+        toValue: screenWidth,
+        duration: 180,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          handleCloseCourseDetail();
+        }
+      });
+    },
+    [
+      animateCourseDetailBack,
+      courseDetailTranslateX,
+      handleCloseCourseDetail,
+      isLessonVideoFullscreen,
+      screenWidth,
+    ],
+  );
+
+  const handleCloseLessonAdminPanel = useCallback(
+    (onClosed?: () => void) => {
+      if (!lessonAdminPanelOpen) {
+        onClosed?.();
+        return;
+      }
+
+      adminPaneTranslateX.stopAnimation();
+
+      if (Platform.OS === "web") {
+        setLessonAdminPanelOpen(false);
+        adminPaneTranslateX.setValue(screenWidth);
+        onClosed?.();
+        return;
+      }
+
+      Animated.timing(adminPaneTranslateX, {
+        toValue: screenWidth,
+        duration: 190,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (!finished) {
+          return;
+        }
+        setLessonAdminPanelOpen(false);
+        adminPaneTranslateX.setValue(screenWidth);
+        onClosed?.();
+      });
+    },
+    [adminPaneTranslateX, lessonAdminPanelOpen, screenWidth],
+  );
+
+  const handleDeleteCourse = useCallback(
+    (course: Course) => {
+      const courseId = String(course._id || "");
+      if (!courseId || deletingCourseId) {
+        return;
+      }
+
+      Alert.alert(
+        "Kursni o'chirish",
+        `Rostdan ham ${course.name || "shu kursni"} o'chirmoqchimisiz? Bu amalni keyin tiklab bo'lmaydi.`,
+        [
+          { text: "Yo'q, qolsin", style: "cancel" },
+          {
+            text: "Ha, o'chirish",
+            style: "destructive",
+            onPress: () => {
+              void (async () => {
+                setDeletingCourseId(courseId);
+                try {
+                  await deleteCourseMutation.mutateAsync(courseId);
+                  if (
+                    selectedCourseId === courseId ||
+                    selectedCourseId === String(course.urlSlug || "")
+                  ) {
+                    handleCloseCourseDetail();
+                  }
+                } catch (error) {
+                  Alert.alert(
+                    "Kursni o'chirishda xatolik yuz berdi",
+                    error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+                  );
+                } finally {
+                  setDeletingCourseId(null);
+                }
+              })();
+            },
+          },
+        ],
+      );
+    },
+    [deleteCourseMutation, deletingCourseId, handleCloseCourseDetail, selectedCourseId],
+  );
+
   const handleSelectLesson = async (lesson: CourseLesson) => {
     setSelectedLessonId(lesson._id || lesson.urlSlug || null);
     if (currentCourse?._id && lesson._id) {
@@ -2079,6 +3681,17 @@ export function CoursesScreen({ navigation }: Props) {
       });
     }
   };
+
+  const handleRetryPlayback = () => {
+    setPlaybackRetryNonce((value) => value + 1);
+  };
+
+  const handleOpenLessonInJammWeb = useCallback(async () => {
+    const url = resolveJammWebCourseLessonUrl(currentCourse, currentLesson);
+    await Linking.openURL(url).catch(() => {
+      Alert.alert("Jamm web ochilmadi", url);
+    });
+  }, [currentCourse, currentLesson]);
 
   const handleOpenMedia = async () => {
     const media =
@@ -2129,7 +3742,17 @@ export function CoursesScreen({ navigation }: Props) {
   const handleCopyCourseLink = async () => {
     const slug = currentCourse?.urlSlug || currentCourse?._id || currentCourse?.id;
     if (!slug) return;
-    Alert.alert("Kurs havolasi", `/courses/${slug}`);
+    await Clipboard.setStringAsync(`/courses/${slug}`);
+    await Haptics.selectionAsync();
+    Alert.alert("Nusxalandi", "Kurs havolasi clipboard'ga saqlandi.");
+  };
+
+  const handleCopyLessonLink = async (lesson: CourseLesson) => {
+    const courseSlug = currentCourse?.urlSlug || currentCourse?._id || currentCourse?.id;
+    const lessonSlug = lesson.urlSlug || lesson._id || lesson.id;
+    if (!courseSlug || !lessonSlug) return;
+    await Clipboard.setStringAsync(`/courses/${courseSlug}/${lessonSlug}`);
+    await Haptics.selectionAsync();
   };
 
   const animateToViewMode = useCallback(
@@ -2149,6 +3772,39 @@ export function CoursesScreen({ navigation }: Props) {
     [screenWidth],
   );
 
+  useEffect(() => {
+    const nextCourseId = String(route.params?.courseId || "").trim();
+    const nextLessonId = String(route.params?.lessonId || "").trim();
+    const nextViewMode = route.params?.viewMode;
+
+    if (!nextCourseId && !nextLessonId && !nextViewMode) {
+      return;
+    }
+
+    if (nextCourseId) {
+      setSelectedCourseId(nextCourseId);
+      setSelectedLessonId(nextLessonId || null);
+      setPlaylistCollapsed(false);
+      setViewMode("courses");
+    } else if (nextViewMode === "arena") {
+      animateToViewMode("arena");
+    } else if (nextViewMode === "courses") {
+      animateToViewMode("courses");
+    }
+
+    navigation.setParams({
+      courseId: undefined,
+      lessonId: undefined,
+      viewMode: undefined,
+    });
+  }, [
+    animateToViewMode,
+    navigation,
+    route.params?.courseId,
+    route.params?.lessonId,
+    route.params?.viewMode,
+  ]);
+
   const handleOpenLinkedTest = async (linkedTest: CourseLinkedTest) => {
     if (!currentCourse?._id || !currentLesson?._id) return;
 
@@ -2161,7 +3817,10 @@ export function CoursesScreen({ navigation }: Props) {
               String(linkedTest.resourceId || linkedTest.testId || ""),
             );
         setActiveLinkedTest(linkedTest);
-        setActiveSentenceDeck((payload.deck || payload) as SentenceBuilderDeck);
+        setActiveSentenceDeck(
+          ((payload && typeof payload === "object" && "deck" in payload ? payload.deck : payload) ||
+            null) as SentenceBuilderDeck | null,
+        );
         setActiveArenaTest(null);
         return;
       }
@@ -2198,23 +3857,1599 @@ export function CoursesScreen({ navigation }: Props) {
     setActiveSentenceDeck(null);
   };
 
-  const handleSubmitLinkedTest = async (payload: {
+  const handleOpenArenaItem = (item: ArenaItem) => {
+    if (item.key === "tests") {
+      navigation.navigate("ArenaQuizList");
+      return;
+    }
+
+    if (item.key === "flashcards") {
+      navigation.navigate("ArenaFlashcardList");
+      return;
+    }
+
+    if (item.key === "sentenceBuilders") {
+      navigation.navigate("ArenaSentenceBuilderList");
+      return;
+    }
+
+    if (item.key === "mnemonics") {
+      navigation.navigate("ArenaMnemonics");
+      return;
+    }
+
+    Alert.alert(
+      item.title,
+      "Bu maydon bo'limining mobile screeni keyingi bosqichda frontdagidek ko'chiriladi.",
+    );
+  };
+
+  const handleSubmitArenaTest = async (payload: {
     answers?: number[];
     sentenceBuilderAnswers?: Array<{ questionIndex: number; selectedTokens: string[] }>;
   }) => {
-    if (!currentCourse?._id || !currentLesson?._id || !activeLinkedTest?.linkedTestId) {
+    if (activeLinkedTest?.linkedTestId && currentCourse?._id && currentLesson?._id) {
+      const result = await coursesApi.submitLessonLinkedTestAttempt(
+        currentCourse._id,
+        currentLesson._id,
+        activeLinkedTest.linkedTestId,
+        payload,
+      );
+      await invalidateCourseDetail();
+      return result;
+    }
+
+    if (!activeArenaTest?._id) {
       return null;
     }
 
-    const result = await coursesApi.submitLessonLinkedTestAttempt(
-      currentCourse._id,
-      currentLesson._id,
-      activeLinkedTest.linkedTestId,
-      payload,
-    );
-    await invalidateCourseDetail();
-    return result;
+    return arenaApi.submitTestAnswers(activeArenaTest._id, {
+      answers: payload.answers || [],
+      shareShortCode: null,
+    });
   };
+
+  const renderCurrentLessonStage = () => {
+    const offlineBusy = offlineDownloading || offlineRemoving;
+    const offlineButtonLabel = offlineDownloading
+      ? "Yuklanmoqda"
+      : offlineRemoving
+        ? "O'chirilmoqda"
+        : isCurrentMediaOffline
+          ? "Offline saqlangan"
+          : "Offline yuklash";
+
+    if (canRenderLessonPlayer) {
+      return (
+        <View style={styles.playerStageCard}>
+          <View style={styles.videoStage}>
+            {!isLessonVideoFullscreen ? (
+              <View style={styles.videoStageTopBar}>
+                <Pressable
+                  style={styles.videoStageBackButton}
+                  onPress={handleCloseCourseDetail}
+                >
+                  <ArrowLeft size={18} color="#fff" />
+                </Pressable>
+                <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+                  {currentLesson?.title || currentCourse?.name || "Dars"}
+                </Text>
+                {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
+                  <View style={styles.videoStageTopActions}>
+                    <View style={styles.videoStageTopActionAnchor}>
+                      {offlineTooltipVisible ? (
+                        <View style={styles.videoStageTooltip}>
+                          <Text style={styles.videoStageTooltipText}>{offlineButtonLabel}</Text>
+                        </View>
+                      ) : null}
+                      <Pressable
+                        style={[
+                          styles.videoStageTopActionButton,
+                          isCurrentMediaOffline && styles.videoStageTopActionButtonReady,
+                          offlineBusy && styles.sendButtonDisabled,
+                        ]}
+                        disabled={offlineBusy}
+                        delayLongPress={260}
+                        onLongPress={() => {
+                          offlineTooltipSuppressPressRef.current = true;
+                          showOfflineTooltip();
+                        }}
+                        onPress={() => {
+                          if (offlineTooltipSuppressPressRef.current) {
+                            offlineTooltipSuppressPressRef.current = false;
+                            return;
+                          }
+                          setOfflineTooltipVisible(false);
+                          clearOfflineTooltipTimer();
+                          void handleToggleLessonOffline();
+                        }}
+                      >
+                        {offlineBusy ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <Ionicons
+                            name={isCurrentMediaOffline ? "cloud-done-outline" : "arrow-down"}
+                            size={17}
+                            color="#fff"
+                          />
+                        )}
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+            {playbackLoading ? (
+              <View style={styles.videoStageCenter}>
+                <ActivityIndicator color={Colors.primary} />
+              </View>
+            ) : playbackError ? (
+              <View style={styles.videoStageCenter}>
+                <AlertCircle size={30} color={Colors.warning} />
+                <Text style={styles.emptyTitle}>Video ochilmadi</Text>
+                <Text style={styles.emptyText}>{playbackError}</Text>
+              </View>
+            ) : playbackStreamUrl ? (
+              <>
+                <VideoView
+                  ref={videoViewRef}
+                  player={lessonVideoPlayer}
+                  style={styles.videoView}
+                  nativeControls={isLessonVideoFullscreen}
+                  contentFit="contain"
+                  surfaceType={Platform.OS === "android" ? "textureView" : undefined}
+                  fullscreenOptions={{ enable: true, orientation: "landscape" }}
+                  onFullscreenEnter={() => setIsLessonVideoFullscreen(true)}
+                  onFullscreenExit={() => setIsLessonVideoFullscreen(false)}
+                />
+                {!isLessonVideoFullscreen ? (
+                  <View pointerEvents="box-none" style={styles.videoStageOverlay}>
+                    <View style={styles.videoStageBottomBar}>
+                      <Pressable
+                        style={styles.videoStageProgressTrack}
+                        onLayout={(event) =>
+                          setVideoProgressTrackWidth(event.nativeEvent.layout.width)
+                        }
+                        onPress={(event) => {
+                          if (!videoProgressTrackWidth) {
+                            return;
+                          }
+
+                          handleSeekLessonProgress(
+                            event.nativeEvent.locationX / videoProgressTrackWidth,
+                          );
+                        }}
+                      >
+                        <View
+                          style={[
+                            styles.videoStageProgressBuffered,
+                            { width: `${bufferedProgressPercent}%` },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.videoStageProgressElapsed,
+                            { width: `${overallProgressPercent}%` },
+                          ]}
+                        />
+                        {segmentBoundaries.map((boundary, index) => (
+                          <View
+                            key={`segment-${index}`}
+                            style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
+                          />
+                        ))}
+                      </Pressable>
+
+                      <View style={styles.videoStageControlsRow}>
+                        <Pressable
+                          style={styles.videoStageControlButton}
+                          onPress={handleToggleVideoPlayback}
+                        >
+                          {isLessonVideoPlaying ? (
+                            <Pause size={16} color="#fff" />
+                          ) : (
+                            <Play size={16} color="#fff" fill="#fff" />
+                          )}
+                        </Pressable>
+
+                        <Text style={styles.videoStageTimeText}>
+                          {formatPlaybackClock(overallCurrentTime)} / {formatPlaybackClock(totalLessonDuration)}
+                        </Text>
+
+                        <Pressable
+                          style={styles.videoStageControlButton}
+                          onPress={handleEnterVideoFullscreen}
+                        >
+                          <Ionicons
+                            name={isLessonVideoFullscreen ? "contract-outline" : "expand-outline"}
+                            size={16}
+                            color="#fff"
+                          />
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
+              </>
+            ) : (
+              <View style={styles.videoStageCenter}>
+                <ActivityIndicator color={Colors.primary} />
+              </View>
+            )}
+          </View>
+        </View>
+      );
+    }
+
+    let icon = <LogIn size={30} color={Colors.subtleText} />;
+    let title = "Kursga yoziling";
+    let description =
+      "Darslarni ko'rish uchun avval kursga yozilish kerak. Admin tasdiqlangandan keyin darslarni ko'rishingiz mumkin.";
+
+    if (!currentCourseLessons.length || !currentLesson) {
+      icon = <ListVideo size={30} color={Colors.subtleText} />;
+      title = "No lessons added yet";
+      description = isOwner
+        ? "Bu kursda hali dars yaratilmagan. Yangi dars qo'shib boshlashingiz mumkin."
+        : "Bu kursga hali darslar qo'shilmagan.";
+    } else if (currentLesson?.status === "draft") {
+      icon = <Clock3 size={30} color={Colors.warning} />;
+      title = "Draft dars";
+      description = isOwner
+        ? "Dars draft holatda turibdi. Media biriktirib e'lon qiling yoki tahrirlashni davom ettiring."
+        : "Bu dars hali e'lon qilinmagan.";
+    } else if (currentLesson && !currentLessonHasMedia) {
+      icon = <AlertCircle size={30} color={Colors.warning} />;
+      title = "Media biriktirilmagan";
+      description = isOwner
+        ? "Dars yaratilgan, lekin hali video yoki fayl biriktirilmagan."
+        : "Bu dars uchun video yoki fayl hali tayyor emas.";
+    } else if (
+      Array.isArray(currentLesson?.accessLockedByTests) &&
+      currentLesson.accessLockedByTests.length > 0
+    ) {
+      icon = <Shield size={30} color={Colors.warning} />;
+      title = "Avval testni ishlang";
+      description =
+        "Keyingi darsni ochish uchun oldingi darsdagi majburiy testdan o'tish kerak.";
+    } else if (isPendingMember) {
+      icon = <Clock3 size={30} color={Colors.warning} />;
+      title = "So'rov yuborildi";
+      description =
+        "Sizning so'rovingiz admin tomonidan ko'rib chiqilmoqda. Iltimos kuting.";
+    }
+
+    return (
+      <View style={styles.playerStageCard}>
+        <View style={styles.videoStageFallback}>
+          <View style={styles.videoStageTopBar}>
+            <Pressable
+              style={styles.videoStageBackButton}
+              onPress={handleCloseCourseDetail}
+            >
+              <ArrowLeft size={18} color="#fff" />
+            </Pressable>
+            <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+              {currentLesson?.title || currentCourse?.name || "Dars"}
+            </Text>
+          </View>
+          <View style={styles.videoStageCenter}>
+            {icon}
+            <Text style={styles.emptyTitle}>{title}</Text>
+            <Text style={styles.emptyText}>{description}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderCurrentLessonInfo = () => {
+    if (!currentLesson || !canRenderLessonPlayer) return null;
+
+    return (
+      <>
+        <View style={styles.videoInfoCard}>
+          <Text style={styles.videoInfoTitle}>
+            {currentLessonIndex + 1}-dars: {currentLesson.title || currentCourse?.name || "Dars"}
+          </Text>
+          <View style={styles.videoMetaRow}>
+            <View style={styles.videoMetaItem}>
+              <Eye size={14} color={Colors.subtleText} />
+              <Text style={styles.videoMetaText}>{currentLesson.views || 0} ko'rish</Text>
+            </View>
+            <Pressable
+              style={[
+                styles.videoMetaItem,
+                currentLesson.liked && styles.videoMetaItemLiked,
+              ]}
+              onPress={() =>
+                currentCourse?._id && currentLesson?._id
+                  ? likeLessonMutation.mutate({
+                      courseId: currentCourse._id,
+                      lessonId: currentLesson._id,
+                    })
+                  : undefined
+              }
+            >
+              <Heart
+                size={14}
+                color={currentLesson.liked ? Colors.danger : Colors.subtleText}
+                fill={currentLesson.liked ? Colors.danger : "transparent"}
+              />
+              <Text
+                style={[
+                  styles.videoMetaText,
+                  currentLesson.liked && styles.videoMetaTextLiked,
+                ]}
+              >
+                {currentLesson.likes || 0} like
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.videoMetaItem}
+              onPress={() => void handleCopyLessonLink(currentLesson)}
+            >
+              <Copy size={14} color={Colors.subtleText} />
+              <Text style={styles.videoMetaText}>Nusxalash</Text>
+            </Pressable>
+            {currentLesson.description ? (
+          <Pressable
+            style={styles.lessonDescriptionCard}
+            onPress={() => setLessonDescriptionSheetOpen(true)}
+          >
+            <Text style={styles.lessonDescriptionBody}>
+              {currentLesson.description.length > 30
+                ? `${currentLesson.description.slice(0, 30).trimEnd()}...`
+                : currentLesson.description}
+            </Text>
+            <View style={styles.lessonDescriptionFooter}>
+              <Text style={styles.lessonDescriptionFooterText}>ko'proq</Text>
+            </View>
+          </Pressable>
+        ) : null}
+            {lessonMediaItems.length > 1 ? (
+              <View style={styles.videoMetaItem}>
+                <ListVideo size={14} color={Colors.subtleText} />
+                <Text style={styles.videoMetaText}>
+                  {activeMediaIndex + 1}/{lessonMediaItems.length}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        
+      </>
+    );
+  };
+
+  const handleOpenAdminLessonEditor = () => {
+    const adminPaneLesson = currentLesson || currentCourseLessons[0] || null;
+    if (!adminPaneLesson) return;
+    handleCloseLessonAdminPanel(() => {
+      setEditingLesson(adminPaneLesson);
+      setLessonEditorOpen(true);
+    });
+  };
+
+  const openAdminChildModal = useCallback(
+    (kind: "material" | "linked-test" | "homework") => {
+      if (kind === "material") {
+        setMaterialModalOpen(true);
+        return;
+      }
+      if (kind === "linked-test") {
+        setLinkedTestModalOpen(true);
+        return;
+      }
+      setHomeworkModalOpen(true);
+    },
+    [],
+  );
+
+  const handlePublishCurrentLesson = async () => {
+    if (!currentCourse?._id || !currentLesson?._id) return;
+    try {
+      await coursesApi.publishLesson(currentCourse._id, currentLesson._id);
+      await invalidateCourseDetail();
+    } catch (error) {
+      Alert.alert(
+        "Dars publish bo'lmadi",
+        error instanceof Error ? error.message : "Xatolik yuz berdi.",
+      );
+    }
+  };
+
+  const handleDeleteLessonMaterial = (materialId?: string) => {
+    if (!currentCourse?._id || !currentLesson?._id || !materialId) return;
+    Alert.alert("Materialni o'chirish", "Bu material olib tashlansinmi?", [
+      { text: "Bekor qilish", style: "cancel" },
+      {
+        text: "O'chirish",
+        style: "destructive",
+        onPress: () => {
+          void coursesApi
+            .deleteLessonMaterial(currentCourse._id || "", currentLesson._id || "", materialId)
+            .then(() => invalidateCourseDetail())
+            .catch((error) =>
+              Alert.alert(
+                "Material o'chmadi",
+                error instanceof Error ? error.message : "Xatolik yuz berdi.",
+              ),
+            );
+        },
+      },
+    ]);
+  };
+
+  const handleDeleteLinkedTest = (linkedTestId?: string) => {
+    if (!currentCourse?._id || !currentLesson?._id || !linkedTestId) return;
+    Alert.alert("Testni uzish", "Bu linked test darsdan olib tashlansinmi?", [
+      { text: "Bekor qilish", style: "cancel" },
+      {
+        text: "O'chirish",
+        style: "destructive",
+        onPress: () => {
+          void coursesApi
+            .deleteLessonLinkedTest(currentCourse._id || "", currentLesson._id || "", linkedTestId)
+            .then(() => invalidateCourseDetail())
+            .catch((error) =>
+              Alert.alert(
+                "Test o'chmadi",
+                error instanceof Error ? error.message : "Xatolik yuz berdi.",
+              ),
+            );
+        },
+      },
+    ]);
+  };
+
+  const handleDeleteHomeworkAssignment = (assignmentId?: string) => {
+    if (!currentCourse?._id || !currentLesson?._id || !assignmentId) return;
+    Alert.alert("Homeworkni o'chirish", "Bu topshiriq olib tashlansinmi?", [
+      { text: "Bekor qilish", style: "cancel" },
+      {
+        text: "O'chirish",
+        style: "destructive",
+        onPress: () => {
+          void coursesApi
+            .deleteLessonHomework(currentCourse._id || "", currentLesson._id || "", assignmentId)
+            .then(() => invalidateCourseDetail())
+            .catch((error) =>
+              Alert.alert(
+                "Homework o'chmadi",
+                error instanceof Error ? error.message : "Xatolik yuz berdi.",
+              ),
+            );
+        },
+      },
+    ]);
+  };
+
+  const handleApproveMember = async (userId?: string) => {
+    if (!currentCourse?._id || !userId) return;
+    setMemberActionTargetId(userId);
+    try {
+      await approveCourseMemberMutation.mutateAsync({
+        courseId: currentCourse._id,
+        userId,
+      });
+    } catch (error) {
+      Alert.alert(
+        "A'zoni tasdiqlab bo'lmadi",
+        error instanceof Error ? error.message : "Xatolik yuz berdi.",
+      );
+    } finally {
+      setMemberActionTargetId(null);
+    }
+  };
+
+  const handleRemoveMember = async (userId?: string, label = "A'zo") => {
+    if (!currentCourse?._id || !userId) return;
+    setMemberActionTargetId(userId);
+    try {
+      await removeCourseMemberMutation.mutateAsync({
+        courseId: currentCourse._id,
+        userId,
+      });
+    } catch (error) {
+      Alert.alert(
+        `${label}ni o'chirib bo'lmadi`,
+        error instanceof Error ? error.message : "Xatolik yuz berdi.",
+      );
+    } finally {
+      setMemberActionTargetId(null);
+    }
+  };
+
+  const handleAttendanceStatusChange = async (
+    userId?: string,
+    status: "present" | "late" | "absent" = "absent",
+  ) => {
+    if (!currentCourse?._id || !currentLesson?._id || !userId) return;
+    setAttendanceActionTargetId(userId);
+    try {
+      await attendanceStatusMutation.mutateAsync({
+        courseId: currentCourse._id,
+        lessonId: currentLesson._id,
+        userId,
+        status,
+      });
+    } catch (error) {
+      Alert.alert(
+        "Davomat yangilanmadi",
+        error instanceof Error ? error.message : "Xatolik yuz berdi.",
+      );
+    } finally {
+      setAttendanceActionTargetId(null);
+    }
+  };
+
+  const openOralEditor = (row: CourseLessonGradingRow) => {
+    const rowUserId = String(row.userId || "");
+    if (!rowUserId) return;
+    setEditingOralRows((current) => ({ ...current, [rowUserId]: true }));
+    setOralScoreDrafts((current) => ({
+      ...current,
+      [rowUserId]:
+        current[rowUserId] !== undefined
+          ? current[rowUserId]
+          : row.oralScore === null || row.oralScore === undefined
+            ? ""
+            : String(row.oralScore),
+    }));
+    setOralNoteDrafts((current) => ({
+      ...current,
+      [rowUserId]: current[rowUserId] !== undefined ? current[rowUserId] : row.oralNote || "",
+    }));
+  };
+
+  const closeOralEditor = (userId?: string) => {
+    const rowUserId = String(userId || "");
+    if (!rowUserId) return;
+    setEditingOralRows((current) => ({ ...current, [rowUserId]: false }));
+  };
+
+  const handleSaveOralAssessment = async (userId?: string) => {
+    const rowUserId = String(userId || "");
+    if (!currentCourse?._id || !currentLesson?._id || !rowUserId) return;
+    setOralSavingUserId(rowUserId);
+    try {
+      await oralAssessmentMutation.mutateAsync({
+        courseId: currentCourse._id,
+        lessonId: currentLesson._id,
+        userId: rowUserId,
+        score:
+          oralScoreDrafts[rowUserId] === undefined || oralScoreDrafts[rowUserId] === ""
+            ? null
+            : Number(oralScoreDrafts[rowUserId]),
+        note: oralNoteDrafts[rowUserId] || "",
+      });
+      setEditingOralRows((current) => ({ ...current, [rowUserId]: false }));
+    } catch (error) {
+      Alert.alert(
+        "Og'zaki baho saqlanmadi",
+        error instanceof Error ? error.message : "Xatolik yuz berdi.",
+      );
+    } finally {
+      setOralSavingUserId(null);
+    }
+  };
+
+  const renderAdminMaterialsCard = () => (
+    <View style={styles.adminPaneSectionCard}>
+      <View style={styles.adminPaneSectionHeader}>
+        <Text style={styles.adminPaneSectionTitle}>Materiallar</Text>
+        <Pressable
+          style={styles.adminPaneInlineAction}
+          onPress={() => openAdminChildModal("material")}
+        >
+          <Plus size={14} color={Colors.primary} />
+          <Text style={styles.adminPaneInlineActionText}>Qo'shish</Text>
+        </Pressable>
+      </View>
+      {lessonMaterials.length ? (
+        <View style={{...styles.materialsList,paddingHorizontal: 14}}>
+          {lessonMaterials.map((item) => (
+            <View key={item.materialId || item.fileUrl} style={styles.materialCard}>
+              <View style={styles.materialMeta}>
+                <Text style={styles.materialName}>{item.title || item.fileName}</Text>
+                <Text style={styles.materialSub}>
+                  {item.fileName} · {formatFileSize(item.fileSize)}
+                </Text>
+              </View>
+              <View style={styles.materialActions}>
+                <Pressable
+                  style={styles.materialIconButton}
+                  onPress={() =>
+                    item.fileUrl ? Linking.openURL(item.fileUrl).catch(() => undefined) : undefined
+                  }
+                >
+                  <Globe2 size={15} color={Colors.text} />
+                </Pressable>
+                <Pressable
+                  style={styles.materialIconButton}
+                  onPress={() => handleDeleteLessonMaterial(item.materialId)}
+                >
+                  <Trash2 size={15} color={Colors.danger} />
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.adminPaneEmptyText}>Materiallar hali qo'shilmagan.</Text>
+      )}
+    </View>
+  );
+
+  const renderAdminTestsTab = () => (
+    <View style={styles.adminPaneSectionCard}>
+      <View style={styles.adminPaneSectionHeader}>
+        <Text style={styles.adminPaneSectionTitle}>Maydon mashqlari</Text>
+        <Pressable
+          style={styles.adminPaneInlineAction}
+          onPress={() => openAdminChildModal("linked-test")}
+        >
+          <Plus size={14} color={Colors.primary} />
+          <Text style={styles.adminPaneInlineActionText}>Qo'shish</Text>
+        </Pressable>
+      </View>
+      {linkedTests.length ? (
+        <View style={styles.resourceList}>
+          {linkedTests.map((item) => (
+            <View key={item.linkedTestId || item.url} style={styles.resourceRow}>
+              <View style={styles.resourceCopy}>
+                <Text style={styles.resourceTitle}>{item.title}</Text>
+                <Text style={styles.resourceMeta}>
+                  {item.resourceType === "sentenceBuilder" ? "Sentence builder" : "Quiz"} · min{" "}
+                  {item.minimumScore || 0}%
+                </Text>
+                {item.selfProgress ? (
+                  <Text style={styles.progressBadgeText}>
+                    {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% ·{" "}
+                    {item.selfProgress.passed ? "Passed" : "Waiting"}
+                  </Text>
+                ) : null}
+              </View>
+              <View style={styles.adminPaneResourceActions}>
+                <Pressable
+                  style={styles.resourceButton}
+                  onPress={() => void handleOpenLinkedTest(item)}
+                >
+                  <Text style={styles.resourceButtonText}>Boshlash</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.rowIconButton}
+                  onPress={() => handleDeleteLinkedTest(item.linkedTestId)}
+                >
+                  <Trash2 size={14} color={Colors.danger} />
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.adminPaneEmptyText}>Maydon mashqlari hali ulanmagan.</Text>
+      )}
+    </View>
+  );
+
+  const renderAdminHomeworkTab = () => (
+    <View style={styles.adminPaneSectionCard}>
+      <View style={styles.adminPaneSectionHeader}>
+        <Text style={styles.adminPaneSectionTitle}>Homework</Text>
+        <Pressable
+          style={styles.adminPaneInlineAction}
+          onPress={() => openAdminChildModal("homework")}
+        >
+          <Plus size={14} color={Colors.primary} />
+          <Text style={styles.adminPaneInlineActionText}>Qo'shish</Text>
+        </Pressable>
+      </View>
+      {homeworkAssignments.length ? (
+        <View style={{...styles.resourceList,paddingHorizontal: 14}}>
+          {homeworkAssignments.map((item) => (
+            <View key={item.assignmentId || item.title} style={styles.homeworkCard}>
+              <View style={styles.resourceCopy}>
+                <Text style={styles.resourceTitle}>{item.title}</Text>
+                <Text style={styles.resourceMeta}>
+                  {item.type} · {item.maxScore || 0} ball
+                  {item.deadline ? ` · ${timeAgo(item.deadline)}` : ""}
+                </Text>
+                {item.description ? (
+                  <Text style={styles.homeworkDescription}>{item.description}</Text>
+                ) : null}
+                <Text style={styles.resourceMeta}>
+                  {item.submissionCount || 0} topshiriq topshirilgan
+                </Text>
+              </View>
+              <View style={styles.adminPaneResourceActions}>
+                <Pressable
+                  style={styles.rowIconButton}
+                  onPress={() => handleDeleteHomeworkAssignment(item.assignmentId)}
+                >
+                  <Trash2 size={14} color={Colors.danger} />
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <Text style={styles.adminPaneEmptyText}>Homework hali qo'shilmagan.</Text>
+      )}
+    </View>
+  );
+
+  const renderAdminAttendanceTab = () => {
+    if (attendanceQuery.isLoading) {
+      return (
+        <View style={styles.adminPaneCenterState}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.adminPaneStack}>
+        <View style={styles.adminPaneSummaryGrid}>
+          <View style={styles.adminPaneSummaryCard}>
+            <Text style={styles.adminPaneSummaryLabel}>Present</Text>
+            <Text style={styles.adminPaneSummaryValue}>
+              {attendanceData?.summary?.present || 0}
+            </Text>
+          </View>
+          <View style={styles.adminPaneSummaryCard}>
+            <Text style={styles.adminPaneSummaryLabel}>Late</Text>
+            <Text style={styles.adminPaneSummaryValue}>{attendanceData?.summary?.late || 0}</Text>
+          </View>
+          <View style={styles.adminPaneSummaryCard}>
+            <Text style={styles.adminPaneSummaryLabel}>Absent</Text>
+            <Text style={styles.adminPaneSummaryValue}>
+              {attendanceData?.summary?.absent || 0}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.adminPaneSectionCard}>
+          <View style={styles.adminPaneSectionHeader}>
+            <Text style={styles.adminPaneSectionTitle}>Davomat</Text>
+            <Text style={styles.adminPaneSectionMuted}>
+              {attendanceData?.members?.length || 0} ta talaba
+            </Text>
+          </View>
+          {attendanceData?.members?.length ? (
+            <View style={styles.adminPaneList}>
+              {attendanceData.members.map((member) => {
+                const memberId = String(member.userId || "");
+                const loading = attendanceActionTargetId === memberId;
+                return (
+                  <View key={memberId} style={styles.adminPaneMemberRow}>
+                    <View style={styles.adminPaneMemberMeta}>
+                      <View style={styles.adminPaneMemberAvatar}>
+                        {member.userAvatar ? (
+                          <PersistentCachedImage
+                            remoteUri={member.userAvatar}
+                            style={styles.adminPaneMemberAvatarImage}
+                          />
+                        ) : (
+                          <Text style={styles.adminPaneMemberAvatarLetter}>
+                            {String(member.userName || "?").charAt(0).toUpperCase()}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.adminPaneMemberCopy}>
+                        <Text style={styles.adminPaneMemberName}>{member.userName}</Text>
+                        <Text style={styles.adminPaneMemberSub}>
+                          Progress {Math.round(member.progressPercent || 0)}%
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.adminPaneAttendanceActions}>
+                      {(["present", "late", "absent"] as const).map((status) => (
+                        <Pressable
+                          key={status}
+                          style={[
+                            styles.adminPaneStatusChip,
+                            member.status === status && styles.adminPaneStatusChipActive,
+                          ]}
+                          disabled={loading}
+                          onPress={() => void handleAttendanceStatusChange(memberId, status)}
+                        >
+                          {loading && member.status !== status ? (
+                            <ActivityIndicator size="small" color={Colors.primary} />
+                          ) : (
+                            <Text
+                              style={[
+                                styles.adminPaneStatusChipText,
+                                member.status === status && styles.adminPaneStatusChipTextActive,
+                              ]}
+                            >
+                              {status === "present"
+                                ? "Present"
+                                : status === "late"
+                                  ? "Late"
+                                  : "Absent"}
+                            </Text>
+                          )}
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          ) : (
+            <Text style={styles.adminPaneEmptyText}>Davomat uchun talaba topilmadi.</Text>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  const renderAdminGradingTab = () => {
+    if (gradingQuery.isLoading) {
+      return (
+        <View style={styles.adminPaneCenterState}>
+          <ActivityIndicator color={Colors.primary} />
+        </View>
+      );
+    }
+
+    const rows = grading?.lesson?.students || [];
+
+    return (
+      <View style={styles.adminPaneStack}>
+        <View style={styles.adminPaneSummaryGrid}>
+          <View style={styles.adminPaneSummaryCard}>
+            <Text style={styles.adminPaneSummaryLabel}>O'rtacha</Text>
+            <Text style={styles.adminPaneSummaryValue}>
+              {grading?.lesson?.summary?.averageScore || 0}%
+            </Text>
+          </View>
+          <View style={styles.adminPaneSummaryCard}>
+            <Text style={styles.adminPaneSummaryLabel}>Homework</Text>
+            <Text style={styles.adminPaneSummaryValue}>
+              {grading?.lesson?.summary?.completedHomeworkCount || 0}
+            </Text>
+          </View>
+          <View style={styles.adminPaneSummaryCard}>
+            <Text style={styles.adminPaneSummaryLabel}>Attendance</Text>
+            <Text style={styles.adminPaneSummaryValue}>
+              {grading?.lesson?.summary?.attendanceMarkedCount || 0}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.adminPaneSectionCard}>
+          <View style={styles.adminPaneSectionHeader}>
+            <Text style={styles.adminPaneSectionTitle}>Baholash</Text>
+            <Text style={styles.adminPaneSectionMuted}>{rows.length} ta talaba</Text>
+          </View>
+          {rows.length ? (
+            <View style={styles.adminPaneList}>
+              {rows.map((row) => {
+                const rowUserId = String(row.userId || "");
+                const isEditing = editingOralRows[rowUserId];
+                const isSaving = oralSavingUserId === rowUserId;
+                return (
+                  <View key={rowUserId} style={styles.adminPaneStudentCard}>
+                    <View style={styles.adminPaneMemberMeta}>
+                      <View style={styles.adminPaneMemberAvatar}>
+                        {row.userAvatar ? (
+                          <PersistentCachedImage
+                            remoteUri={row.userAvatar}
+                            style={styles.adminPaneMemberAvatarImage}
+                          />
+                        ) : (
+                          <Text style={styles.adminPaneMemberAvatarLetter}>
+                            {String(row.userName || "?").charAt(0).toUpperCase()}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.adminPaneMemberCopy}>
+                        <Text style={styles.adminPaneMemberName}>{row.userName}</Text>
+                        <Text style={styles.adminPaneMemberSub}>
+                          Score {Math.round(row.lessonScore || 0)} · {row.performance || "Normal"}
+                        </Text>
+                      </View>
+                      <Pressable
+                        style={styles.rowIconButton}
+                        onPress={() => openOralEditor(row)}
+                      >
+                        <Pencil size={14} color={Colors.primary} />
+                      </Pressable>
+                    </View>
+
+                    <View style={styles.adminPaneMetaRow}>
+                      <View style={styles.extraPill}>
+                        <Text style={styles.extraPillText}>
+                          Davomat: {row.attendanceStatus || "absent"}
+                        </Text>
+                      </View>
+                      <View style={styles.extraPill}>
+                        <Text style={styles.extraPillText}>
+                          Homework: {row.homeworkStatus || "pending"}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {isEditing ? (
+                      <View style={styles.adminPaneOralEditor}>
+                        <TextInput
+                          value={oralScoreDrafts[rowUserId] ?? ""}
+                          onChangeText={(value) =>
+                            setOralScoreDrafts((current) => ({
+                              ...current,
+                              [rowUserId]: value.replace(/[^0-9]/g, ""),
+                            }))
+                          }
+                          keyboardType="number-pad"
+                          placeholder="Og'zaki baho"
+                          placeholderTextColor={Colors.subtleText}
+                          style={styles.adminPaneInput}
+                        />
+                        <TextInput
+                          value={oralNoteDrafts[rowUserId] ?? ""}
+                          onChangeText={(value) =>
+                            setOralNoteDrafts((current) => ({
+                              ...current,
+                              [rowUserId]: value,
+                            }))
+                          }
+                          placeholder="Izoh"
+                          placeholderTextColor={Colors.subtleText}
+                          multiline
+                          textAlignVertical="top"
+                          style={styles.adminPaneTextarea}
+                        />
+                        <View style={styles.adminPaneResourceActions}>
+                          <Pressable
+                            style={[styles.adminPaneInlineAction, styles.adminPaneInlineActionMuted]}
+                            onPress={() => closeOralEditor(rowUserId)}
+                          >
+                            <Text style={styles.adminPaneInlineActionTextMuted}>Bekor qilish</Text>
+                          </Pressable>
+                          <Pressable
+                            style={styles.adminPaneInlineAction}
+                            disabled={isSaving}
+                            onPress={() => void handleSaveOralAssessment(rowUserId)}
+                          >
+                            {isSaving ? (
+                              <ActivityIndicator size="small" color={Colors.primary} />
+                            ) : (
+                              <>
+                                <Check size={14} color={Colors.primary} />
+                                <Text style={styles.adminPaneInlineActionText}>Saqlash</Text>
+                              </>
+                            )}
+                          </Pressable>
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.adminPaneOralSummary}>
+                        <Text style={styles.adminPaneOralSummaryTitle}>
+                          Og'zaki baho:{" "}
+                          <Text style={styles.adminPaneOralSummaryValue}>
+                            {row.oralScore === null || row.oralScore === undefined
+                              ? "-"
+                              : row.oralScore}
+                          </Text>
+                        </Text>
+                        {row.oralNote ? (
+                          <Text style={styles.adminPaneMemberSub}>{row.oralNote}</Text>
+                        ) : null}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          ) : (
+            <Text style={styles.adminPaneEmptyText}>Baholash ma'lumoti hozircha yo'q.</Text>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  const renderAdminMembersTab = () => (
+    <View style={styles.adminPaneStack}>
+      <View style={styles.adminPaneSectionCard}>
+        <View style={styles.adminPaneSectionHeader}>
+          <Text style={styles.adminPaneSectionTitle}>Kutayotganlar ({pendingMembers.length})</Text>
+        </View>
+        {pendingMembers.length ? (
+          <View style={styles.adminPaneList}>
+            {pendingMembers.map((member) => {
+              const memberId = String(getCourseMemberUserId(member) || "");
+              const loading = memberActionTargetId === memberId;
+              return (
+                <View key={memberId} style={styles.adminPaneMemberRow}>
+                  <View style={styles.adminPaneMemberMeta}>
+                    <View style={styles.adminPaneMemberAvatar}>
+                      {getCourseMemberAvatar(member) ? (
+                        <PersistentCachedImage
+                          remoteUri={getCourseMemberAvatar(member)}
+                          style={styles.adminPaneMemberAvatarImage}
+                        />
+                      ) : (
+                        <Text style={styles.adminPaneMemberAvatarLetter}>
+                          {String(getCourseMemberName(member) || "?")
+                            .charAt(0)
+                            .toUpperCase()}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={styles.adminPaneMemberCopy}>
+                      <Text style={styles.adminPaneMemberName}>{getCourseMemberName(member)}</Text>
+                      <Text style={styles.adminPaneMemberSub}>Tasdiq kutmoqda</Text>
+                    </View>
+                  </View>
+                  <View style={styles.adminPaneResourceActions}>
+                    <Pressable
+                      style={styles.adminPaneInlineAction}
+                      disabled={loading}
+                      onPress={() => void handleApproveMember(memberId)}
+                    >
+                      {loading ? (
+                        <ActivityIndicator size="small" color={Colors.primary} />
+                      ) : (
+                        <>
+                          <Check size={14} color={Colors.primary} />
+                          <Text style={styles.adminPaneInlineActionText}>Tasdiqlash</Text>
+                        </>
+                      )}
+                    </Pressable>
+                    <Pressable
+                      style={[styles.adminPaneInlineAction, styles.adminPaneInlineActionDanger]}
+                      disabled={loading}
+                      onPress={() => void handleRemoveMember(memberId, "So'rov")}
+                    >
+                      <Text style={styles.adminPaneInlineActionTextDanger}>Rad etish</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <Text style={styles.adminPaneEmptyText}>Kutayotgan so'rovlar yo'q.</Text>
+        )}
+      </View>
+
+      <View style={styles.adminPaneSectionCard}>
+        <View style={styles.adminPaneSectionHeader}>
+          <Text style={styles.adminPaneSectionTitle}>A'zolar ({approvedMembers.length})</Text>
+        </View>
+        {approvedMembers.length ? (
+          <View style={styles.adminPaneList}>
+            {approvedMembers.map((member) => {
+              const memberId = String(getCourseMemberUserId(member) || "");
+              const loading = memberActionTargetId === memberId;
+              return (
+                <View key={memberId} style={styles.adminPaneMemberRow}>
+                  <View style={styles.adminPaneMemberMeta}>
+                    <View style={styles.adminPaneMemberAvatar}>
+                      {getCourseMemberAvatar(member) ? (
+                        <PersistentCachedImage
+                          remoteUri={getCourseMemberAvatar(member)}
+                          style={styles.adminPaneMemberAvatarImage}
+                        />
+                      ) : (
+                        <Text style={styles.adminPaneMemberAvatarLetter}>
+                          {String(getCourseMemberName(member) || "?")
+                            .charAt(0)
+                            .toUpperCase()}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={styles.adminPaneMemberCopy}>
+                      <Text style={styles.adminPaneMemberName}>{getCourseMemberName(member)}</Text>
+                      <Text style={styles.adminPaneMemberSub}>Obuna bo'lingan</Text>
+                    </View>
+                  </View>
+                  <Pressable
+                    style={[styles.adminPaneInlineAction, styles.adminPaneInlineActionDanger]}
+                    disabled={loading}
+                    onPress={() => void handleRemoveMember(memberId, "A'zo")}
+                  >
+                    {loading ? (
+                      <ActivityIndicator size="small" color={Colors.danger} />
+                    ) : (
+                      <Text style={styles.adminPaneInlineActionTextDanger}>Olib tashlash</Text>
+                    )}
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <Text style={styles.adminPaneEmptyText}>Hozircha a'zolar yo'q.</Text>
+        )}
+      </View>
+    </View>
+  );
+
+  const renderAdminTabContent = () => {
+    switch (adminActiveTab) {
+      case "tests":
+        return renderAdminTestsTab();
+      case "attendance":
+        return renderAdminAttendanceTab();
+      case "grading":
+        return renderAdminGradingTab();
+      case "members":
+        return renderAdminMembersTab();
+      case "homework":
+      default:
+        return renderAdminHomeworkTab();
+    }
+  };
+
+  const renderOwnerLessonAdminModal = () => {
+    const adminPaneLesson = currentLesson || currentCourseLessons[0] || null;
+
+    if (!lessonAdminPanelOpen || !isOwner || !adminPaneLesson) {
+      return null;
+    }
+
+    const adminPaneContent = (
+      <KeyboardAvoidingView
+        style={styles.adminPaneKeyboardAvoid}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <Animated.View
+          style={[
+            styles.adminPaneShell,
+            Platform.OS === "web"
+              ? null
+              : {
+                  transform: [{ translateX: adminPaneTranslateX }],
+                },
+          ]}
+        >
+          <View style={styles.adminPaneTopBar}>
+            <View style={styles.adminPaneTitleWrap}>
+              <Text style={styles.adminPaneTitle} numberOfLines={2}>
+                {adminPaneLesson.title || currentCourse?.name || "Boshqarish"}
+              </Text>
+              <Text style={styles.adminPaneMuted}>Joriy dars boshqaruvi</Text>
+            </View>
+            <Pressable
+              style={styles.adminPaneCloseButton}
+              onPress={() => handleCloseLessonAdminPanel()}
+            >
+              <X size={18} color={Colors.text} />
+            </Pressable>
+          </View>
+
+          <View style={styles.adminPaneActionRow}>
+            <Pressable style={styles.adminPaneGhostButton} onPress={handleOpenAdminLessonEditor}>
+              <Pencil size={15} color={Colors.text} />
+              <Text style={styles.adminPaneGhostButtonText}>Tahrirlash</Text>
+            </Pressable>
+            {(adminPaneLesson.status || "published") === "draft" && selectedHasMedia ? (
+              <Pressable style={styles.adminPanePrimaryButton} onPress={() => void handlePublishCurrentLesson()}>
+                <Check size={15} color="#fff" />
+                <Text style={styles.adminPanePrimaryButtonText}>Publish</Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              style={styles.adminPaneDangerButton}
+              onPress={() => void handleDeleteLesson(adminPaneLesson)}
+            >
+              <Trash2 size={15} color={Colors.danger} />
+              <Text style={styles.adminPaneDangerButtonText}>O'chirish</Text>
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.adminPaneScroll}
+            contentContainerStyle={styles.adminPaneScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.adminPaneLessonStrip}
+              keyboardShouldPersistTaps="handled"
+            >
+              {currentCourseLessons.map((lesson, index) => {
+                const lessonId = String(lesson._id || lesson.urlSlug || index);
+                const active =
+                  lessonId === String(currentLesson?._id || currentLesson?.urlSlug || "");
+                return (
+                  <Pressable
+                    key={lessonId}
+                    style={[
+                      styles.adminPaneLessonButton,
+                      active && styles.adminPaneLessonButtonActive,
+                    ]}
+                    onPress={() => void handleSelectLesson(lesson)}
+                  >
+                    <Text
+                      style={[
+                        styles.adminPaneLessonTitle,
+                        active && styles.adminPaneLessonTitleActive,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {lesson.title || `${index + 1}-dars`}
+                    </Text>
+                    <View style={styles.adminPaneLessonMeta}>
+                      <Text style={styles.adminPaneLessonMetaText}>{index + 1}-dars</Text>
+                      <View
+                        style={[
+                          styles.adminPaneStatusPill,
+                          (lesson.status || "published") === "draft" &&
+                            styles.adminPaneStatusPillDraft,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.adminPaneStatusPillText,
+                            (lesson.status || "published") === "draft" &&
+                              styles.adminPaneStatusPillTextDraft,
+                          ]}
+                        >
+                          {(lesson.status || "published") === "draft" ? "Draft" : "Published"}
+                        </Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.adminPaneSummaryGrid}>
+              <View style={styles.adminPaneSummaryCard}>
+                <Text style={styles.adminPaneSummaryLabel}>Jami dars</Text>
+                <Text style={styles.adminPaneSummaryValue}>{currentCourseLessons.length}</Text>
+              </View>
+              <View style={styles.adminPaneSummaryCard}>
+                <Text style={styles.adminPaneSummaryLabel}>Published</Text>
+                <Text style={styles.adminPaneSummaryValue}>{publishedLessonsCount}</Text>
+              </View>
+              <View style={styles.adminPaneSummaryCard}>
+                <Text style={styles.adminPaneSummaryLabel}>Draft</Text>
+                <Text style={styles.adminPaneSummaryValue}>{draftLessonsCount}</Text>
+              </View>
+              <View style={styles.adminPaneSummaryCard}>
+                <Text style={styles.adminPaneSummaryLabel}>Talabalar</Text>
+                <Text style={styles.adminPaneSummaryValue}>{approvedMembers.length}</Text>
+              </View>
+            </View>
+
+            {renderAdminMaterialsCard()}
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.adminPaneTabs}
+              keyboardShouldPersistTaps="handled"
+            >
+              {([
+                { key: "tests", label: "Tests" },
+                { key: "homework", label: "Homework" },
+                { key: "attendance", label: "Attendance" },
+                { key: "grading", label: "Grading" },
+                { key: "members", label: "Members" },
+              ] as Array<{ key: CourseAdminTab; label: string }>).map((tab) => (
+                <Pressable
+                  key={tab.key}
+                  style={[
+                    styles.adminPaneTabButton,
+                    adminActiveTab === tab.key && styles.adminPaneTabButtonActive,
+                  ]}
+                  onPress={() => setAdminActiveTab(tab.key)}
+                >
+                  <Text
+                    style={[
+                      styles.adminPaneTabText,
+                      adminActiveTab === tab.key && styles.adminPaneTabTextActive,
+                    ]}
+                  >
+                    {tab.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            {renderAdminTabContent()}
+          </ScrollView>
+        </Animated.View>
+      </KeyboardAvoidingView>
+    );
+
+    if (Platform.OS === "web") {
+      return (
+        <Modal
+          visible={lessonAdminPanelOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => handleCloseLessonAdminPanel()}
+        >
+          <View style={styles.adminPaneOverlay}>
+            <Pressable style={styles.adminPaneBackdrop} onPress={() => handleCloseLessonAdminPanel()} />
+            <SafeAreaView style={styles.adminPaneSafeArea} edges={["top", "left", "right", "bottom"]}>
+              {adminPaneContent}
+            </SafeAreaView>
+          </View>
+        </Modal>
+      );
+    }
+
+    return (
+      <Animated.View style={styles.adminPaneOverlay}>
+        <Animated.View style={[styles.adminPaneBackdropFade, { opacity: adminPaneBackdropOpacity }]}>
+          <Pressable style={styles.adminPaneBackdrop} onPress={() => handleCloseLessonAdminPanel()} />
+        </Animated.View>
+        <SafeAreaView style={styles.adminPaneSafeArea} edges={[ "left", "right", "bottom"]}>
+          {adminPaneContent}
+        </SafeAreaView>
+      </Animated.View>
+    );
+  };
+
+  const renderLessonMaterialsSection = () => {
+    if (!canRenderLessonPlayer || !hasLessonMaterials) {
+      return null;
+    }
+
+    return (
+      <View style={styles.lessonMaterialsSection}>
+        <View style={styles.lessonMaterialsHeader}>
+          <View style={styles.lessonMaterialsTitleRow}>
+            <FolderOpen size={17} color={Colors.primary} />
+            <Text style={styles.lessonMaterialsTitle}>Lesson materials</Text>
+          </View>
+          <Text style={styles.lessonMaterialsCount}>{lessonMaterials.length} ta</Text>
+        </View>
+        <Text style={styles.lessonMaterialsHint}>
+          Darsga biriktirilgan fayllarni shu yerda ochasiz.
+        </Text>
+        <View style={styles.materialsList}>
+          {lessonMaterials.map((item) => (
+            <View key={item.materialId || item.fileUrl} style={styles.materialCard}>
+              <View style={styles.materialMeta}>
+                <Text style={styles.materialName}>{item.title || item.fileName}</Text>
+                <Text style={styles.materialSub}>
+                  {item.fileName} · {formatFileSize(item.fileSize)}
+                </Text>
+              </View>
+              <View style={styles.materialActions}>
+                <Pressable
+                  style={styles.materialIconButton}
+                  onPress={() =>
+                    item.fileUrl ? Linking.openURL(item.fileUrl).catch(() => undefined) : undefined
+                  }
+                >
+                  <Globe2 size={15} color={Colors.text} />
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
+  const renderStudentExtrasSection = () => {
+    if (isOwner || !canRenderLessonPlayer || !hasLessonExtras) {
+      return null;
+    }
+
+    return (
+      <View style={styles.studentExtrasCard}>
+        <Pressable
+          style={styles.studentExtrasHeader}
+          onPress={() => setStudentExtrasOpen((value) => !value)}
+        >
+          <View style={styles.studentExtrasHeaderCopy}>
+            <View style={styles.studentExtrasTitleRow}>
+              <Text style={styles.studentExtrasTitle}>Dars qo'shimchalari</Text>
+              {studentExtrasOpen ? (
+                <ChevronUp size={16} color={Colors.subtleText} />
+              ) : (
+                <ChevronDown size={16} color={Colors.subtleText} />
+              )}
+            </View>
+            <Text style={styles.studentExtrasHint}>
+              Test va uyga vazifani shu yerda ochasiz.
+            </Text>
+          </View>
+          {!studentExtrasOpen ? (
+            <View style={styles.studentExtrasBadgeRow}>
+              {hasLessonTests ? (
+                <View style={styles.studentExtrasBadge}>
+                  <Text style={styles.studentExtrasBadgeText}>Lesson testi</Text>
+                </View>
+              ) : null}
+              {hasHomeworkBadge ? (
+                <View style={styles.studentExtrasBadge}>
+                  <Text style={styles.studentExtrasBadgeText}>Uyga vazifa</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </Pressable>
+
+        {studentExtrasOpen ? (
+          <View style={styles.studentExtrasBody}>
+            {hasLessonTests ? (
+              <View style={styles.studentExtraBlock}>
+                <View style={styles.studentExtraHeader}>
+                  <ClipboardList size={16} color={Colors.primary} />
+                  <Text style={styles.studentExtraTitle}>Lesson testi</Text>
+                </View>
+                <Text style={styles.studentExtraHint}>
+                  {linkedTests.filter((item) => item.selfProgress?.passed).length} /{" "}
+                  {linkedTests.length} test bajarilgan
+                </Text>
+                <View style={styles.resourceList}>
+                  {linkedTests.map((item) => (
+                    <View key={item.linkedTestId || item.url} style={styles.resourceRow}>
+                      <View style={styles.resourceCopy}>
+                        <Text style={styles.resourceTitle}>{item.title}</Text>
+                        <Text style={styles.resourceMeta}>
+                          {item.resourceType === "sentenceBuilder" ? "Sentence builder" : "Quiz"} · min{" "}
+                          {item.minimumScore || 0}%
+                        </Text>
+                        {item.selfProgress ? (
+                          <Text style={styles.progressBadgeText}>
+                            {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% ·{" "}
+                            {item.selfProgress.passed ? "Passed" : "Waiting"}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Pressable
+                        style={styles.resourceButton}
+                        onPress={() => void handleOpenLinkedTest(item)}
+                      >
+                        <Text style={styles.resourceButtonText}>Boshlash</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {hasHomeworkBadge ? (
+              <View style={styles.studentExtraBlock}>
+                <View style={styles.studentExtraHeader}>
+                  <FileText size={16} color={Colors.primary} />
+                  <Text style={styles.studentExtraTitle}>Uyga vazifa</Text>
+                </View>
+                <Text style={styles.studentExtraHint}>
+                  Javobni topshiriq turiga mos yuboring
+                </Text>
+                <View style={styles.resourceList}>
+                  {homeworkAssignments.map((item) => (
+                    <View key={item.assignmentId || item.title} style={styles.homeworkCard}>
+                      <View style={styles.resourceCopy}>
+                        <Text style={styles.resourceTitle}>{item.title}</Text>
+                        <Text style={styles.resourceMeta}>
+                          {item.type} · {item.maxScore || 0} ball
+                          {item.deadline ? ` · ${timeAgo(item.deadline)}` : ""}
+                        </Text>
+                        {item.description ? (
+                          <Text style={styles.homeworkDescription}>{item.description}</Text>
+                        ) : null}
+                        {item.selfSubmission ? (
+                          <Text style={styles.progressBadgeText}>
+                            {item.selfSubmission.status || "submitted"}
+                            {item.selfSubmission.score !== null &&
+                            item.selfSubmission.score !== undefined
+                              ? ` · ${item.selfSubmission.score} ball`
+                              : ""}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Pressable
+                        style={styles.resourceButton}
+                        onPress={() => handleOpenHomeworkSubmit(item)}
+                      >
+                        <Text style={styles.resourceButtonText}>
+                          {item.selfSubmission ? "Yangilash" : "Topshirish"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
+  const renderEnrollmentSection = () => (
+    <View style={styles.compactEnrollmentCard}>
+      <View style={styles.enrollmentInfoRow}>
+        <View style={styles.creatorAvatar}>
+          {courseOwnerAvatar ? (
+            <PersistentCachedImage
+              remoteUri={courseOwnerAvatar}
+              style={styles.creatorAvatarImage}
+              requireManualDownload
+            />
+          ) : (
+            <Text style={styles.creatorAvatarLetter}>
+              {String(courseOwnerName || "?").charAt(0).toUpperCase()}
+            </Text>
+          )}
+        </View>
+        <View style={styles.creatorMeta}>
+          <Text style={styles.creatorName}>{courseOwnerName}</Text>
+          <Text style={styles.creatorCount}>{getCourseMemberCount(currentCourse)} talaba</Text>
+        </View>
+        <View style={styles.enrollmentActionsRow}>
+        {isOwner ? (
+          <Pressable
+            style={[styles.roundedActionButton, styles.roundedActionButtonAdmin]}
+            onPress={() => {
+              if (!selectedLessonId && currentCourseLessons[0]) {
+                setSelectedLessonId(
+                  currentCourseLessons[0]._id || currentCourseLessons[0].urlSlug || null,
+                );
+              }
+              setAdminActiveTab("homework");
+              setLessonAdminPanelOpen(true);
+            }}
+          >
+            <Shield size={15} color={Colors.primary} />
+            <Text
+              style={[styles.roundedActionButtonText, styles.roundedActionButtonTextAdmin]}
+            >
+              Boshqarish
+            </Text>
+          </Pressable>
+        ) : isPendingMember ? (
+          <View style={[styles.roundedActionButton, styles.roundedActionButtonPending]}>
+            <Clock3 size={15} color={Colors.warning} />
+            <Text style={[styles.roundedActionButtonText, styles.roundedActionButtonTextPending]}>
+              Kutilmoqda
+            </Text>
+          </View>
+        ) : isApprovedMember ? (
+          <View style={[styles.roundedActionButton, styles.roundedActionButtonSuccess]}>
+            <CheckCircle2 size={15} color={Colors.accent} />
+            <Text style={[styles.roundedActionButtonText, styles.roundedActionButtonTextSuccess]}>
+              Obuna bo'lingan
+            </Text>
+          </View>
+        ) : (
+          <Pressable
+            style={[styles.roundedActionButton, styles.roundedActionButtonPrimary]}
+            disabled={enrollMutation.isPending || !currentCourse?._id}
+            onPress={() =>
+              currentCourse?._id ? enrollMutation.mutate(currentCourse._id) : undefined
+            }
+          >
+            {enrollMutation.isPending ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <UserPlus size={15} color="#fff" />
+                <Text style={styles.roundedActionButtonText}>
+                  {currentCourse?.accessType === "paid"
+                    ? `Sotib olish: ${currentCourse?.price || 0} so'm`
+                    : "Obuna bo'lish"}
+                </Text>
+              </>
+            )}
+          </Pressable>
+        )}
+      </View>
+      </View>
+      
+    </View>
+  );
 
   const indicatorTranslateX =
     tabsWidth > 0
@@ -2249,58 +5484,110 @@ export function CoursesScreen({ navigation }: Props) {
     }
 
     return filteredCourses.map((course) => {
-      const memberStatus =
-        String(course.createdBy || "") === currentUserId
-          ? "admin"
-          : course.members?.find((member) => String(member.userId || "") === currentUserId)
-              ?.status || null;
+      const memberStatus = getCourseMemberStatus(course, currentUserId);
+      const lessonCount = getCourseLessonCount(course);
+      const memberCount = getCourseMemberCount(course);
+      const statusLabel = formatCourseStatus(memberStatus);
+      const isAdminCourse = memberStatus === "admin";
+      const isDeletingCourse = deletingCourseId === String(course._id || "");
+      const isActiveCourse =
+        selectedCourseId === String(course._id || "") ||
+        selectedCourseId === String(course.urlSlug || "");
+      const gradientColors = getCourseGradientColors(course.gradient);
+
       return (
         <Pressable
           key={course._id || course.urlSlug}
-          style={styles.sidebarCourseItem}
+          style={({ pressed }) => [
+            styles.sidebarCourseItem,
+            isActiveCourse && styles.sidebarCourseItemActive,
+            pressed && styles.sidebarCourseItemPressed,
+          ]}
           onPress={() => void handleOpenCourse(course)}
         >
+          <View
+            style={[
+              styles.sidebarCourseAccent,
+              !isActiveCourse && styles.sidebarCourseAccentHidden,
+            ]}
+          />
           {course.image ? (
             <PersistentCachedImage
               remoteUri={course.image}
               style={styles.sidebarCourseThumb}
-              requireManualDownload
             />
           ) : (
-            <View style={styles.sidebarCourseThumbFallback}>
+            <LinearGradient
+              colors={gradientColors}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.sidebarCourseThumbFallback}
+            >
               <Text style={styles.courseThumbLetter}>
                 {(course.name || "?").charAt(0)}
               </Text>
-            </View>
+            </LinearGradient>
           )}
 
           <View style={styles.sidebarCourseBody}>
             <Text style={styles.courseItemTitle} numberOfLines={1}>
               {course.name}
             </Text>
-            <Text style={styles.courseItemDescription} numberOfLines={1}>
-              {course.description || "Kurs tavsifi kiritilmagan."}
-            </Text>
+            <View style={styles.courseDescriptionRow}>
+              <Text style={styles.courseItemDescription} numberOfLines={1}>
+                {lessonCount > 0 ? `${lessonCount} ta dars` : "Hali dars yo'q"}
+              </Text>
+              {statusLabel ? (
+                <View
+                  style={[
+                    styles.courseStatusBadge,
+                    memberStatus === "pending"
+                      ? styles.courseStatusBadgePending
+                      : memberStatus === "approved"
+                        ? styles.courseStatusBadgeApproved
+                        : null,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.courseStatusBadgeText,
+                      memberStatus === "pending"
+                        ? styles.courseStatusBadgeTextPending
+                        : memberStatus === "approved"
+                          ? styles.courseStatusBadgeTextApproved
+                          : null,
+                    ]}
+                  >
+                    {statusLabel}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
           </View>
 
           <View style={styles.sidebarCourseMeta}>
             <View style={styles.sidebarCourseMetaRow}>
-              <Users size={12} color={Colors.subtleText} />
-              <Text style={styles.courseMetaText}>
-                {course.membersCount || course.totalMembersCount || 0}
-              </Text>
+              <Users size={12} color={Colors.mutedText} />
+              <Text style={styles.courseMetaText}>{memberCount}</Text>
             </View>
-            <Text style={styles.courseMetaText}>{course.lessonCount || 0} dars</Text>
-            {memberStatus ? (
-              <View style={styles.courseStatusBadge}>
-                <Text style={styles.courseStatusBadgeText}>
-                  {memberStatus === "approved"
-                    ? "Approved"
-                    : memberStatus === "pending"
-                      ? "Pending"
-                      : "Admin"}
-                </Text>
-              </View>
+            {isAdminCourse ? (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.sidebarCourseAction,
+                  pressed && styles.sidebarCourseActionPressed,
+                ]}
+                disabled={isDeletingCourse}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  handleDeleteCourse(course);
+                }}
+              >
+                {isDeletingCourse ? (
+                  <ActivityIndicator size="small" color={Colors.danger} />
+                ) : (
+                  <Trash2 size={14} color={Colors.mutedText} />
+                )}
+              </Pressable>
             ) : null}
           </View>
         </Pressable>
@@ -2309,80 +5596,180 @@ export function CoursesScreen({ navigation }: Props) {
   };
 
   const renderArenaPage = () =>
-    coursesQuery.isLoading ? (
-      <View style={styles.loaderState}>
-        <ActivityIndicator color={Colors.primary} />
+    filteredArenaItems.length === 0 ? (
+      <View style={styles.emptyState}>
+        <Swords size={28} color={Colors.mutedText} />
+        <Text style={styles.emptyTitle}>Maydon topilmadi</Text>
+        <Text style={styles.emptyText}>Qidiruvni o'zgartirib, arena bo'limini yana tekshirib ko'ring.</Text>
       </View>
     ) : (
-      ARENA_ITEMS.map((item) => {
-        const Icon = item.icon;
-        return (
-          <Pressable
-            key={item.key}
-            style={[
-              styles.arenaItem,
-              activeArenaTab === item.key && styles.arenaItemActive,
-            ]}
-            onPress={() => setActiveArenaTab(item.key)}
-          >
-            <View
-              style={[
-                styles.arenaThumb,
-                {
-                  backgroundColor: item.gradient.includes("#FF6B6B")
-                    ? "#ff7b6b"
-                    : item.gradient.includes("#4facfe")
-                      ? "#1f92ff"
-                      : item.gradient.includes("#22c55e")
-                        ? "#1fa67a"
-                        : item.gradient.includes("#64748b")
-                          ? "#475569"
-                          : "#9f7aea",
-                },
-              ]}
+      <>
+        {filteredArenaItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Pressable
+              key={item.key}
+              style={styles.arenaItem}
+              onPress={() => handleOpenArenaItem(item)}
             >
-              <Icon size={20} color="#fff" />
-            </View>
-            <View style={styles.arenaBody}>
-              <Text style={styles.courseItemTitle}>{item.title}</Text>
-              <Text style={styles.courseItemDescription} numberOfLines={2}>
-                {item.description}
-              </Text>
-            </View>
-          </Pressable>
-        );
-      })
+              <View style={styles.arenaThumb}>
+                <Icon size={20} color="#fff" />
+              </View>
+              <View style={styles.arenaBody}>
+                <Text style={styles.arenaItemTitle}>{item.title}</Text>
+                <Text style={styles.arenaItemDescription} numberOfLines={2}>
+                  {item.description}
+                </Text>
+              </View>
+            </Pressable>
+          );
+        })}
+      </>
     );
 
-  if (selectedCourseId) {
-    return (
-      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-        <View style={styles.detailContainer}>
-          <View style={styles.detailHeader}>
-            <Pressable style={styles.headerButton} onPress={() => setSelectedCourseId(null)}>
-              <ArrowLeft size={18} color={Colors.text} />
-            </Pressable>
-            <Text style={styles.detailTitle} numberOfLines={1}>
-              {currentCourse?.name || "Course"}
-            </Text>
-            <View style={styles.detailHeaderActions}>
-              <Pressable style={styles.headerButton} onPress={() => void handleCopyCourseLink()}>
-                <Copy size={16} color={Colors.text} />
-              </Pressable>
-              {isOwner ? (
-                <Pressable
-                  style={styles.headerButton}
-                  onPress={() => {
-                    setEditingLesson(null);
-                    setLessonEditorOpen(true);
-                  }}
-                >
-                  <Plus size={16} color={Colors.text} />
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
+  const mainContent = (
+    <View style={styles.container}>
+      <View style={styles.coursesTopHeader}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder={viewMode === "arena" ? "Arena qidirish..." : "Kurs qidirish..."}
+            placeholderTextColor={Colors.subtleText}
+            style={styles.searchInput}
+          />
+        </View>
+        {viewMode === "courses" ? (
+          <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
+            <Plus size={18} color={Colors.text} />
+          </Pressable>
+        ) : null}
+      </View>
 
+      <View style={styles.coursesTabsRow}>
+        <View
+          style={styles.coursesTabsTrack}
+          onLayout={(event) => setTabsWidth(event.nativeEvent.layout.width)}
+        >
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.coursesTabIndicator,
+              tabsWidth > 0
+                ? {
+                    width: tabsWidth / 2,
+                    transform: [{ translateX: indicatorTranslateX as any }],
+                  }
+                : null,
+            ]}
+          />
+        </View>
+        <Pressable
+          style={styles.coursesTab}
+          onPress={() => animateToViewMode("courses", true)}
+        >
+          <BookOpen
+            size={16}
+            color={viewMode === "courses" ? Colors.text : Colors.mutedText}
+          />
+          <Text style={[styles.coursesTabText, viewMode === "courses" && styles.coursesTabTextActive]}>
+            Kurslar
+          </Text>
+        </Pressable>
+        <Pressable
+          style={styles.coursesTab}
+          onPress={() => animateToViewMode("arena", true)}
+        >
+          <Swords
+            size={16}
+            color={viewMode === "arena" ? Colors.text : Colors.mutedText}
+          />
+          <Text style={[styles.coursesTabText, viewMode === "arena" && styles.coursesTabTextActive]}>
+            Maydon
+          </Text>
+        </Pressable>
+      </View>
+
+      <Animated.ScrollView
+        ref={pagerRef}
+        horizontal
+        pagingEnabled
+        bounces={false}
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onMomentumScrollEnd={(event) => {
+          const nextIndex = Math.round(
+            event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
+          );
+          currentIndexRef.current = nextIndex;
+          setViewMode(nextIndex === 1 ? "arena" : "courses");
+        }}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { x: pagerScrollX } } }],
+          { useNativeDriver: false },
+        )}
+        style={styles.listPagerTrack}
+      >
+        <View style={[styles.listPage, { width: screenWidth }]}>
+          <ScrollView
+            style={styles.listScroll}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={coursesQuery.isRefetching}
+                onRefresh={() => coursesQuery.refetch()}
+                tintColor={Colors.primary}
+              />
+            }
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+          >
+            {renderCoursesListPage()}
+          </ScrollView>
+        </View>
+        <View style={[styles.listPage, { width: screenWidth }]}>
+          <ScrollView
+            style={styles.listScroll}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={coursesQuery.isRefetching}
+                onRefresh={() => coursesQuery.refetch()}
+                tintColor={Colors.primary}
+              />
+            }
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+          >
+            {renderArenaPage()}
+          </ScrollView>
+        </View>
+      </Animated.ScrollView>
+    </View>
+  );
+
+  const detailLayer = selectedCourseId ? (
+    <>
+      <Animated.View
+            style={[
+              styles.detailOverlay,
+              { transform: [{ translateX: courseDetailTranslateX }] },
+            ]}
+          >
+            <SafeAreaView style={styles.detailSafeArea} edges={["left", "right", "bottom"]}>
+            <View style={styles.detailContainer}>
+          <PanGestureHandler
+            enabled={!isLessonVideoFullscreen}
+            activeOffsetX={24}
+            failOffsetY={[-16, 16]}
+            shouldCancelWhenOutside={false}
+            onGestureEvent={handleCourseSwipeGesture}
+            onHandlerStateChange={handleCourseSwipeBack}
+          >
+            <Animated.View style={styles.detailSwipeEdge} />
+          </PanGestureHandler>
           {selectedCourseQuery.isLoading ? (
             <View style={styles.loaderState}>
               <ActivityIndicator color={Colors.primary} />
@@ -2397,162 +5784,30 @@ export function CoursesScreen({ navigation }: Props) {
               contentContainerStyle={styles.detailContent}
               showsVerticalScrollIndicator={false}
             >
-              {currentCourse.image ? (
-                <PersistentCachedImage
-                  remoteUri={currentCourse.image}
-                  style={styles.courseHero}
-                  requireManualDownload
-                />
-              ) : (
-                <View style={styles.courseHeroFallback}>
-                  <Text style={styles.courseHeroLetter}>
-                    {(currentCourse.name || "?").charAt(0)}
-                  </Text>
-                </View>
-              )}
+              {renderCurrentLessonStage()}
+              {renderCurrentLessonInfo()}
+              {renderEnrollmentSection()}
+              {renderLessonMaterialsSection()}
+              {renderStudentExtrasSection()}
 
-              <View style={styles.playerHeroCard}>
-                <Text style={styles.courseName}>{currentCourse.name}</Text>
-                <Text style={styles.courseDescription}>
-                  {currentCourse.description || "Kurs uchun tavsif hozircha kiritilmagan."}
-                </Text>
-                {currentLesson ? (
-                  <View style={styles.playerLessonCard}>
-                    <Text style={styles.playerLessonEyebrow}>Joriy dars</Text>
-                    <Text style={styles.playerLessonTitle}>{currentLesson.title}</Text>
-                    <Text style={styles.playerLessonDescription} numberOfLines={3}>
-                      {currentLesson.description || "Bu dars uchun tavsif yo'q."}
-                    </Text>
-                    <View style={styles.playerLessonActions}>
-                      <Pressable
-                        style={[
-                          styles.mediaButton,
-                          !canAccessCurrentLesson && styles.mediaButtonLocked,
-                        ]}
-                        onPress={() => void handleOpenMedia()}
-                      >
-                        <Play size={16} color={canAccessCurrentLesson ? "#fff" : Colors.warning} />
-                        <Text
-                          style={[
-                            styles.mediaButtonText,
-                            !canAccessCurrentLesson && styles.mediaButtonTextLocked,
-                          ]}
-                        >
-                          {canAccessCurrentLesson ? "Media ochish" : "Dars qulflangan"}
-                        </Text>
-                      </Pressable>
-
-                      <Pressable
-                        style={styles.metaButton}
-                        onPress={() =>
-                          currentCourse._id && currentLesson._id
-                            ? likeLessonMutation.mutate({
-                                courseId: currentCourse._id,
-                                lessonId: currentLesson._id,
-                              })
-                            : undefined
-                        }
-                      >
-                        <Heart
-                          size={15}
-                          color={currentLesson.liked ? Colors.danger : Colors.text}
-                          fill={currentLesson.liked ? Colors.danger : "transparent"}
-                        />
-                        <Text style={styles.metaButtonText}>{currentLesson.likes || 0}</Text>
-                      </Pressable>
-
-                      <Pressable style={styles.metaButton} onPress={() => setCommentsOpen(true)}>
-                        <MessageCircle size={15} color={Colors.text} />
-                        <Text style={styles.metaButtonText}>Izohlar</Text>
-                      </Pressable>
-
-                      <View style={styles.metaButton}>
-                        <Eye size={15} color={Colors.text} />
-                        <Text style={styles.metaButtonText}>{currentLesson.views || 0}</Text>
-                      </View>
-                    </View>
-                  </View>
-                ) : null}
-              </View>
-
-              <View style={styles.courseStats}>
-                <View style={styles.courseStat}>
-                  <Users size={14} color={Colors.mutedText} />
-                  <Text style={styles.courseStatText}>
-                    {currentCourse.totalMembersCount || currentCourse.membersCount || 0}
-                  </Text>
-                </View>
-                <View style={styles.courseStat}>
-                  <BookOpen size={14} color={Colors.mutedText} />
-                  <Text style={styles.courseStatText}>{currentCourse.lessonCount || 0}</Text>
-                </View>
-                <View style={styles.courseStat}>
-                  {currentCourse.accessType === "free_open" ? (
-                    <CheckCircle2 size={14} color={Colors.accent} />
-                  ) : (
-                    <Lock size={14} color={Colors.warning} />
-                  )}
-                  <Text style={styles.courseStatText}>{formatAccessType(currentCourse.accessType)}</Text>
-                </View>
-                {currentCourse.accessType === "paid" ? (
-                  <View style={styles.courseStat}>
-                    <Shield size={14} color={Colors.primary} />
-                    <Text style={styles.courseStatText}>{currentCourse.price || 0}</Text>
-                  </View>
-                ) : null}
-              </View>
-
-              {isOwner ? (
-                <View style={styles.ownerBanner}>
-                  <Text style={styles.ownerBannerTitle}>Kurs boshqaruvi</Text>
-                  <Text style={styles.ownerBannerText}>
-                    Dars, material, maydon mashqlari va homework shu yerdan boshqariladi.
-                  </Text>
-                </View>
-              ) : null}
-
-              {!isOwner && !isApprovedMember ? (
-                <View style={styles.enrollCard}>
-                  <Text style={styles.enrollTitle}>
-                    {isPendingMember ? "So'rov yuborilgan" : "Kursga qo'shilish"}
-                  </Text>
-                  <Text style={styles.enrollText}>
-                    {isPendingMember
-                      ? "Admin tasdiqlashini kuting."
-                      : "Darslarning to'liq qismini ko'rish uchun kursga kiring."}
-                  </Text>
-                  {!isPendingMember ? (
-                    <Pressable
-                      style={[
-                        styles.primaryButton,
-                        enrollMutation.isPending && styles.disabledButton,
-                      ]}
-                      disabled={enrollMutation.isPending}
-                      onPress={() =>
-                        currentCourse._id
-                          ? enrollMutation.mutate(currentCourse._id)
-                          : undefined
-                      }
-                    >
-                      {enrollMutation.isPending ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Text style={styles.primaryButtonText}>Kursga kirish</Text>
-                      )}
-                    </Pressable>
-                  ) : null}
-                </View>
-              ) : null}
-
-              <View style={styles.lessonsCard}>
+              <View style={styles.playlistPanel}>
                 <View style={styles.playlistHeader}>
                   <View style={styles.playlistHeaderMain}>
-                    <Text style={styles.playlistTitleText}>Darslar</Text>
+                    <View style={styles.playlistTitleRow}>
+                      <ListVideo size={17} color={Colors.text} />
+                      <Text style={styles.playlistTitleText}>Darslar</Text>
                     <Text style={styles.playlistCount}>
-                      {(currentCourse.lessons || []).length} ta dars
+                      {currentCourseLessons.length} ta dars
                     </Text>
+                    </View>
                   </View>
                   <View style={styles.playlistHeaderActions}>
+                    <Pressable
+                      style={styles.rowIconButton}
+                      onPress={() => void handleCopyCourseLink()}
+                    >
+                      <Copy size={14} color={Colors.subtleText} />
+                    </Pressable>
                     {isOwner ? (
                       <Pressable
                         style={styles.rowIconButton}
@@ -2577,559 +5832,238 @@ export function CoursesScreen({ navigation }: Props) {
                   </View>
                 </View>
                 {!playlistCollapsed
-                  ? currentCourse.lessons?.map((lesson, index) => {
-                  const active =
-                    String(lesson._id || lesson.urlSlug || "") ===
-                    String(currentLesson?._id || currentLesson?.urlSlug || "");
-                  return (
-                    <Pressable
-                      key={lesson._id || lesson.urlSlug || index}
-                      style={[styles.lessonRow, active && styles.lessonRowActive]}
-                      onPress={() => void handleSelectLesson(lesson)}
-                    >
-                      <View style={styles.lessonRowMain}>
-                        <View style={styles.lessonIndex}>
-                          <Text style={styles.lessonIndexText}>{index + 1}</Text>
-                        </View>
-                        <View style={styles.lessonCopy}>
-                          <Text style={styles.lessonTitle} numberOfLines={1}>
-                            {lesson.title}
-                          </Text>
-                          <Text style={styles.lessonMeta} numberOfLines={1}>
-                            {lesson.isUnlocked || isOwner
-                              ? `${lesson.status === "draft" ? "Draft" : "Published"} · ${lesson.views || 0} view · ${lesson.likes || 0} like`
-                              : "Qulflangan dars"}
-                          </Text>
-                        </View>
-                      </View>
-                      {isOwner ? (
-                        <View style={styles.lessonRowActions}>
+                  ? currentCourseLessons.map((lesson, index) => {
+                        const active =
+                          String(lesson._id || lesson.urlSlug || "") ===
+                          String(currentLesson?._id || currentLesson?.urlSlug || "");
+                        const canOpen = canOpenLesson(lesson);
+                        const hasLessonMedia = Boolean(
+                          (Array.isArray(lesson.mediaItems) && lesson.mediaItems.length) ||
+                            lesson.videoUrl ||
+                            lesson.fileUrl,
+                        );
+                        return (
                           <Pressable
-                            style={styles.rowIconButton}
-                            onPress={() => {
-                              setEditingLesson(lesson);
-                              setLessonEditorOpen(true);
-                            }}
+                            key={lesson._id || lesson.urlSlug || index}
+                            style={[styles.lessonRow, active && styles.lessonRowActive]}
+                            onPress={() => canOpen && void handleSelectLesson(lesson)}
                           >
-                            <Pencil size={14} color={Colors.primary} />
+                            <View style={styles.lessonRowMain}>
+                              <View style={[styles.lessonIndex, active && styles.lessonIndexActive]}>
+                                {active ? (
+                                  <Play size={12} color="#fff" fill="#fff" />
+                                ) : canOpen ? (
+                                  <Text
+                                    style={[
+                                      styles.lessonIndexText,
+                                      active && styles.lessonIndexTextActive,
+                                    ]}
+                                  >
+                                    {index + 1}
+                                  </Text>
+                                ) : (
+                                  <Lock size={12} color={Colors.warning} />
+                                )}
+                              </View>
+                              <View style={styles.lessonCopy}>
+                                <View style={styles.lessonTitleRow}>
+                                  <Text
+                                    style={[styles.lessonTitle, active && styles.lessonTitleActive]}
+                                    numberOfLines={1}
+                                  >
+                                    {canOpen ? lesson.title : `${index + 1}-dars`}
+                                  </Text>
+                                  {lesson.status === "draft" ? (
+                                    <View style={styles.lessonMiniBadge}>
+                                      <Text style={styles.lessonMiniBadgeText}>Draft</Text>
+                                    </View>
+                                  ) : null}
+                                  {index === 0 && !isOwner && !isApprovedMember ? (
+                                    <View
+                                      style={[
+                                        styles.lessonMiniBadge,
+                                        styles.lessonMiniBadgeFree,
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.lessonMiniBadgeText,
+                                          styles.lessonMiniBadgeTextFree,
+                                        ]}
+                                      >
+                                        Bepul
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+                                <View style={styles.lessonMetaRow}>
+                                  {canOpen ? (
+                                    <View style={styles.lessonMetaItem}>
+                                      <Eye size={11} color={Colors.subtleText} />
+                                      <Text style={styles.lessonMeta}>{lesson.views || 0}</Text>
+                                    </View>
+                                  ) : (
+                                    <Text style={styles.lessonMeta}>Qulflangan dars</Text>
+                                  )}
+                                </View>
+                              </View>
+                            </View>
+                            <View style={styles.lessonRowActions}>
+                              <Pressable
+                                style={styles.rowIconButton}
+                                onPress={() => void handleCopyLessonLink(lesson)}
+                              >
+                                <Copy size={14} color={Colors.subtleText} />
+                              </Pressable>
+                              {isOwner ? (
+                                <>
+                                  <Pressable
+                                    style={styles.rowIconButton}
+                                    onPress={() => {
+                                      setEditingLesson(lesson);
+                                      setLessonEditorOpen(true);
+                                    }}
+                                  >
+                                    <Pencil size={14} color={Colors.primary} />
+                                  </Pressable>
+                                  {lesson.status === "draft" && lesson._id && hasLessonMedia ? (
+                                    <Pressable
+                                      style={styles.rowIconButton}
+                                      onPress={() =>
+                                        currentCourse._id
+                                          ? coursesApi
+                                              .publishLesson(currentCourse._id, lesson._id || "")
+                                              .then(() => invalidateCourseDetail())
+                                              .catch((error) =>
+                                                Alert.alert(
+                                                  "Dars publish bo'lmadi",
+                                                  error instanceof Error
+                                                    ? error.message
+                                                    : "Xatolik",
+                                                ),
+                                              )
+                                          : undefined
+                                      }
+                                    >
+                                      <Check size={14} color={Colors.accent} />
+                                    </Pressable>
+                                  ) : null}
+                                  <Pressable
+                                    style={styles.rowIconButton}
+                                    onPress={() => void handleDeleteLesson(lesson)}
+                                  >
+                                    <Trash2 size={14} color={Colors.danger} />
+                                  </Pressable>
+                                </>
+                              ) : !canOpen ? (
+                                <Lock size={14} color={Colors.warning} />
+                              ) : null}
+                            </View>
                           </Pressable>
-                          {lesson.status === "draft" && lesson._id ? (
-                            <Pressable
-                              style={styles.rowIconButton}
-                              onPress={() =>
-                                currentCourse._id
-                                  ? coursesApi
-                                      .publishLesson(currentCourse._id, lesson._id || "")
-                                      .then(() => invalidateCourseDetail())
-                                      .catch((error) =>
-                                        Alert.alert(
-                                          "Dars publish bo'lmadi",
-                                          error instanceof Error ? error.message : "Xatolik",
-                                        ),
-                                      )
-                                  : undefined
-                              }
-                            >
-                              <Upload size={14} color={Colors.accent} />
-                            </Pressable>
-                          ) : null}
-                          <Pressable
-                            style={styles.rowIconButton}
-                            onPress={() => void handleDeleteLesson(lesson)}
-                          >
-                            <Trash2 size={14} color={Colors.danger} />
-                          </Pressable>
-                        </View>
-                      ) : !lesson.isUnlocked && !isOwner ? (
-                        <Lock size={14} color={Colors.warning} />
-                      ) : (
-                        <Play size={14} color={active ? Colors.primary : Colors.subtleText} />
-                      )}
-                    </Pressable>
-                  );
-                })
+                        );
+                      })
                   : null}
               </View>
 
-              {currentLesson ? (
-                <View style={styles.lessonDetailCard}>
-                  <Text style={styles.sectionTitle}>{currentLesson.title}</Text>
-                  <Text style={styles.lessonDescription}>
-                    {currentLesson.description || "Bu dars uchun tavsif yo'q."}
-                  </Text>
-
-                  {Array.isArray(currentLesson.accessLockedByTests) &&
-                  currentLesson.accessLockedByTests.length > 0 &&
-                  !canAccessCurrentLesson ? (
-                    <View style={styles.lockNotice}>
-                      <Lock size={16} color={Colors.warning} />
-                      <Text style={styles.lockNoticeText}>
-                        Keyingi darsni ochish uchun avval maydon mashqlarini yakunlang.
-                      </Text>
-                    </View>
-                  ) : null}
-                  <View style={styles.lessonExtrasRow}>
-                    <View style={styles.extraPill}>
-                      <Text style={styles.extraPillText}>
-                        Materiallar: {lessonMaterials.length || 0}
-                      </Text>
-                    </View>
-                    <View style={styles.extraPill}>
-                      <Text style={styles.extraPillText}>
-                        Maydon: {linkedTests.length || 0}
-                      </Text>
-                    </View>
-                    <View style={styles.extraPill}>
-                      <Text style={styles.extraPillText}>
-                        Homework: {homeworkAssignments.length || 0}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.extrasCard}>
-                    <Pressable
-                      style={styles.extrasHeader}
-                      onPress={() => setMaterialsExpanded((value) => !value)}
-                    >
-                      <View style={styles.extrasHeaderLeft}>
-                        <FolderOpen size={16} color={Colors.primary} />
-                        <Text style={styles.extrasTitle}>Materiallar</Text>
-                      </View>
-                      <View style={styles.extrasHeaderRight}>
-                        {isOwner ? (
-                          <Pressable
-                            style={styles.rowIconButton}
-                            onPress={() => setMaterialModalOpen(true)}
-                          >
-                            <Plus size={14} color={Colors.primary} />
-                          </Pressable>
-                        ) : null}
-                        {materialsExpanded ? (
-                          <ChevronUp size={16} color={Colors.subtleText} />
-                        ) : (
-                          <ChevronDown size={16} color={Colors.subtleText} />
-                        )}
-                      </View>
-                    </Pressable>
-                    {materialsExpanded ? (
-                      lessonMaterials.length ? (
-                        <View style={styles.resourceList}>
-                          {lessonMaterials.map((item) => (
-                            <View key={item.materialId || item.fileUrl} style={styles.resourceRow}>
-                              <View style={styles.resourceCopy}>
-                                <Text style={styles.resourceTitle}>{item.title}</Text>
-                                <Text style={styles.resourceMeta}>
-                                  {item.fileName} · {formatFileSize(item.fileSize)}
-                                </Text>
-                              </View>
-                              <Pressable
-                                style={styles.resourceButton}
-                                onPress={() =>
-                                  item.fileUrl
-                                    ? Linking.openURL(item.fileUrl).catch(() => undefined)
-                                    : undefined
-                                }
-                              >
-                                <Text style={styles.resourceButtonText}>Ochish</Text>
-                              </Pressable>
-                            </View>
-                          ))}
-                        </View>
-                      ) : (
-                        <Text style={styles.sectionHint}>Materiallar hali qo'shilmagan.</Text>
-                      )
-                    ) : null}
-                  </View>
-
-                  <View style={styles.extrasCard}>
-                    <Pressable
-                      style={styles.extrasHeader}
-                      onPress={() => setTestsExpanded((value) => !value)}
-                    >
-                      <View style={styles.extrasHeaderLeft}>
-                        <ClipboardList size={16} color={Colors.primary} />
-                        <Text style={styles.extrasTitle}>Maydon mashqlari</Text>
-                      </View>
-                      <View style={styles.extrasHeaderRight}>
-                        {isOwner ? (
-                          <Pressable
-                            style={styles.rowIconButton}
-                            onPress={() => setLinkedTestModalOpen(true)}
-                          >
-                            <Plus size={14} color={Colors.primary} />
-                          </Pressable>
-                        ) : null}
-                        {testsExpanded ? (
-                          <ChevronUp size={16} color={Colors.subtleText} />
-                        ) : (
-                          <ChevronDown size={16} color={Colors.subtleText} />
-                        )}
-                      </View>
-                    </Pressable>
-                    {testsExpanded ? (
-                      linkedTests.length ? (
-                        <View style={styles.resourceList}>
-                          {linkedTests.map((item) => (
-                            <View key={item.linkedTestId || item.url} style={styles.resourceRow}>
-                              <View style={styles.resourceCopy}>
-                                <Text style={styles.resourceTitle}>{item.title}</Text>
-                                <Text style={styles.resourceMeta}>
-                                  {item.resourceType === "sentenceBuilder" ? "Sentence builder" : "Quiz"} · min {item.minimumScore || 0}%
-                                </Text>
-                              {item.selfProgress ? (
-                                <Text style={styles.progressBadgeText}>
-                                  {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% · {item.selfProgress.passed ? "Passed" : "Waiting"}
-                                </Text>
-                              ) : null}
-                            </View>
-                            <Pressable
-                              style={styles.resourceButton}
-                              onPress={() => void handleOpenLinkedTest(item)}
-                            >
-                              <Text style={styles.resourceButtonText}>Boshlash</Text>
-                            </Pressable>
-                          </View>
-                        ))}
-                      </View>
-                      ) : (
-                        <Text style={styles.sectionHint}>Maydon mashqlari hali ulanmagan.</Text>
-                      )
-                    ) : null}
-                  </View>
-
-                  <View style={styles.extrasCard}>
-                    <Pressable
-                      style={styles.extrasHeader}
-                      onPress={() => setHomeworkExpanded((value) => !value)}
-                    >
-                      <View style={styles.extrasHeaderLeft}>
-                        <FileText size={16} color={Colors.primary} />
-                        <Text style={styles.extrasTitle}>Homework</Text>
-                      </View>
-                      <View style={styles.extrasHeaderRight}>
-                        {isOwner ? (
-                          <Pressable
-                            style={styles.rowIconButton}
-                            onPress={() => setHomeworkModalOpen(true)}
-                          >
-                            <Plus size={14} color={Colors.primary} />
-                          </Pressable>
-                        ) : null}
-                        {homeworkExpanded ? (
-                          <ChevronUp size={16} color={Colors.subtleText} />
-                        ) : (
-                          <ChevronDown size={16} color={Colors.subtleText} />
-                        )}
-                      </View>
-                    </Pressable>
-                    {homeworkExpanded ? (
-                      homeworkAssignments.length ? (
-                        <View style={styles.resourceList}>
-                          {homeworkAssignments.map((item) => (
-                            <View key={item.assignmentId || item.title} style={styles.homeworkCard}>
-                              <View style={styles.resourceCopy}>
-                                <Text style={styles.resourceTitle}>{item.title}</Text>
-                                <Text style={styles.resourceMeta}>
-                                  {item.type} · {item.maxScore || 0} ball
-                                  {item.deadline ? ` · ${timeAgo(item.deadline)}` : ""}
-                                </Text>
-                                {item.description ? (
-                                  <Text style={styles.homeworkDescription}>{item.description}</Text>
-                                ) : null}
-                                {item.selfSubmission ? (
-                                  <Text style={styles.progressBadgeText}>
-                                    {item.selfSubmission.status || "submitted"}
-                                    {item.selfSubmission.score !== null &&
-                                    item.selfSubmission.score !== undefined
-                                      ? ` · ${item.selfSubmission.score} ball`
-                                      : ""}
-                                  </Text>
-                                ) : null}
-                              </View>
-                              {isOwner ? (
-                                <Text style={styles.resourceMeta}>{item.submissionCount || 0} topshiriq</Text>
-                              ) : (
-                                <Pressable
-                                  style={styles.resourceButton}
-                                  onPress={() => handleOpenHomeworkSubmit(item)}
-                                >
-                                  <Text style={styles.resourceButtonText}>
-                                    {item.selfSubmission ? "Yangilash" : "Topshirish"}
-                                  </Text>
-                                </Pressable>
-                              )}
-                            </View>
-                          ))}
-                        </View>
-                      ) : (
-                        <Text style={styles.sectionHint}>Homework hali qo'shilmagan.</Text>
-                      )
-                    ) : null}
-                  </View>
-
-                  <View style={styles.extrasCard}>
-                    <Pressable
-                      style={styles.extrasHeader}
-                      onPress={() => setGradingExpanded((value) => !value)}
-                    >
-                      <View style={styles.extrasHeaderLeft}>
-                        <Shield size={16} color={Colors.primary} />
-                        <Text style={styles.extrasTitle}>Baholash</Text>
-                      </View>
-                      {gradingExpanded ? (
-                        <ChevronUp size={16} color={Colors.subtleText} />
-                      ) : (
-                        <ChevronDown size={16} color={Colors.subtleText} />
-                      )}
-                    </Pressable>
-                    {gradingExpanded ? (
-                      gradingQuery.isLoading ? (
-                        <ActivityIndicator color={Colors.primary} />
-                      ) : grading?.lesson?.self || grading?.lesson?.summary ? (
-                        <View style={styles.gradingGrid}>
-                          {!isOwner && grading?.lesson?.self ? (
-                            <>
-                              <View style={styles.gradeStat}>
-                                <Text style={styles.gradeStatValue}>{grading.lesson.self.lessonScore || 0}%</Text>
-                                <Text style={styles.gradeStatLabel}>Lesson score</Text>
-                              </View>
-                              <View style={styles.gradeStat}>
-                                <Text style={styles.gradeStatValue}>
-                                  {grading.lesson.self.homeworkPercent ?? 0}%
-                                </Text>
-                                <Text style={styles.gradeStatLabel}>Homework</Text>
-                              </View>
-                              <View style={styles.gradeStat}>
-                                <Text style={styles.gradeStatValue}>
-                                  {grading.lesson.self.attendanceStatus || "absent"}
-                                </Text>
-                                <Text style={styles.gradeStatLabel}>Attendance</Text>
-                              </View>
-                            </>
-                          ) : (
-                            <>
-                              <View style={styles.gradeStat}>
-                                <Text style={styles.gradeStatValue}>
-                                  {grading?.lesson?.summary?.averageScore || 0}%
-                                </Text>
-                                <Text style={styles.gradeStatLabel}>O'rtacha</Text>
-                              </View>
-                              <View style={styles.gradeStat}>
-                                <Text style={styles.gradeStatValue}>
-                                  {grading?.lesson?.summary?.completedHomeworkCount || 0}
-                                </Text>
-                                <Text style={styles.gradeStatLabel}>Homework</Text>
-                              </View>
-                              <View style={styles.gradeStat}>
-                                <Text style={styles.gradeStatValue}>
-                                  {grading?.lesson?.summary?.attendanceMarkedCount || 0}
-                                </Text>
-                                <Text style={styles.gradeStatLabel}>Attendance</Text>
-                              </View>
-                            </>
-                          )}
-                        </View>
-                      ) : (
-                        <Text style={styles.sectionHint}>Baholash ma'lumoti hozircha yo'q.</Text>
-                      )
-                    ) : null}
-                  </View>
-                </View>
-              ) : null}
             </ScrollView>
           )}
         </View>
+        </SafeAreaView>
+      </Animated.View>
 
-        <CommentsModal
-          visible={commentsOpen}
-          course={currentCourse}
-          lesson={currentLesson}
-          onClose={() => setCommentsOpen(false)}
-        />
-        <LessonEditorModal
-          visible={lessonEditorOpen}
-          courseId={currentCourse?._id || null}
-          lesson={editingLesson}
-          onClose={() => {
-            setLessonEditorOpen(false);
-            setEditingLesson(null);
-          }}
-          onSaved={invalidateCourseDetail}
-        />
-        <MaterialEditorModal
-          visible={materialModalOpen}
-          courseId={currentCourse?._id || null}
-          lessonId={currentLesson?._id || null}
-          onClose={() => setMaterialModalOpen(false)}
-          onSaved={invalidateCourseDetail}
-        />
-        <LinkedTestModal
-          visible={linkedTestModalOpen}
-          courseId={currentCourse?._id || null}
-          lessonId={currentLesson?._id || null}
-          onClose={() => setLinkedTestModalOpen(false)}
-          onSaved={invalidateCourseDetail}
-        />
-        <HomeworkEditorModal
-          visible={homeworkModalOpen}
-          courseId={currentCourse?._id || null}
-          lessonId={currentLesson?._id || null}
-          onClose={() => setHomeworkModalOpen(false)}
-          onSaved={invalidateCourseDetail}
-        />
-        <HomeworkSubmitModal
-          visible={homeworkSubmitOpen}
-          courseId={currentCourse?._id || null}
-          lessonId={currentLesson?._id || null}
-          assignment={selectedHomework}
-          onClose={() => {
-            setHomeworkSubmitOpen(false);
-            setSelectedHomework(null);
-          }}
-          onSaved={invalidateCourseDetail}
-        />
-        <InlineTestPlayerModal
-          visible={Boolean(activeArenaTest && activeLinkedTest)}
-          test={activeArenaTest}
-          linkedTest={activeLinkedTest}
-          loading={arenaLoading}
-          onClose={handleCloseArenaPlayer}
-          onSubmit={handleSubmitLinkedTest}
-        />
-        <InlineSentenceBuilderModal
-          visible={Boolean(activeSentenceDeck && activeLinkedTest)}
-          deck={activeSentenceDeck}
-          linkedTest={activeLinkedTest}
-          loading={arenaLoading}
-          onClose={handleCloseArenaPlayer}
-          onSubmit={async (payload) => handleSubmitLinkedTest(payload)}
-        />
-      </SafeAreaView>
-    );
-  }
+      <DraggableBottomSheet
+        visible={lessonDescriptionSheetOpen && Boolean(currentLesson?.description)}
+        title="Dars haqida"
+        onClose={() => setLessonDescriptionSheetOpen(false)}
+        minHeight={420}
+        initialHeightRatio={0.72}
+      >
+        <ScrollView
+          style={styles.lessonDescriptionSheetScroll}
+          contentContainerStyle={styles.lessonDescriptionSheetContent}
+          showsVerticalScrollIndicator={false}
+        >
+         
+          <Text style={styles.lessonDescriptionSheetBody}>
+            {currentLesson?.description || ""}
+          </Text>
+        </ScrollView>
+      </DraggableBottomSheet>
+
+      {renderOwnerLessonAdminModal()}
+
+      <CommentsModal
+        visible={commentsOpen}
+        course={currentCourse}
+        lesson={currentLesson}
+        onClose={() => setCommentsOpen(false)}
+      />
+      <LessonEditorModal
+        visible={lessonEditorOpen}
+        courseId={currentCourse?._id || null}
+        lesson={editingLesson}
+        onClose={() => {
+          setLessonEditorOpen(false);
+          setEditingLesson(null);
+        }}
+        onSaved={invalidateCourseDetail}
+      />
+      <MaterialEditorModal
+        visible={materialModalOpen}
+        courseId={currentCourse?._id || null}
+        lessonId={currentLesson?._id || null}
+        onClose={() => setMaterialModalOpen(false)}
+        onSaved={invalidateCourseDetail}
+      />
+      <LinkedTestModal
+        visible={linkedTestModalOpen}
+        courseId={currentCourse?._id || null}
+        lessonId={currentLesson?._id || null}
+        onClose={() => setLinkedTestModalOpen(false)}
+        onSaved={invalidateCourseDetail}
+      />
+      <HomeworkEditorModal
+        visible={homeworkModalOpen}
+        courseId={currentCourse?._id || null}
+        lessonId={currentLesson?._id || null}
+        onClose={() => setHomeworkModalOpen(false)}
+        onSaved={invalidateCourseDetail}
+      />
+      <HomeworkSubmitModal
+        visible={homeworkSubmitOpen}
+        courseId={currentCourse?._id || null}
+        lessonId={currentLesson?._id || null}
+        assignment={selectedHomework}
+        onClose={() => {
+          setHomeworkSubmitOpen(false);
+          setSelectedHomework(null);
+        }}
+        onSaved={invalidateCourseDetail}
+      />
+      <InlineTestPlayerModal
+        visible={Boolean(activeArenaTest && activeLinkedTest)}
+        test={activeArenaTest}
+        linkedTest={activeLinkedTest}
+        loading={arenaLoading}
+        onClose={handleCloseArenaPlayer}
+        onSubmit={handleSubmitArenaTest}
+      />
+      <InlineSentenceBuilderModal
+        visible={Boolean(activeSentenceDeck && activeLinkedTest)}
+        deck={activeSentenceDeck}
+        linkedTest={activeLinkedTest}
+        loading={arenaLoading}
+        onClose={handleCloseArenaPlayer}
+        onSubmit={async (payload) => handleSubmitArenaTest(payload)}
+      />
+    </>
+  ) : null;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-      <View style={styles.container}>
-        <View style={styles.coursesTopHeader}>
-          <View style={styles.searchWrap}>
-            <Ionicons name="search-outline" size={16} color={Colors.subtleText} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder={viewMode === "arena" ? "Maydon qidirish" : "Kurs qidirish"}
-              placeholderTextColor={Colors.subtleText}
-              style={styles.searchInput}
-            />
-          </View>
-          {viewMode === "courses" ? (
-            <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
-              <Plus size={18} color={Colors.text} />
-            </Pressable>
-          ) : null}
-        </View>
-
-        <View style={styles.coursesTabsRow}>
-          <View
-            style={styles.coursesTabsTrack}
-            onLayout={(event) => setTabsWidth(event.nativeEvent.layout.width)}
-          >
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                styles.coursesTabIndicator,
-                tabsWidth > 0
-                  ? {
-                      width: tabsWidth / 2,
-                      transform: [{ translateX: indicatorTranslateX as any }],
-                    }
-                  : null,
-              ]}
-            />
-          </View>
-          <Pressable
-            style={styles.coursesTab}
-            onPress={() => animateToViewMode("courses", true)}
-          >
-            <BookOpen
-              size={16}
-              color={viewMode === "courses" ? Colors.text : Colors.mutedText}
-            />
-            <Text style={[styles.coursesTabText, viewMode === "courses" && styles.coursesTabTextActive]}>
-              Kurslar
-            </Text>
-          </Pressable>
-          <Pressable
-            style={styles.coursesTab}
-            onPress={() => animateToViewMode("arena", true)}
-          >
-            <Swords
-              size={16}
-              color={viewMode === "arena" ? Colors.text : Colors.mutedText}
-            />
-            <Text style={[styles.coursesTabText, viewMode === "arena" && styles.coursesTabTextActive]}>
-              Maydon
-            </Text>
-          </Pressable>
-        </View>
-
-        <Animated.ScrollView
-          ref={pagerRef}
-          horizontal
-          pagingEnabled
-          bounces={false}
-          nestedScrollEnabled
-          showsHorizontalScrollIndicator={false}
-          scrollEventThrottle={16}
-          onMomentumScrollEnd={(event) => {
-            const nextIndex = Math.round(
-              event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
-            );
-            currentIndexRef.current = nextIndex;
-            setViewMode(nextIndex === 1 ? "arena" : "courses");
-          }}
-          onScroll={Animated.event(
-            [{ nativeEvent: { contentOffset: { x: pagerScrollX } } }],
-            { useNativeDriver: false },
-          )}
-          style={styles.listPagerTrack}
-        >
-          <View style={[styles.listPage, { width: screenWidth }]}>
-            <ScrollView
-              style={styles.listScroll}
-              contentContainerStyle={styles.listContent}
-              refreshControl={
-                <RefreshControl
-                  refreshing={coursesQuery.isRefetching}
-                  onRefresh={() => coursesQuery.refetch()}
-                  tintColor={Colors.primary}
-                />
-              }
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={false}
-            >
-              {renderCoursesListPage()}
-            </ScrollView>
-          </View>
-          <View style={[styles.listPage, { width: screenWidth }]}>
-            <ScrollView
-              style={styles.listScroll}
-              contentContainerStyle={styles.listContent}
-              refreshControl={
-                <RefreshControl
-                  refreshing={coursesQuery.isRefetching}
-                  onRefresh={() => coursesQuery.refetch()}
-                  tintColor={Colors.primary}
-                />
-              }
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={false}
-            >
-              {renderArenaPage()}
-            </ScrollView>
-          </View>
-        </Animated.ScrollView>
-
+      <View style={styles.screenStack}>
+        {mainContent}
+        {detailLayer}
       </View>
 
       <CreateCourseModal
@@ -3151,13 +6085,29 @@ export function CoursesScreen({ navigation }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = StyleSheet.create<Record<string, any>>({
   safeArea: {
     flex: 1,
     backgroundColor: Colors.background,
   },
+  deadlineFieldRowWrapper:{
+    display:'flex',
+    flexDirection:'column'
+  },
+  screenStack: {
+    flex: 1,
+  },
   container: {
     flex: 1,
+    backgroundColor: Colors.background,
+  },
+  detailOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+  },
+  detailSafeArea: {
+    flex: 1,
+   
     backgroundColor: Colors.background,
   },
   coursesTopHeader: {
@@ -3290,9 +6240,9 @@ const styles = StyleSheet.create({
   },
   listContent: {
     flexGrow: 1,
-    padding: 14,
+    padding: 0,
+    paddingTop: 4,
     paddingBottom: 120,
-    gap: 12,
   },
   loaderState: {
     flex: 1,
@@ -3322,6 +6272,29 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
+    position: "relative",
+    backgroundColor: "transparent",
+    overflow: "visible",
+    minHeight: 72,
+  },
+  sidebarCourseItemActive: {
+    backgroundColor: Colors.active,
+  },
+  sidebarCourseItemPressed: {
+    backgroundColor: Colors.hover,
+  },
+  sidebarCourseAccent: {
+    position: "absolute",
+    left: 0,
+    top: 4,
+    bottom: 4,
+    width: 3,
+    borderTopRightRadius: 3,
+    borderBottomRightRadius: 3,
+    backgroundColor: Colors.primary,
+  },
+  sidebarCourseAccentHidden: {
+    opacity: 0,
   },
   courseItem: {
     flexDirection: "row",
@@ -3343,6 +6316,14 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: 12,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: Colors.surfaceElevated,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
   courseThumbFallback: {
     width: 60,
@@ -3356,14 +6337,20 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 12,
-    backgroundColor: Colors.primary,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
   courseThumbLetter: {
     color: "#fff",
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 18,
+    fontWeight: "700",
   },
   sidebarCourseBody: {
     flex: 1,
@@ -3376,18 +6363,23 @@ const styles = StyleSheet.create({
   courseItemTitle: {
     color: Colors.text,
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "600",
+    marginBottom: 2,
   },
   courseItemDescription: {
     color: Colors.mutedText,
     fontSize: 12,
-    lineHeight: 16,
-    marginTop: 2,
+    flexShrink: 1,
+  },
+  courseDescriptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
   sidebarCourseMeta: {
-    minWidth: 56,
+    minWidth: 32,
     alignItems: "flex-end",
-    gap: 6,
+    gap: 8,
   },
   sidebarCourseMetaRow: {
     flexDirection: "row",
@@ -3401,20 +6393,41 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   courseMetaText: {
-    color: Colors.subtleText,
-    fontSize: 12,
+    color: Colors.mutedText,
+    fontSize: 11,
   },
   courseStatusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
     backgroundColor: Colors.primarySoft,
+  },
+  courseStatusBadgeApproved: {
+    backgroundColor: "rgba(67,181,129,0.16)",
+  },
+  courseStatusBadgePending: {
+    backgroundColor: "rgba(250,166,26,0.16)",
   },
   courseStatusBadgeText: {
     color: Colors.primary,
     fontSize: 10,
-    fontWeight: "700",
-    textTransform: "uppercase",
+    fontWeight: "600",
+  },
+  courseStatusBadgeTextApproved: {
+    color: Colors.accent,
+  },
+  courseStatusBadgeTextPending: {
+    color: Colors.warning,
+  },
+  sidebarCourseAction: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sidebarCourseActionPressed: {
+    backgroundColor: "rgba(240, 71, 71, 0.1)",
   },
   arenaItem: {
     flexDirection: "row",
@@ -3422,24 +6435,122 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-  },
-  arenaItemActive: {
-    backgroundColor: Colors.hover,
+    backgroundColor: "transparent",
+    minHeight: 72,
   },
   arenaThumb: {
     width: 48,
     height: 48,
     borderRadius: 12,
+    backgroundColor: "#32343a",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.09)",
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
   },
   arenaBody: {
     flex: 1,
     minWidth: 0,
   },
+  arenaItemTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "600",
+    lineHeight: 20,
+  },
+  arenaItemDescription: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  arenaPanelCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  arenaPanelHeader: {
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  arenaPanelCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  arenaPanelEyebrow: {
+    color: Colors.primary,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  arenaPanelTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  arenaPanelDescription: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  arenaMetaPill: {
+    minHeight: 30,
+    minWidth: 56,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: Colors.primarySoft,
+    borderWidth: 1,
+    borderColor: "rgba(88,101,242,0.28)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  arenaMetaPillText: {
+    color: Colors.primary,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  arenaPanelEmpty: {
+    minHeight: 220,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    padding: 20,
+  },
+  arenaUnavailableCard: {
+    padding: 16,
+    gap: 12,
+  },
+  arenaRowHint: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   detailContainer: {
     flex: 1,
+    position: "relative",
     backgroundColor: Colors.background,
+  },
+  detailSwipeEdge: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: 24,
+    zIndex: 10,
   },
   detailHeader: {
     minHeight: 56,
@@ -3472,17 +6583,963 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   detailContent: {
-    padding: 16,
+    padding: 0,
     paddingBottom: 28,
+    gap: 0,
+  },
+  playerStageCard: {
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  videoStage: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    backgroundColor: "#111317",
+    position: "relative",
+  },
+  videoStageFallback: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    backgroundColor: "#17191d",
+    position: "relative",
+  },
+  videoStageTopBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 5,
+    elevation: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 12,
+    backgroundColor: "rgba(0,0,0,0.28)",
+  },
+  videoStageBackButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoStageTopTitle: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  videoStageTopActions: {
+    marginLeft: "auto",
+  },
+  videoStageTopActionAnchor: {
+    position: "relative",
+  },
+  videoStageTopActionButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoStageTopActionButtonReady: {
+    backgroundColor: Colors.accent,
+  },
+  videoStageTooltip: {
+    position: "absolute",
+    right: 0,
+    top: 42,
+    minWidth: 156,
+    maxWidth: 220,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "rgba(15, 23, 42, 0.94)",
+    zIndex: 3,
+    elevation: 10,
+  },
+  videoStageTooltipText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 16,
+    textAlign: "center",
+  },
+  videoStageCenter: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+    gap: 10,
+  },
+  videoView: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#111317",
+  },
+  videoStageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "flex-end",
+  },
+  videoStageBottomBar: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 14,
+    backgroundColor: "rgba(0,0,0,0.42)",
+    gap: 10,
+  },
+  videoStageProgressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    overflow: "hidden",
+    position: "relative",
+  },
+  videoStageProgressBuffered: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.28)",
+  },
+  videoStageProgressElapsed: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 999,
+    backgroundColor: Colors.primary,
+  },
+  videoStageProgressMarker: {
+    position: "absolute",
+    top: 1,
+    bottom: 1,
+    width: 1,
+    marginLeft: -0.5,
+    backgroundColor: "rgba(255,255,255,0.28)",
+  },
+  videoStageControlsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  videoStageControlButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoStageTimeText: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  videoInfoCard: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 14,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    gap: 12,
+  },
+  videoInfoTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "700",
+    lineHeight: 25,
+  },
+  videoMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 16,
+  },
+  videoMetaItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  videoMetaItemLiked: {
+    backgroundColor: "transparent",
+  },
+  videoMetaText: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    fontWeight: "500",
+  },
+  videoMetaTextLiked: {
+    color: Colors.danger,
+  },
+  offlineLessonCard: {
+    marginTop: 4,
+    gap: 10,
+  },
+  offlineLessonButton: {
+    minHeight: 42,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+  offlineLessonButtonReady: {
+    backgroundColor: Colors.accent,
+  },
+  offlineLessonButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  offlineLessonHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  lessonDescriptionCard: {
+    display: "flex",
+    flexDirection: "row",
+  },
+  lessonDescriptionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  lessonDescriptionTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  lessonDescriptionBody: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    lineHeight: 21,
+  },
+  lessonDescriptionFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginLeft:8,
+  },
+  lessonDescriptionFooterText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  lessonMaterialsSection: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    gap: 10,
+  },
+  lessonMaterialsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  lessonMaterialsTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  lessonMaterialsTitle: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  lessonMaterialsCount: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  lessonMaterialsHint: {
+    color: Colors.subtleText,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  lessonDescriptionSheetScroll: {
+    flex: 1,
+  },
+  lessonDescriptionSheetContent: {
+    padding: 18,
+    paddingBottom: 32,
+    gap: 16,
+  },
+  lessonDescriptionSheetLessonTitle: {
+    color: Colors.text,
+    fontSize: 22,
+    lineHeight: 30,
+    fontWeight: "800",
+  },
+  lessonDescriptionSheetMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  lessonDescriptionSheetMetaChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  lessonDescriptionSheetMetaText: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  lessonDescriptionSheetBody: {
+    color: Colors.text,
+    fontSize: 15,
+    lineHeight: 25,
+  },
+  adminPaneSafeArea: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 60,
+    flex: 1,
+    minHeight: 0,
+  },
+  adminPaneKeyboardAvoid: {
+    flex: 1,
+    minHeight: 0,
+  },
+  adminPaneOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 60,
+  },
+  adminPaneBackdropFade: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  adminPaneBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8, 15, 28, 0.62)",
+  },
+  adminPaneShell: {
+    flex: 1,
+    minHeight: 0,
+    backgroundColor: Colors.background,
+  },
+  adminPaneTopBar: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 10,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  adminPaneTitleWrap: {
+    flex: 1,
+    gap: 4,
+  },
+  adminPaneTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+    lineHeight: 24,
+  },
+  adminPaneMuted: {
+    color: Colors.subtleText,
+    fontSize: 12,
+  },
+  adminPaneCloseButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    backgroundColor: Colors.input,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminPaneActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 10,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  adminPaneGhostButton: {
+    minHeight: 38,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  adminPaneGhostButtonText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  adminPanePrimaryButton: {
+    minHeight: 38,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  adminPanePrimaryButtonText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  adminPaneDangerButton: {
+    minHeight: 38,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.28)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  adminPaneDangerButtonText: {
+    color: Colors.danger,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  adminPaneScroll: {
+    flex: 1,
+  },
+  adminPaneScrollContent: {
+    padding: 16,
+    paddingBottom: 32,
     gap: 14,
   },
-  playerHeroCard: {
-    borderRadius: 22,
+  adminPaneLessonStrip: {
+    gap: 10,
+    paddingBottom: 2,
+  },
+  adminPaneLessonButton: {
+    width: 208,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  adminPaneLessonButtonActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  adminPaneLessonTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  adminPaneLessonTitleActive: {
+    color: Colors.primary,
+  },
+  adminPaneLessonMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  adminPaneLessonMetaText: {
+    color: Colors.subtleText,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  adminPaneSummaryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  adminPaneSummaryCard: {
+    flexGrow: 1,
+    minWidth: "47%",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    padding: 14,
+    gap: 6,
+  },
+  adminPaneSummaryLabel: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  adminPaneSummaryValue: {
+    color: Colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  adminPaneTabs: {
+    gap: 8,
+    paddingBottom: 2,
+  },
+  adminPaneTabButton: {
+    minHeight: 36,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminPaneTabButtonActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  adminPaneTabText: {
+    color: Colors.subtleText,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  adminPaneTabTextActive: {
+    color: Colors.primary,
+  },
+  adminPaneStack: {
+    gap: 14,
+  },
+  adminPaneSectionCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  adminPaneSectionHeader: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  adminPaneSectionTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  adminPaneSectionMuted: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  adminPaneInlineAction: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: Colors.primarySoft,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  adminPaneInlineActionMuted: {
+    backgroundColor: Colors.input,
+  },
+  adminPaneInlineActionDanger: {
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+  },
+  adminPaneInlineActionText: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  adminPaneInlineActionTextMuted: {
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  adminPaneInlineActionTextDanger: {
+    color: Colors.danger,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  adminPaneEmptyText: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    color: Colors.subtleText,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  adminPaneResourceActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  adminPaneCenterState: {
+    minHeight: 180,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminPaneList: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    gap: 10,
+  },
+  adminPaneMemberRow: {
+    gap: 12,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  adminPaneMemberMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  adminPaneMemberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: "hidden",
+    backgroundColor: Colors.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminPaneMemberAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  adminPaneMemberAvatarLetter: {
+    color: Colors.primary,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  adminPaneMemberCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  adminPaneMemberName: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  adminPaneMemberSub: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  adminPaneAttendanceActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  adminPaneStatusChip: {
+    minHeight: 32,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  adminPaneStatusChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  adminPaneStatusChipText: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  adminPaneStatusChipTextActive: {
+    color: Colors.primary,
+  },
+  adminPaneStudentCard: {
+    gap: 12,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  adminPaneMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  adminPaneOralEditor: {
+    gap: 10,
+  },
+  adminPaneInput: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    color: Colors.text,
+    paddingHorizontal: 12,
+    fontSize: 14,
+  },
+  adminPaneTextarea: {
+    minHeight: 84,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    color: Colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  adminPaneOralSummary: {
+    gap: 4,
+  },
+  adminPaneOralSummaryTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  adminPaneOralSummaryValue: {
+    color: Colors.primary,
+    fontWeight: "800",
+  },
+  adminPaneStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(67, 181, 129, 0.14)",
+  },
+  adminPaneStatusPillDraft: {
+    backgroundColor: "rgba(250, 166, 26, 0.14)",
+  },
+  adminPaneStatusPillText: {
+    color: Colors.accent,
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  adminPaneStatusPillTextDraft: {
+    color: Colors.warning,
+  },
+  lessonAdminSheetScroll: {
+    flex: 1,
+  },
+  lessonAdminSheetScrollContent: {
+    padding: 16,
+    paddingBottom: 28,
+  },
+  lessonAdminSheetContent: {
+    gap: 14,
+  },
+  lessonAdminHeaderCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    padding: 14,
+    gap: 12,
+  },
+  studentExtrasCard: {
+    borderBottomWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  studentExtrasHeader: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  studentExtrasHeaderCopy: {
+    gap: 4,
+  },
+  studentExtrasTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  studentExtrasTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  studentExtrasHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  studentExtrasBadgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  studentExtrasBadge: {
+    borderWidth: 1,
+    borderColor: "rgba(67,181,129,0.24)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(67,181,129,0.1)",
+  },
+  studentExtrasBadgeText: {
+    color: Colors.accent,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  studentExtrasBody: {
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 12,
+  },
+  studentExtraBlock: {
+    paddingTop: 12,
+    paddingBottom: 4,
+    gap: 12,
+  },
+  studentExtraHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  studentExtraTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  studentExtraHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  compactEnrollmentCard: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: 12,
+  },
+  enrollmentInfoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  creatorAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: Colors.input,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  creatorAvatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  creatorAvatarLetter: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  creatorMeta: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  creatorName: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  creatorCount: {
+    color: Colors.mutedText,
+    fontSize: 12,
+  },
+  enrollmentActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  roundedActionButton: {
+    minHeight: 42,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  roundedActionButtonPrimary: {
+    backgroundColor: Colors.primary,
+  },
+  roundedActionButtonAdmin: {
+    backgroundColor: "rgba(88,101,242,0.15)",
+  },
+  roundedActionButtonPending: {
+    backgroundColor: "rgba(250,166,26,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(250,166,26,0.28)",
+  },
+  roundedActionButtonSuccess: {
+    backgroundColor: "rgba(67,181,129,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(67,181,129,0.28)",
+  },
+  roundedActionButtonText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  roundedActionButtonTextAdmin: {
+    color: Colors.primary,
+  },
+  roundedActionButtonTextPending: {
+    color: Colors.warning,
+  },
+  roundedActionButtonTextSuccess: {
+    color: Colors.accent,
+  },
+  playerShellCard: {
+    borderRadius: 24,
+    overflow: "hidden",
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    padding: 14,
-    gap: 12,
+  },
+  playerHeroCard: {
+    padding: 16,
+    gap: 14,
   },
   courseHero: {
     width: "100%",
@@ -3504,14 +7561,39 @@ const styles = StyleSheet.create({
   },
   courseName: {
     color: Colors.text,
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "800",
-    lineHeight: 34,
+    lineHeight: 32,
   },
   courseDescription: {
     color: Colors.mutedText,
     fontSize: 14,
     lineHeight: 22,
+  },
+  heroBadgeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  heroBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  heroBadgeAccent: {
+    backgroundColor: Colors.primarySoft,
+    borderColor: "rgba(88,101,242,0.32)",
+  },
+  heroBadgeText: {
+    color: Colors.subtleText,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  heroBadgeTextAccent: {
+    color: Colors.primary,
   },
   playerLessonCard: {
     borderRadius: 18,
@@ -3520,6 +7602,17 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     padding: 14,
     gap: 10,
+  },
+  playerLessonHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  playerLessonHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
   },
   playerLessonEyebrow: {
     color: Colors.subtleText,
@@ -3562,6 +7655,17 @@ const styles = StyleSheet.create({
   courseStatText: {
     color: Colors.text,
     fontSize: 12,
+    fontWeight: "700",
+  },
+  lessonTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(250,166,26,0.14)",
+  },
+  lessonTagText: {
+    color: Colors.warning,
+    fontSize: 10,
     fontWeight: "700",
   },
   enrollCard: {
@@ -3618,9 +7722,15 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     overflow: "hidden",
   },
+  playlistPanel: {
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
   playlistHeader: {
-    minHeight: 56,
-    paddingHorizontal: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -3637,9 +7747,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
   },
+  playlistTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  playlistBackButton: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: -4,
+  },
   playlistCount: {
     color: Colors.mutedText,
     fontSize: 12,
+    fontWeight: "500",
+    backgroundColor: Colors.input,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
   },
   playlistHeaderActions: {
     flexDirection: "row",
@@ -3655,10 +7782,9 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   lessonRow: {
-    minHeight: 58,
-    paddingHorizontal: 14,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    minHeight: 48,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -3666,6 +7792,8 @@ const styles = StyleSheet.create({
   },
   lessonRowActive: {
     backgroundColor: Colors.primarySoft,
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary,
   },
   lessonRowMain: {
     flex: 1,
@@ -3682,24 +7810,71 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  lessonIndexActive: {
+    backgroundColor: Colors.primary,
+  },
   lessonIndexText: {
     color: Colors.text,
     fontSize: 12,
     fontWeight: "700",
   },
+  lessonIndexTextActive: {
+    color: "#fff",
+  },
   lessonCopy: {
     flex: 1,
     minWidth: 0,
   },
+  lessonTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   lessonTitle: {
-    color: Colors.text,
+    color: Colors.mutedText,
     fontSize: 14,
-    fontWeight: "700",
+    fontWeight: "500",
+  },
+  lessonTitleActive: {
+    color: Colors.text,
+    fontWeight: "600",
   },
   lessonMeta: {
     color: Colors.mutedText,
     fontSize: 12,
-    marginTop: 3,
+  },
+  lessonMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  lessonMetaItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  lessonMetaDot: {
+    color: Colors.subtleText,
+    fontSize: 11,
+    lineHeight: 12,
+  },
+  lessonMiniBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(250,166,26,0.14)",
+  },
+  lessonMiniBadgeFree: {
+    backgroundColor: "rgba(67,181,129,0.16)",
+  },
+  lessonMiniBadgeText: {
+    color: Colors.warning,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  lessonMiniBadgeTextFree: {
+    color: Colors.accent,
   },
   lessonDetailCard: {
     borderRadius: 16,
@@ -3778,6 +7953,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(8,15,28,0.62)",
     justifyContent: "flex-end",
+  },
+  modalKeyboardAvoid: {
+    flex: 1,
   },
   commentsModal: {
     height: "78%",
@@ -3999,6 +8177,282 @@ const styles = StyleSheet.create({
   accessChipTextActive: {
     color: Colors.primary,
   },
+  homeworkEditorScroll: {
+    flex: 1,
+  },
+  homeworkEditorBody: {
+    flex: 1,
+    position: "relative",
+  },
+  homeworkEditorContent: {
+    padding: 16,
+    gap: 14,
+    paddingBottom: 28,
+  },
+  homeworkEditorIntro: {
+    gap: 4,
+  },
+  homeworkEditorIntroTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  homeworkEditorIntroText: {
+    color: Colors.subtleText,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  homeworkEditorField: {
+    gap: 8,
+    width: "100%",
+  },
+  homeworkEditorLabel: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  homeworkEditorRow: {
+    gap: 12,
+    alignItems: "flex-start",
+  },
+  homeworkEditorHalfField: {
+    flex: 1,
+  },
+  homeworkTypeList: {
+    gap: 10,
+  },
+  homeworkTypeCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 13,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+  },
+  homeworkTypeCardActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  homeworkTypeIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "rgba(43, 160, 156, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  homeworkTypeIconWrapActive: {
+    backgroundColor: Colors.primary,
+  },
+  homeworkTypeCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  homeworkTypeTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  homeworkTypeTitleActive: {
+    color: Colors.primary,
+  },
+  homeworkTypeHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  homeworkTypeHintActive: {
+    color: Colors.text,
+  },
+  homeworkUploadHintCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    padding: 14,
+    gap: 10,
+  },
+  homeworkUploadHintHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  homeworkUploadHintIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: Colors.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  homeworkUploadHintCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  homeworkUploadHintTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  homeworkUploadHintText: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  homeworkUploadHintMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingTop: 2,
+  },
+  homeworkUploadHintMetaLabel: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  homeworkUploadHintMetaValue: {
+    flex: 1,
+    textAlign: "right",
+    color: Colors.text,
+    fontSize: 12,
+  },
+  deadlineFieldButton: {
+    minHeight: 54,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  deadlineFieldLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  deadlineFieldIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: Colors.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deadlineFieldCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  deadlineFieldLabel: {
+    color: Colors.mutedText,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
+  deadlineFieldValue: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  deadlineFieldValuePlaceholder: {
+    color: Colors.subtleText,
+    fontWeight: "500",
+  },
+  deadlineClearButton: {
+    alignSelf: "flex-end",
+    paddingTop: 4,
+  },
+  deadlineClearButtonText: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  deadlinePickerCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  homeworkPickerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+  },
+  homeworkPickerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.28)",
+  },
+  deadlinePickerModalCard: {
+    width: "100%",
+    maxWidth: 420,
+    alignSelf: "center",
+    borderRadius: 24,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  deadlinePickerModalBody: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 4,
+    gap: 12,
+  },
+  deadlinePickerModalLabel: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  deadlinePickerActions: {
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "flex-end",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  deadlinePickerGhostButton: {
+    minHeight: 36,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.input,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deadlinePickerGhostText: {
+    color: Colors.text,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  deadlinePickerPrimaryButton: {
+    minHeight: 36,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deadlinePickerPrimaryText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  homeworkEditorFooter: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    flexDirection: "row",
+    gap: 10,
+    justifyContent: "flex-end",
+  },
   mediaPicker: {
     minHeight: 46,
     borderRadius: 14,
@@ -4183,8 +8637,50 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
   },
+  materialsList: {
+    // paddingHorizontal: 14,
+    paddingBottom: 14,
+    gap: 10,
+  },
+  materialCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  materialMeta: {
+    flex: 1,
+    gap: 3,
+  },
+  materialName: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  materialSub: {
+    color: Colors.subtleText,
+    fontSize: 12,
+  },
+  materialActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  materialIconButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   resourceList: {
-    paddingHorizontal: 14,
     paddingBottom: 14,
     gap: 10,
   },

@@ -1,5 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 import { buildSocketNamespaceUrl } from "../config/env";
+import { presenceApi } from "./api";
 
 type ChatEventMap = {
   message_new: (payload: any) => void;
@@ -149,6 +150,30 @@ class RealtimeManager {
 
   getOnlineUserIds() {
     return Array.from(this.onlineUserIds);
+  }
+
+  async syncOnlineUsers(userIds: string[]) {
+    const normalizedUserIds = Array.from(
+      new Set(userIds.map((userId) => String(userId || "").trim()).filter(Boolean)),
+    );
+
+    if (!normalizedUserIds.length) {
+      return this.getOnlineUserIds();
+    }
+
+    const response = await presenceApi.getBulkStatus(normalizedUserIds);
+
+    normalizedUserIds.forEach((userId) => {
+      this.onlineUserIds.delete(userId);
+    });
+
+    Object.entries(response.statuses || {}).forEach(([userId, isOnline]) => {
+      if (isOnline) {
+        this.onlineUserIds.add(String(userId));
+      }
+    });
+
+    return this.getOnlineUserIds();
   }
 
   onChatEvent<EventName extends keyof ChatEventMap>(

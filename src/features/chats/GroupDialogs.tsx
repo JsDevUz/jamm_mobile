@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import {
+  ArrowLeft,
   Camera,
   ChevronRight,
   Plus,
@@ -20,6 +23,12 @@ import {
   Upload,
   X,
 } from "lucide-react-native";
+import {
+  PanGestureHandler,
+  State,
+  type PanGestureHandlerStateChangeEvent,
+} from "react-native-gesture-handler";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
@@ -72,6 +81,7 @@ type MemberPickerProps = {
   selectedUserIds: string[];
   onClose: () => void;
   onSelect: (userId: string) => void;
+  embedded?: boolean;
 };
 
 type AdminRightsDialogProps = {
@@ -110,6 +120,7 @@ function MemberPickerDialog({
   selectedUserIds,
   onClose,
   onSelect,
+  embedded = false,
 }: MemberPickerProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<User[]>([]);
@@ -195,71 +206,91 @@ function MemberPickerDialog({
     });
   }, [currentUser, mergedUsers, query, selectedUserIds]);
 
+  const content = (
+    <Pressable
+      style={embedded ? styles.embeddedSubDialog : styles.subDialog}
+      onPress={(event) => event.stopPropagation()}
+    >
+      <View style={styles.dialogHeader}>
+        <View>
+          <Text style={styles.dialogTitle}>{title}</Text>
+          <Text style={styles.dialogSubtitle}>
+            {selectedUserIds.length}/{GROUP_MEMBER_LIMIT} tanlangan
+          </Text>
+        </View>
+        <Pressable onPress={onClose} style={styles.closeButton}>
+          <X size={18} color={Colors.mutedText} />
+        </Pressable>
+      </View>
+
+      <View style={styles.searchBar}>
+        <Search size={16} color={Colors.subtleText} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Ism yoki @username orqali qidirish"
+          placeholderTextColor={Colors.subtleText}
+          style={styles.searchInput}
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoFocus
+        />
+        {searching ? <ActivityIndicator size="small" color={Colors.primary} /> : null}
+      </View>
+
+      <ScrollView style={styles.searchResults}>
+        {!query.trim() ? (
+          <Text style={styles.emptyInfo}>Qidirishni boshlang...</Text>
+        ) : query.trim().length < 3 ? (
+          <Text style={styles.emptyInfo}>Kamida 3 ta belgi kiriting</Text>
+        ) : filteredUsers.length === 0 ? (
+          <Text style={styles.emptyInfo}>Hech kim topilmadi</Text>
+        ) : (
+          filteredUsers.map((user) => {
+            const userId = getEntityId(user);
+            return (
+              <Pressable
+                key={userId}
+                style={styles.resultRow}
+                onPress={() => onSelect(userId)}
+              >
+                <View style={styles.memberInfo}>
+                  <Avatar label={getUserLabel(user)} uri={user.avatar} size={34} />
+                  <View style={styles.memberTextWrap}>
+                    <UserDisplayName
+                      user={user}
+                      fallback={getUserLabel(user)}
+                      textStyle={styles.memberName}
+                    />
+                    <Text style={styles.memberMeta}>@{user.username || "user"}</Text>
+                  </View>
+                </View>
+                <Plus size={16} color={Colors.primary} />
+              </Pressable>
+            );
+          })
+        )}
+      </ScrollView>
+    </Pressable>
+  );
+
+  if (!visible) {
+    return null;
+  }
+
+  if (embedded) {
+    return (
+      <View style={styles.embeddedOverlay}>
+        <Pressable style={styles.embeddedBackdrop} onPress={onClose} />
+        {content}
+      </View>
+    );
+  }
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.overlay} onPress={onClose}>
-        <Pressable style={styles.subDialog} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.dialogHeader}>
-            <View>
-              <Text style={styles.dialogTitle}>{title}</Text>
-              <Text style={styles.dialogSubtitle}>
-                {selectedUserIds.length}/{GROUP_MEMBER_LIMIT} tanlangan
-              </Text>
-            </View>
-            <Pressable onPress={onClose} style={styles.closeButton}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-
-          <View style={styles.searchBar}>
-            <Search size={16} color={Colors.subtleText} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Ism yoki @username orqali qidirish"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.searchInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-            />
-            {searching ? <ActivityIndicator size="small" color={Colors.primary} /> : null}
-          </View>
-
-          <ScrollView style={styles.searchResults}>
-            {!query.trim() ? (
-              <Text style={styles.emptyInfo}>Qidirishni boshlang...</Text>
-            ) : query.trim().length < 3 ? (
-              <Text style={styles.emptyInfo}>Kamida 3 ta belgi kiriting</Text>
-            ) : filteredUsers.length === 0 ? (
-              <Text style={styles.emptyInfo}>Hech kim topilmadi</Text>
-            ) : (
-              filteredUsers.map((user) => {
-                const userId = getEntityId(user);
-                return (
-                  <Pressable
-                    key={userId}
-                    style={styles.resultRow}
-                    onPress={() => onSelect(userId)}
-                  >
-                    <View style={styles.memberInfo}>
-                      <Avatar label={getUserLabel(user)} uri={user.avatar} size={34} />
-                      <View style={styles.memberTextWrap}>
-                        <UserDisplayName
-                          user={user}
-                          fallback={getUserLabel(user)}
-                          textStyle={styles.memberName}
-                        />
-                        <Text style={styles.memberMeta}>@{user.username || "user"}</Text>
-                      </View>
-                    </View>
-                    <Plus size={16} color={Colors.primary} />
-                  </Pressable>
-                );
-              })
-            )}
-          </ScrollView>
-        </Pressable>
+        {content}
       </Pressable>
     </Modal>
   );
@@ -359,6 +390,7 @@ function GroupDialogLayout({
   canRemoveMembers = true,
   canAddAdmins = false,
   ownerId,
+  submitLabel,
   onClose,
   onSubmit,
 }: {
@@ -377,6 +409,7 @@ function GroupDialogLayout({
   canRemoveMembers?: boolean;
   canAddAdmins?: boolean;
   ownerId?: string;
+  submitLabel: string;
   onClose: () => void;
   onSubmit: (draft: GroupDraft) => Promise<void>;
 }) {
@@ -387,6 +420,9 @@ function GroupDialogLayout({
   const [admins, setAdmins] = useState<ChatAdmin[]>(currentAdmins || []);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [adminUserId, setAdminUserId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [showSubmitHint, setShowSubmitHint] = useState(false);
 
   useEffect(() => {
     if (!visible) {
@@ -400,6 +436,9 @@ function GroupDialogLayout({
     setAdmins(currentAdmins || []);
     setPickerOpen(false);
     setAdminUserId(null);
+    setSubmitting(false);
+    setSubmitError("");
+    setShowSubmitHint(false);
   }, [
     currentAdmins,
     currentAvatar,
@@ -430,9 +469,12 @@ function GroupDialogLayout({
   const activeAdminPermissions =
     admins.find((admin) => getEntityId(admin) === adminUserId || admin.userId === adminUserId)
       ?.permissions || [];
+  const hasGroupName = Boolean(name.trim());
+  const needsMembers = memberIds.length === 0;
+  const isBusy = saving || submitting;
 
   const handlePickImage = async () => {
-    if (!canEditInfo || saving) return;
+    if (!canEditInfo || isBusy) return;
     const nextUri = await pickImage();
     if (nextUri) {
       setAvatarUri(nextUri);
@@ -486,18 +528,43 @@ function GroupDialogLayout({
   };
 
   const handleSubmit = async () => {
-    await onSubmit({
-      name: name.trim(),
-      description: description.trim(),
-      avatarUri,
-      memberIds,
-      admins,
-    });
+    if (isBusy) {
+      return;
+    }
+
+    if (needsMembers) {
+      setShowSubmitHint(true);
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError("");
+
+    try {
+      await onSubmit({
+        name: name.trim(),
+        description: description.trim(),
+        avatarUri,
+        memberIds,
+        admins,
+      });
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error ? error.message : "Guruhni saqlashda xatolik yuz berdi.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
     <>
-      <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Modal
+        visible={visible && !pickerOpen && !adminUserId}
+        transparent
+        animationType="fade"
+        onRequestClose={onClose}
+      >
         <Pressable style={styles.overlay} onPress={onClose}>
           <Pressable style={styles.dialog} onPress={(event) => event.stopPropagation()}>
             <View style={styles.dialogHeader}>
@@ -640,29 +707,36 @@ function GroupDialogLayout({
                   </View>
                 )}
               </View>
+
+              {submitError ? <Text style={styles.submitErrorText}>{submitError}</Text> : null}
             </ScrollView>
 
             <View style={styles.footerActions}>
               <Pressable style={styles.footerGhostButton} onPress={onClose}>
                 <Text style={styles.footerGhostText}>Bekor qilish</Text>
               </Pressable>
-              <Pressable
-                style={[
-                  styles.footerPrimaryButton,
-                  (!name.trim() || memberIds.length === 0 || saving) &&
-                    styles.footerPrimaryButtonDisabled,
-                ]}
-                onPress={handleSubmit}
-                disabled={!name.trim() || memberIds.length === 0 || saving}
-              >
-                {saving ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.footerPrimaryText}>
-                    {title === "Guruh yaratish" ? "Guruh yaratish" : "Saqlash"}
-                  </Text>
-                )}
-              </Pressable>
+              <View style={styles.footerPrimaryWrap}>
+                {showSubmitHint && needsMembers ? (
+                  <View style={styles.footerTooltip}>
+                    <Text style={styles.footerTooltipText}>Kamida 1 ta a'zo qo'shing</Text>
+                  </View>
+                ) : null}
+                <Pressable
+                  style={[
+                    styles.footerPrimaryButton,
+                    (!hasGroupName || needsMembers || isBusy) &&
+                      styles.footerPrimaryButtonDisabled,
+                  ]}
+                  onPress={handleSubmit}
+                  disabled={!hasGroupName || isBusy}
+                >
+                  {isBusy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.footerPrimaryText}>{submitLabel}</Text>
+                  )}
+                </Pressable>
+              </View>
             </View>
           </Pressable>
         </Pressable>
@@ -676,7 +750,6 @@ function GroupDialogLayout({
         onClose={() => setPickerOpen(false)}
         onSelect={(userId) => {
           toggleMember(userId);
-          setPickerOpen(false);
         }}
       />
 
@@ -707,20 +780,396 @@ export function CreateGroupDialog({
   onClose,
   onCreate,
 }: CreateGroupDialogProps) {
+  const { width: screenWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const translateX = useRef(new Animated.Value(screenWidth)).current;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const [isMounted, setIsMounted] = useState(visible);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [avatarUri, setAvatarUri] = useState<string | null | undefined>(null);
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [showSubmitHint, setShowSubmitHint] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      setIsMounted(true);
+      translateX.setValue(screenWidth);
+      backdropOpacity.setValue(0);
+      Animated.parallel([
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          damping: 24,
+          stiffness: 260,
+          mass: 0.95,
+        }),
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      return;
+    }
+
+    if (!isMounted) {
+      return;
+    }
+
+    Animated.parallel([
+      Animated.timing(translateX, {
+        toValue: screenWidth,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 160,
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) {
+        setIsMounted(false);
+      }
+    });
+  }, [backdropOpacity, isMounted, screenWidth, translateX, visible]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setName("");
+    setDescription("");
+    setAvatarUri(null);
+    setMemberIds([]);
+    setPickerOpen(false);
+    setSubmitting(false);
+    setSubmitError("");
+    setShowSubmitHint(false);
+  }, [visible]);
+
+  const allUsersMap = useMemo(() => {
+    const map = new Map<string, User>();
+
+    users.forEach((user) => {
+      const userId = getEntityId(user) || String(user.jammId || "");
+      if (!userId) return;
+      map.set(userId, user);
+    });
+
+    return map;
+  }, [users]);
+
+  const currentMembers = useMemo(
+    () => memberIds.map((userId) => allUsersMap.get(userId)).filter(Boolean) as User[],
+    [allUsersMap, memberIds],
+  );
+
+  const hasGroupName = Boolean(name.trim());
+  const needsMembers = memberIds.length === 0;
+  const isBusy = submitting;
+
+  const animateScreenBack = useCallback(() => {
+    Animated.parallel([
+      Animated.spring(translateX, {
+        toValue: 0,
+        damping: 22,
+        stiffness: 260,
+        mass: 0.85,
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [backdropOpacity, translateX]);
+
+  const handleClose = () => {
+    if (pickerOpen) {
+      setPickerOpen(false);
+      return;
+    }
+    onClose();
+  };
+
+  const handlePickImage = async () => {
+    if (isBusy) return;
+    const nextUri = await pickImage();
+    if (nextUri) {
+      setAvatarUri(nextUri);
+    }
+  };
+
+  const toggleMember = (userId: string) => {
+    if (memberIds.includes(userId)) {
+      setMemberIds((current) => current.filter((memberId) => memberId !== userId));
+      return;
+    }
+
+    if (memberIds.length >= GROUP_MEMBER_LIMIT) {
+      return;
+    }
+
+    setMemberIds((current) => [...current, userId]);
+    setShowSubmitHint(false);
+  };
+
+  const handleSubmit = async () => {
+    if (isBusy) {
+      return;
+    }
+
+    if (needsMembers) {
+      setShowSubmitHint(true);
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError("");
+
+    try {
+      await onCreate({
+        name: name.trim(),
+        description: description.trim(),
+        avatarUri,
+        memberIds,
+      });
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error ? error.message : "Guruhni saqlashda xatolik yuz berdi.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleScreenSwipeGesture = useCallback(
+    (event: { nativeEvent: { translationX: number } }) => {
+      const nextTranslate = Math.max(0, event.nativeEvent.translationX);
+      translateX.setValue(nextTranslate);
+      backdropOpacity.setValue(1 - Math.min(1, nextTranslate / Math.max(screenWidth, 1)));
+    },
+    [backdropOpacity, screenWidth, translateX],
+  );
+
+  const handleScreenSwipeBack = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      const { state, oldState, translationX, velocityX } = event.nativeEvent;
+
+      if (state === State.BEGAN) {
+        translateX.stopAnimation();
+        backdropOpacity.stopAnimation();
+        return;
+      }
+
+      if (oldState !== State.ACTIVE) {
+        if (state === State.CANCELLED || state === State.FAILED) {
+          animateScreenBack();
+        }
+        return;
+      }
+
+      const shouldClose = translationX > screenWidth * 0.22 || velocityX > 700;
+      if (!shouldClose) {
+        animateScreenBack();
+        return;
+      }
+
+      onClose();
+    },
+    [animateScreenBack, backdropOpacity, onClose, screenWidth, translateX],
+  );
+
+  if (!isMounted) {
+    return null;
+  }
+
   return (
-    <GroupDialogLayout
-      visible={visible}
-      title="Guruh yaratish"
-      subtitle="Do'stlaringiz bilan muloqot qiling"
-      users={users}
-      saving={false}
-      currentAvatar={null}
-      initialMemberIds={[]}
-      initialName=""
-      initialDescription=""
-      onClose={onClose}
-      onSubmit={onCreate}
-    />
+    <View style={styles.createScreenLayer} pointerEvents="box-none">
+      <Animated.View style={[styles.createScreenBackdrop, { opacity: backdropOpacity }]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.createScreenPanel,
+          {
+            transform: [{ translateX }],
+          },
+        ]}
+      >
+        <SafeAreaView style={styles.createScreenSafeArea} edges={["top", "right", "bottom"]}>
+          <PanGestureHandler
+            activeOffsetX={24}
+            failOffsetY={[-16, 16]}
+            shouldCancelWhenOutside={false}
+            onGestureEvent={handleScreenSwipeGesture}
+            onHandlerStateChange={handleScreenSwipeBack}
+          >
+            <Animated.View style={styles.createScreenSwipeEdge} />
+          </PanGestureHandler>
+          <View style={styles.createScreenHeader}>
+            <Pressable onPress={handleClose} style={styles.createScreenBackButton}>
+              <ArrowLeft size={18} color={Colors.text} />
+            </Pressable>
+            <View style={styles.createScreenHeaderCopy}>
+              <Text style={styles.createScreenTitle}>Guruh yaratish</Text>
+              <Text style={styles.createScreenSubtitle}>
+                Do'stlaringiz bilan muloqot qiling
+              </Text>
+            </View>
+          </View>
+
+          <ScrollView
+            style={styles.createScreenBody}
+            contentContainerStyle={[
+              styles.createScreenBodyContent,
+              { paddingBottom: 18 + insets.bottom },
+            ]}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Pressable onPress={handlePickImage} style={styles.uploadCircle}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
+              ) : (
+                <>
+                  <Upload size={24} color={Colors.mutedText} />
+                  <Text style={styles.uploadText}>UPLOAD</Text>
+                </>
+              )}
+              <View style={styles.cameraBadge}>
+                <Camera size={12} color="#fff" />
+              </View>
+            </Pressable>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Guruh nomi</Text>
+              <TextInput
+                value={name}
+                onChangeText={(value) => setName(value.slice(0, GROUP_NAME_LIMIT))}
+                placeholder="Yangi guruh"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.input}
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Guruh haqida</Text>
+              <TextInput
+                value={description}
+                onChangeText={(value) => setDescription(value.slice(0, GROUP_DESCRIPTION_LIMIT))}
+                placeholder="Guruh maqsadini yozing..."
+                placeholderTextColor={Colors.subtleText}
+                multiline
+                style={styles.textarea}
+              />
+            </View>
+
+            <View style={styles.membersSection}>
+              <View style={styles.membersHeader}>
+                <Text style={styles.label}>
+                  Ishtirokchilar ({memberIds.length}/{GROUP_MEMBER_LIMIT})
+                </Text>
+                <Pressable
+                  onPress={() => setPickerOpen(true)}
+                  style={styles.inlineIconButton}
+                >
+                  <Plus size={16} color={Colors.text} />
+                </Pressable>
+              </View>
+
+              {currentMembers.length === 0 ? (
+                <View style={styles.emptyMembers}>
+                  <Text style={styles.emptyMembersText}>
+                    Kamida 1 ta odam qo'shing. A'zo tanlash shu screen ichida ochiladi.
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.membersList}>
+                  {currentMembers.map((user) => {
+                    const userId = getEntityId(user);
+
+                    return (
+                      <View key={userId} style={styles.memberRow}>
+                        <View style={styles.memberInfo}>
+                          <Avatar label={getUserLabel(user)} uri={user.avatar} size={36} />
+                          <View style={styles.memberTextWrap}>
+                            <UserDisplayName
+                              user={user}
+                              fallback={getUserLabel(user)}
+                              textStyle={styles.memberName}
+                            />
+                            <Text style={styles.memberMeta}>@{user.username || "user"}</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.memberActions}>
+                          <Pressable
+                            onPress={() => toggleMember(userId)}
+                            style={styles.memberTrashButton}
+                          >
+                            <Trash2 size={16} color={Colors.danger} />
+                          </Pressable>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+
+            {submitError ? <Text style={styles.submitErrorText}>{submitError}</Text> : null}
+          </ScrollView>
+
+          <View style={[styles.createScreenFooter, { paddingBottom: 12 + insets.bottom }]}>
+            <Pressable style={styles.footerGhostButton} onPress={onClose}>
+              <Text style={styles.footerGhostText}>Bekor qilish</Text>
+            </Pressable>
+            <View style={styles.footerPrimaryWrap}>
+              {showSubmitHint && needsMembers ? (
+                <View style={styles.footerTooltip}>
+                  <Text style={styles.footerTooltipText}>Kamida 1 ta a'zo qo'shing</Text>
+                </View>
+              ) : null}
+              <Pressable
+                style={[
+                  styles.footerPrimaryButton,
+                  (!hasGroupName || needsMembers || isBusy) &&
+                    styles.footerPrimaryButtonDisabled,
+                ]}
+                onPress={handleSubmit}
+                disabled={!hasGroupName || isBusy}
+              >
+                {isBusy ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.footerPrimaryText}>Guruh yaratish</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+
+          <MemberPickerDialog
+            visible={pickerOpen}
+            embedded
+            title="A'zo qo'shish"
+            users={users}
+            selectedUserIds={memberIds}
+            onClose={() => setPickerOpen(false)}
+            onSelect={(userId) => {
+              toggleMember(userId);
+            }}
+          />
+        </SafeAreaView>
+      </Animated.View>
+    </View>
   );
 }
 
@@ -758,6 +1207,7 @@ export function EditGroupDialog({
       canRemoveMembers={hasPermission("remove_members")}
       canAddAdmins={hasPermission("add_admins")}
       ownerId={ownerId}
+      submitLabel="Saqlash"
       onClose={onClose}
       onSubmit={onSave}
     />
@@ -770,6 +1220,16 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.72)",
     padding: 12,
     justifyContent: "center",
+  },
+  embeddedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "center",
+    padding: 12,
+    zIndex: 20,
+  },
+  embeddedBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.72)",
   },
   dialog: {
     backgroundColor: Colors.surface,
@@ -787,6 +1247,99 @@ const styles = StyleSheet.create({
     maxHeight: "82%",
     overflow: "hidden",
     marginHorizontal: 6,
+  },
+  embeddedSubDialog: {
+    backgroundColor: Colors.surface,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    maxHeight: "82%",
+    overflow: "hidden",
+    marginHorizontal: 6,
+  },
+  createScreenLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 50,
+    justifyContent: "flex-end",
+  },
+  createScreenBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.44)",
+  },
+  createScreenPanel: {
+    flex: 1,
+    width: "100%",
+    maxWidth: 560,
+    alignSelf: "flex-end",
+    backgroundColor: Colors.surface,
+    borderLeftWidth: 1,
+    borderLeftColor: Colors.border,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    shadowOffset: { width: -6, height: 0 },
+    elevation: 18,
+  },
+  createScreenSafeArea: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+  },
+  createScreenHeader: {
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 14,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  createScreenSwipeEdge: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 28,
+    zIndex: 3,
+  },
+  createScreenBackButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.surfaceMuted,
+  },
+  createScreenHeaderCopy: {
+    flex: 1,
+    gap: 4,
+    paddingTop: 2,
+  },
+  createScreenTitle: {
+    color: Colors.text,
+    fontSize: 22,
+    fontWeight: "700",
+  },
+  createScreenSubtitle: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  createScreenBody: {
+    flex: 1,
+  },
+  createScreenBodyContent: {
+    paddingHorizontal: 16,
+    gap: 18,
+  },
+  createScreenFooter: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    backgroundColor: Colors.surface,
+    flexDirection: "row",
+    gap: 12,
   },
   dialogHeader: {
     paddingHorizontal: 18,
@@ -1001,6 +1554,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "500",
   },
+  footerPrimaryWrap: {
+    position: "relative",
+  },
+  footerTooltip: {
+    position: "absolute",
+    right: 0,
+    bottom: 50,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "rgba(15,23,42,0.96)",
+  },
+  footerTooltipText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   footerDangerText: {
     color: Colors.danger,
     fontSize: 14,
@@ -1022,6 +1592,11 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     fontWeight: "700",
+  },
+  submitErrorText: {
+    color: "#f4a7a7",
+    fontSize: 13,
+    lineHeight: 18,
   },
   searchBar: {
     marginHorizontal: 16,

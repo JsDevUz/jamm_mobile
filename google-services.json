@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "348104227936",
+    "project_id": "jamm-mobile-4ed35",
+    "storage_bucket": "jamm-mobile-4ed35.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:348104227936:android:2ce285af62b9c87c409705",
+        "android_client_info": {
+          "package_name": "com.jsdevuz.jammmobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyASmqaxxuUKFz7Ax2TUABUAGwefZhV5NMQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

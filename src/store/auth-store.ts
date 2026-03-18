@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import { ApiError, authApi } from "../lib/api";
 import { unregisterPushNotifications } from "../lib/notifications";
-import { clearSessionStorage, setAuthToken } from "../lib/session";
+import {
+  clearSessionStorage,
+  getAppUnlockToken,
+  getAuthToken,
+  getStoredAuthUser,
+  setAppUnlockToken,
+  setAuthToken,
+  setStoredAuthUser,
+} from "../lib/session";
 import type { User } from "../types/entities";
 
 type LoginPayload = {
@@ -25,27 +33,61 @@ type AuthState = {
 };
 
 let bootstrapPromise: Promise<User | null> | null = null;
+const OFFLINE_SESSION_USER: User = {};
 
 const useAuthStore = create<AuthState>((set) => ({
   user: null,
   initialized: false,
   bootstrapping: false,
-  setUser: (user) =>
+  setUser: (user) => {
+    void setStoredAuthUser(user ?? null);
     set({
       user,
       initialized: true,
       bootstrapping: false,
-    }),
+    });
+  },
   bootstrapAuth: async () => {
     if (bootstrapPromise) {
       return bootstrapPromise;
     }
 
-    set({ bootstrapping: true });
+    const authToken = await getAuthToken();
+    if (!authToken) {
+      await setAppUnlockToken(null);
+      await setStoredAuthUser(null);
+      set({
+        user: null,
+        initialized: true,
+        bootstrapping: false,
+      });
+      return null;
+    }
+
+    const cachedUser = await getStoredAuthUser();
+    const appUnlockToken = await getAppUnlockToken();
+    const fallbackUser =
+      cachedUser && cachedUser.appLockEnabled && !appUnlockToken
+        ? {
+            ...cachedUser,
+            appLockSessionUnlocked: false,
+          }
+        : cachedUser ?? OFFLINE_SESSION_USER;
+
+    if (cachedUser && fallbackUser !== cachedUser) {
+      await setStoredAuthUser(fallbackUser);
+    }
+
+    set({
+      user: fallbackUser,
+      initialized: true,
+      bootstrapping: false,
+    });
 
     bootstrapPromise = authApi
       .restoreSession()
-      .then((response) => {
+      .then(async (response) => {
+        await setStoredAuthUser(response.user);
         set({
           user: response.user,
           initialized: true,
@@ -53,18 +95,29 @@ const useAuthStore = create<AuthState>((set) => ({
         });
         return response.user;
       })
-      .catch((error) => {
-        if (!(error instanceof ApiError) || error.status !== 401) {
+      .catch(async (error) => {
+        if (error instanceof ApiError && error.status === 401) {
+          await setAppUnlockToken(null);
+          await setAuthToken(null);
+          await setStoredAuthUser(null);
+          set({
+            user: null,
+            initialized: true,
+            bootstrapping: false,
+          });
+          return null;
+        }
+
+        if (!(error instanceof ApiError)) {
           console.warn("Failed to bootstrap auth", error);
         }
-        void setAuthToken(null);
 
         set({
-          user: null,
+          user: fallbackUser,
           initialized: true,
           bootstrapping: false,
         });
-        return null;
+        return fallbackUser;
       })
       .finally(() => {
         bootstrapPromise = null;
@@ -73,10 +126,12 @@ const useAuthStore = create<AuthState>((set) => ({
     return bootstrapPromise;
   },
   login: async (payload) => {
+    await setAppUnlockToken(null);
     const response = await authApi.login(payload);
     if (response.access_token) {
       await setAuthToken(response.access_token);
     }
+    await setStoredAuthUser(response.user);
     set({
       user: response.user,
       initialized: true,
@@ -89,6 +144,7 @@ const useAuthStore = create<AuthState>((set) => ({
     return response.message || "Ro'yxatdan o'tish muvaffaqiyatli bo'ldi.";
   },
   logout: async () => {
+    await setAppUnlockToken(null);
     await unregisterPushNotifications().catch(() => undefined);
     await authApi.logout();
     await clearSessionStorage();
