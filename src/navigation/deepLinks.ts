@@ -1,10 +1,12 @@
+import { APP_BASE_URL } from "../config/env";
+
 export type JammDeepLinkTarget =
   | { kind: "home" }
   | { kind: "feed" }
   | { kind: "chats" }
   | { kind: "articlesHome" }
   | { kind: "coursesHome" }
-  | { kind: "profile" }
+  | { kind: "profile"; identifier?: string }
   | { kind: "coursesArena" }
   | { kind: "article"; articleId: string }
   | { kind: "course"; courseId: string; lessonId?: string }
@@ -25,6 +27,20 @@ const MNEMONIC_SEGMENTS = new Set([
   "mnemonics",
 ]);
 
+const KNOWN_JAMM_HOSTS = (() => {
+  const hosts = new Set(["jamm.uz", "www.jamm.uz"]);
+  try {
+    const configuredHost = new URL(APP_BASE_URL).hostname.toLowerCase();
+    if (configuredHost) {
+      hosts.add(configuredHost);
+      hosts.add(configuredHost.replace(/^www\./, ""));
+    }
+  } catch {
+    // no-op
+  }
+  return hosts;
+})();
+
 const decodePathSegment = (value: string) => {
   try {
     return decodeURIComponent(value);
@@ -42,14 +58,14 @@ function getUrlSegments(url: URL) {
     .map(decodePathSegment);
 
   if (scheme === "jamm") {
-    if (host === "jamm.uz" || host === "www.jamm.uz" || !host) {
+    if (KNOWN_JAMM_HOSTS.has(host) || !host) {
       return pathnameSegments;
     }
 
     return [decodePathSegment(host), ...pathnameSegments];
   }
 
-  if (host === "jamm.uz" || host === "www.jamm.uz") {
+  if (KNOWN_JAMM_HOSTS.has(host)) {
     return pathnameSegments;
   }
 
@@ -101,7 +117,7 @@ export function parseJammDeepLink(urlString: string): JammDeepLinkTarget | null 
   }
 
   if (firstLower === "profile") {
-    return { kind: "profile" };
+    return { kind: "profile", identifier: second || undefined };
   }
 
   if (firstLower === "articles") {

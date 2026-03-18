@@ -39,6 +39,13 @@ import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { APP_LIMITS, getTierLimit } from "../../constants/appLimits";
 import { APP_BASE_URL } from "../../config/env";
 import { arenaApi } from "../../lib/api";
+import {
+  getFlashcardDeckCache,
+  loadFlashcardDeckListCache,
+  removeFlashcardDeckCache,
+  replaceFlashcardDeckListCache,
+  upsertFlashcardDeckCache,
+} from "../../lib/flashcard-cache";
 import type { RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -484,7 +491,10 @@ function FlashcardTrainingSheet({
               <Pressable
                 key={mode.key}
                 style={styles.modeCard}
-                onPress={() => onStart(mode.key)}
+                onPress={() =>
+                  {console.log('fgdf',mode),
+                  
+                  onStart(mode.key)}}
               >
                 <View style={styles.modeCardIconWrap}>
                   <Icon size={20} color={Colors.primary} />
@@ -528,6 +538,24 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     () => decks.filter((deck) => isDeckOwner(deck, currentUserId)).length,
     [currentUserId, decks],
   );
+
+  useEffect(() => {
+    let active = true;
+
+    void (async () => {
+      const cachedDecks = await loadFlashcardDeckListCache();
+      if (!active || !cachedDecks.length) {
+        return;
+      }
+
+      setDecks(cachedDecks);
+      setInitialLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -587,16 +615,32 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     try {
       const payload = await arenaApi.fetchFlashcards(nextPage, APP_LIMITS.flashcardDeckPageSize);
       const items = Array.isArray(payload.data) ? payload.data : [];
+      const cachedDecks = replace ? [] : await loadFlashcardDeckListCache();
+      const nextDecks = replace
+        ? items
+        : mergeDecks(cachedDecks.length ? cachedDecks : decks, items);
 
-      setDecks((prev) => (replace ? items : mergeDecks(prev, items)));
+      setDecks(nextDecks);
       setPage(Number(payload.page || nextPage));
       setHasMore(Number(payload.page || nextPage) < Number(payload.totalPages || 1));
+      await replaceFlashcardDeckListCache(nextDecks);
     } catch (error) {
+      const cachedDecks = await loadFlashcardDeckListCache();
+      if (cachedDecks.length) {
+        setDecks(cachedDecks);
+        setHasMore(false);
+        setPage(1);
+      }
+
       if (!silent) {
+        if (cachedDecks.length) {
+          Alert.alert("Offline rejim", "Saqlangan flashcard to'plamlari ko'rsatildi.");
+        } else {
         Alert.alert(
           "Flashcards yuklanmadi",
           error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
         );
+        }
       }
     } finally {
       if (!silent) {
@@ -613,13 +657,20 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     try {
       const payload = await arenaApi.fetchFlashcardDeck(deckId);
       setDetailDeck(payload);
+      await upsertFlashcardDeckCache(payload);
     } catch (error) {
-      setDetailMode(null);
-      setDetailDeck(null);
-      Alert.alert(
-        "Lugat ochilmadi",
-        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-      );
+      const cachedDeck = await getFlashcardDeckCache(deckId);
+      if (cachedDeck) {
+        setDetailDeck(cachedDeck);
+        Alert.alert("Offline rejim", "Saqlangan lug'at ochildi.");
+      } else {
+        setDetailMode(null);
+        setDetailDeck(null);
+        Alert.alert(
+          "Lugat ochilmadi",
+          error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+        );
+      }
     } finally {
       setDetailLoading(false);
     }
@@ -645,17 +696,10 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
   }, [route.params?.deckId]);
 
   const handleBack = () => {
-    if (Platform.OS === "web") {
-      navigation.navigate("MainTabs", { screen: "Courses" });
-      return;
-    }
-
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-      return;
-    }
-
-    navigation.navigate("MainTabs", { screen: "Courses" });
+    navigation.navigate("MainTabs", {
+      screen: "Courses",
+      params: { viewMode: "arena" },
+    });
   };
 
   const handleCopyLink = async (deck: ArenaFlashcardDeck) => {
@@ -758,6 +802,7 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
               setDeletingDeckId(String(deck._id));
               try {
                 await arenaApi.deleteFlashcardDeck(String(deck._id));
+                await removeFlashcardDeckCache(String(deck._id));
                 if (detailDeck?._id === deck._id) {
                   setDetailDeck(null);
                   setDetailMode(null);
@@ -790,6 +835,7 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
       await arenaApi.joinFlashcardDeck(deckId);
       const updatedDeck = await arenaApi.fetchFlashcardDeck(deckId);
       setDetailDeck(updatedDeck);
+      await upsertFlashcardDeckCache(updatedDeck);
       await loadDecks(1, { replace: true, silent: true });
     } catch (error) {
       Alert.alert(
@@ -823,6 +869,7 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
               setDetailActionDeckId(deckId);
               try {
                 await arenaApi.leaveFlashcardDeck(deckId);
+                await removeFlashcardDeckCache(deckId);
                 setDetailDeck(null);
                 setDetailMode(null);
                 await loadDecks(1, { replace: true, silent: true });
@@ -854,12 +901,12 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     if (!deckId || !detailDeck) {
       return;
     }
-
     const payloadDeck = {
       ...detailDeck,
       cards: Array.isArray(detailDeck.cards) ? detailDeck.cards : [],
     };
 
+    void upsertFlashcardDeckCache(payloadDeck);
     setDetailMode(null);
     setDetailDeck(null);
     navigation.navigate("ArenaFlashcardStudy", {
@@ -1181,17 +1228,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
+    gap: 8,
   },
   headerSlot: {
-    position: "absolute",
-    left: 20,
-    top: 10,
-    minWidth: 40,
+    width: 48,
     alignItems: "flex-start",
+    justifyContent: "center",
   },
   headerSlotEnd: {
-    left: undefined,
-    right: 20,
     alignItems: "flex-end",
   },
   headerButton: {
@@ -1205,14 +1249,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   headerCenter: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
+    flexDirection: "column",
+    gap: 6,
   },
   headerTitle: {
+    flex: 1,
+    textAlign: "center",
     color: Colors.text,
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 20,
+    fontWeight: "700",
   },
   headerCount: {
     color: Colors.mutedText,

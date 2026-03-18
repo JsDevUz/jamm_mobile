@@ -62,6 +62,7 @@ import {
 } from "./src/lib/api";
 import { getAuthToken, setAppUnlockToken } from "./src/lib/session";
 import { parseJammDeepLink, type JammDeepLinkTarget } from "./src/navigation/deepLinks";
+import { setJammInternalLinkOpener } from "./src/navigation/internalLinks";
 import type { ChatSummary } from "./src/types/entities";
 import { getEntityId } from "./src/utils/chat";
 
@@ -464,7 +465,9 @@ function AppLockOverlay() {
   const dotAnimations = useRef(
     Array.from({ length: APP_LOCK_PIN_LENGTH }, () => new Animated.Value(0)),
   ).current;
-  const isVisible = Boolean(user && user.appLockSessionUnlocked === false);
+  const isVisible = Boolean(
+    user && user.appLockEnabled === true && user.appLockSessionUnlocked === false,
+  );
 
   useEffect(() => {
     if (!isVisible) {
@@ -535,7 +538,7 @@ function AppLockOverlay() {
           if (user) {
             setUser({
               ...user,
-              appLockEnabled: user.appLockEnabled ?? true,
+              appLockEnabled: user.appLockEnabled === true,
               appLockSessionUnlocked: true,
             });
           }
@@ -724,7 +727,7 @@ function AppServices() {
 
     setUser({
       ...user,
-      appLockEnabled: user.appLockEnabled ?? true,
+      appLockEnabled: user.appLockEnabled === true,
       appLockSessionUnlocked: false,
     });
   };
@@ -929,7 +932,7 @@ function AppServices() {
     let previousState = AppState.currentState;
     const subscription = AppState.addEventListener("change", (state) => {
       if (
-        user.appLockEnabled &&
+        user.appLockEnabled === true &&
         previousState === "active" &&
         (state === "inactive" || state === "background")
       ) {
@@ -1091,7 +1094,17 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
           openCoursesTab();
           return;
         case "profile":
-          navigationRef.navigate("MainTabs", { screen: "Profile" } as never);
+          navigationRef.navigate(
+            "MainTabs",
+            {
+              screen: "Profile",
+              params: target.identifier
+                ? /^\d+$/.test(target.identifier)
+                  ? { jammId: target.identifier }
+                  : { userId: target.identifier }
+                : undefined,
+            } as never,
+          );
           return;
         case "coursesArena":
           openCoursesTab({ viewMode: "arena" });
@@ -1214,6 +1227,13 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
     },
     [processPendingDeepLink],
   );
+
+  useEffect(() => {
+    setJammInternalLinkOpener(openDeepLinkTarget);
+    return () => {
+      setJammInternalLinkOpener(null);
+    };
+  }, [openDeepLinkTarget]);
 
   useEffect(() => {
     void Linking.getInitialURL()

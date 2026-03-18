@@ -18,12 +18,15 @@ import {
   Camera as CameraIcon,
   Check,
   Copy,
+  Lock,
+  Maximize2,
   Mic,
   MicOff,
   PhoneOff,
   RefreshCcw,
   Shield,
   UserCheck,
+  UserMinus,
   UserPlus,
   Users,
   Video,
@@ -59,7 +62,16 @@ type RemotePeer = {
   peerId: string;
   displayName: string;
   stream: MediaStream | null;
+  hasVideo?: boolean;
+  hasAudio?: boolean;
+  videoMuted?: boolean;
+  audioMuted?: boolean;
   connectionState?: string;
+};
+type RemoteScreenShare = {
+  peerId: string;
+  displayName: string;
+  stream: MediaStream | null;
 };
 type KnockRequest = {
   peerId: string;
@@ -99,6 +111,32 @@ const getTileColumns = (count: number) => {
   return 3;
 };
 
+const CALL_QUALITY_PROFILES = {
+  balanced: {
+    key: "balanced",
+    label: "balanced",
+    videoBitrate: 380_000,
+    audioBitrate: 32_000,
+    scaleResolutionDownBy: 1,
+  },
+  crowded: {
+    key: "crowded",
+    label: "crowded",
+    videoBitrate: 220_000,
+    audioBitrate: 32_000,
+    scaleResolutionDownBy: 1.2,
+  },
+  poor: {
+    key: "poor",
+    label: "audio-priority",
+    videoBitrate: 110_000,
+    audioBitrate: 40_000,
+    scaleResolutionDownBy: 1.6,
+  },
+} as const;
+
+type QualityProfile = (typeof CALL_QUALITY_PROFILES)[keyof typeof CALL_QUALITY_PROFILES];
+
 export function GroupMeetScreen({ navigation, route }: Props) {
   const { width: screenWidth } = useWindowDimensions();
   const { roomId, title, isCreator, isPrivate } = route.params;
@@ -108,6 +146,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remotePeers, setRemotePeers] = useState<RemotePeer[]>([]);
+  const [remoteScreenShares, setRemoteScreenShares] = useState<RemoteScreenShare[]>([]);
   const [joinStatus, setJoinStatus] = useState<JoinStatus>("connecting");
   const [error, setError] = useState("");
   const [roomTitle, setRoomTitle] = useState(title || "Meet");
@@ -116,10 +155,16 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const [showDrawer, setShowDrawer] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
+  const [micLocked, setMicLocked] = useState(false);
+  const [camLocked, setCamLocked] = useState(false);
   const [privacyUpdating, setPrivacyUpdating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [loadingMedia, setLoadingMedia] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [qualityProfile, setQualityProfile] = useState<QualityProfile>(
+    CALL_QUALITY_PROFILES.balanced,
+  );
+  const [selectedTileId, setSelectedTileId] = useState<string | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const socketIdRef = useRef<string | null>(null);
@@ -127,6 +172,8 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const peerConnectionsRef = useRef<Record<string, RTCPeerConnection>>({});
   const candidateQueuesRef = useRef<Record<string, RTCIceCandidate[]>>({});
   const knownPeerNamesRef = useRef<Record<string, string>>({});
+  const knownStreamsRef = useRef<Record<string, string>>({});
+  const stalePeerTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const hangupStartedRef = useRef(false);
   const connectedAtRef = useRef<number | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -176,8 +223,23 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    if (remoteScreenShares.length === 0) {
+      setSelectedTileId((current) => (current?.endsWith(":screen") ? null : current));
+      return;
+    }
+
+    setSelectedTileId((current) => current || `${remoteScreenShares[0].peerId}:screen`);
+  }, [remoteScreenShares]);
+
   const upsertRemotePeer = useCallback(
     (peerId: string, patch: Partial<RemotePeer>) => {
+      const existingTimeout = stalePeerTimeoutsRef.current[peerId];
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+        delete stalePeerTimeoutsRef.current[peerId];
+      }
+
       setRemotePeers((previous) => {
         const existingIndex = previous.findIndex((peer) => peer.peerId === peerId);
         if (existingIndex === -1) {
@@ -211,8 +273,18 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   );
 
   const removeRemotePeer = useCallback((peerId: string) => {
+    const existingTimeout = stalePeerTimeoutsRef.current[peerId];
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      delete stalePeerTimeoutsRef.current[peerId];
+    }
     setRemotePeers((previous) => previous.filter((peer) => peer.peerId !== peerId));
+    setRemoteScreenShares((previous) => previous.filter((peer) => peer.peerId !== peerId));
+    setSelectedTileId((current) =>
+      current === peerId || current === `${peerId}:screen` ? null : current,
+    );
     delete knownPeerNamesRef.current[peerId];
+    delete knownStreamsRef.current[peerId];
     delete candidateQueuesRef.current[peerId];
     peerConnectionsRef.current[peerId]?.close();
     delete peerConnectionsRef.current[peerId];
@@ -223,7 +295,50 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     peerConnectionsRef.current = {};
     candidateQueuesRef.current = {};
     knownPeerNamesRef.current = {};
+    knownStreamsRef.current = {};
+    Object.values(stalePeerTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
+    stalePeerTimeoutsRef.current = {};
     setRemotePeers([]);
+    setRemoteScreenShares([]);
+    setSelectedTileId(null);
+  }, []);
+
+  const upsertRemoteScreenShare = useCallback(
+    (peerId: string, stream: MediaStream | null, displayName?: string) => {
+      setRemoteScreenShares((previous) => {
+        const existingIndex = previous.findIndex((peer) => peer.peerId === peerId);
+        if (existingIndex === -1) {
+          return [
+            ...previous,
+            {
+              peerId,
+              displayName: displayName || knownPeerNamesRef.current[peerId] || peerId,
+              stream,
+            },
+          ];
+        }
+
+        return previous.map((peer, index) =>
+          index === existingIndex
+            ? {
+                ...peer,
+                stream,
+                displayName:
+                  displayName ||
+                  peer.displayName ||
+                  knownPeerNamesRef.current[peerId] ||
+                  peerId,
+              }
+            : peer,
+        );
+      });
+    },
+    [],
+  );
+
+  const removeRemoteScreenShare = useCallback((peerId: string) => {
+    setRemoteScreenShares((previous) => previous.filter((peer) => peer.peerId !== peerId));
+    setSelectedTileId((current) => (current === `${peerId}:screen` ? null : current));
   }, []);
 
   const flushQueuedCandidates = useCallback(async (peerId: string) => {
@@ -280,23 +395,142 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         const [stream] = event.streams;
         if (!stream) return;
 
-        upsertRemotePeer(peerId, {
-          stream,
-          displayName: knownPeerNamesRef.current[peerId] || peerDisplayName || peerId,
+        const syncCameraTrackState = () => {
+          const videoTracks = stream.getVideoTracks?.() || [];
+          const audioTracks = stream.getAudioTracks?.() || [];
+          upsertRemotePeer(peerId, {
+            stream,
+            displayName: knownPeerNamesRef.current[peerId] || peerDisplayName || peerId,
+            hasVideo: videoTracks.length > 0,
+            hasAudio: audioTracks.length > 0,
+            videoMuted: videoTracks.some(
+              (track: MediaStreamTrack) =>
+                track.readyState !== "live" || track.muted === true || track.enabled === false,
+            ),
+            audioMuted: audioTracks.some(
+              (track: MediaStreamTrack) =>
+                track.readyState !== "live" || track.muted === true || track.enabled === false,
+            ),
+          });
+        };
+
+        const knownStreamId = knownStreamsRef.current[peerId];
+        if (!knownStreamId) {
+          knownStreamsRef.current[peerId] = stream.id;
+          stream.getTracks().forEach((track: MediaStreamTrack) => {
+            track.onmute = syncCameraTrackState;
+            track.onunmute = syncCameraTrackState;
+            track.onended = syncCameraTrackState;
+          });
+          syncCameraTrackState();
+          return;
+        }
+
+        if (knownStreamId === stream.id) {
+          stream.getTracks().forEach((track: MediaStreamTrack) => {
+            track.onmute = syncCameraTrackState;
+            track.onunmute = syncCameraTrackState;
+            track.onended = syncCameraTrackState;
+          });
+          syncCameraTrackState();
+          return;
+        }
+
+        stream.getTracks().forEach((track: MediaStreamTrack) => {
+          track.onended = () => removeRemoteScreenShare(peerId);
         });
+        upsertRemoteScreenShare(
+          peerId,
+          stream,
+          knownPeerNamesRef.current[peerId] || peerDisplayName || peerId,
+        );
       };
 
       connection.onconnectionstatechange = () => {
+        const nextState = connection.connectionState;
         upsertRemotePeer(peerId, {
-          connectionState: connection.connectionState,
+          connectionState: nextState,
           displayName: knownPeerNamesRef.current[peerId] || peerDisplayName || peerId,
         });
+
+        if (nextState === "failed" || nextState === "closed") {
+          removeRemotePeer(peerId);
+          return;
+        }
+
+        if (nextState === "disconnected") {
+          const existingTimeout = stalePeerTimeoutsRef.current[peerId];
+          if (existingTimeout) {
+            clearTimeout(existingTimeout);
+          }
+          stalePeerTimeoutsRef.current[peerId] = setTimeout(() => {
+            const currentState =
+              peerConnectionsRef.current[peerId]?.connectionState || nextState;
+            if (
+              currentState === "disconnected" ||
+              currentState === "failed" ||
+              currentState === "closed"
+            ) {
+              removeRemotePeer(peerId);
+            }
+          }, 3000);
+        }
       };
 
       peerConnectionsRef.current[peerId] = connection;
       return connection;
     },
-    [upsertRemotePeer],
+    [removeRemotePeer, removeRemoteScreenShare, upsertRemotePeer, upsertRemoteScreenShare],
+  );
+
+  const applyMediaOptimization = useCallback(
+    async (profile: QualityProfile) => {
+      const localVideoTrack = localStreamRef.current?.getVideoTracks?.()[0];
+      const localAudioTrack = localStreamRef.current?.getAudioTracks?.()[0];
+
+      await Promise.all(
+        Object.values(peerConnectionsRef.current).map(async (connection) => {
+          const senders = connection.getSenders?.() || [];
+          await Promise.all(
+            senders.map(async (sender) => {
+              try {
+                const params = sender.getParameters?.() || {};
+                const encodings = params.encodings?.length
+                  ? [...params.encodings]
+                  : ([{}] as any[]);
+
+                if (sender.track && localVideoTrack && sender.track.id === localVideoTrack.id) {
+                  encodings[0] = {
+                    ...encodings[0],
+                    maxBitrate: profile.videoBitrate,
+                    scaleResolutionDownBy: profile.scaleResolutionDownBy,
+                  };
+                  await sender.setParameters?.({
+                    ...params,
+                    encodings,
+                  } as any);
+                  return;
+                }
+
+                if (sender.track && localAudioTrack && sender.track.id === localAudioTrack.id) {
+                  encodings[0] = {
+                    ...encodings[0],
+                    maxBitrate: profile.audioBitrate,
+                  };
+                  await sender.setParameters?.({
+                    ...params,
+                    encodings,
+                  } as any);
+                }
+              } catch {
+                return;
+              }
+            }),
+          );
+        }),
+      );
+    },
+    [],
   );
 
   const createOfferForPeer = useCallback(
@@ -391,6 +625,27 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   }, []);
 
   useEffect(() => {
+    const peerCount = remotePeers.length + 1;
+    const nextProfile =
+      peerCount >= 6
+        ? CALL_QUALITY_PROFILES.poor
+        : peerCount >= 4
+          ? CALL_QUALITY_PROFILES.crowded
+          : CALL_QUALITY_PROFILES.balanced;
+
+    setQualityProfile((current) => {
+      if (current.key === nextProfile.key) {
+        return current;
+      }
+      return nextProfile;
+    });
+  }, [remotePeers.length]);
+
+  useEffect(() => {
+    void applyMediaOptimization(qualityProfile);
+  }, [applyMediaOptimization, qualityProfile]);
+
+  useEffect(() => {
     if (!localStream) {
       return;
     }
@@ -474,6 +729,11 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           knownPeerNamesRef.current[peerId] = peerDisplayName;
           upsertRemotePeer(peerId, {
             displayName: peerDisplayName,
+            hasAudio: true,
+            hasVideo: true,
+            audioMuted: false,
+            videoMuted: false,
+            connectionState: "connecting",
           });
         });
       });
@@ -485,6 +745,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         knownPeerNamesRef.current[normalizedPeerId] = normalizedName;
         upsertRemotePeer(normalizedPeerId, {
           displayName: normalizedName,
+          hasAudio: true,
+          hasVideo: true,
+          audioMuted: false,
+          videoMuted: false,
           connectionState: "connecting",
         });
         void createOfferForPeer(normalizedPeerId, normalizedName);
@@ -555,6 +819,54 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         const normalizedPeerId = String(peerId || "");
         if (!normalizedPeerId || normalizedPeerId === socket.id) return;
         removeRemotePeer(normalizedPeerId);
+      });
+
+      socket.on("screen-share-stopped", ({ peerId }) => {
+        const normalizedPeerId = String(peerId || "");
+        if (!normalizedPeerId || normalizedPeerId === socket.id) return;
+        removeRemoteScreenShare(normalizedPeerId);
+      });
+
+      socket.on("kicked", () => {
+        setError("Siz yaratuvchi tomonidan chiqarib yuborildingiz");
+        setJoinStatus("rejected");
+        void cleanupCall();
+      });
+
+      socket.on("force-mute-mic", () => {
+        const track = localStreamRef.current?.getAudioTracks?.()[0];
+        if (track) {
+          track.enabled = false;
+          setIsMicOn(false);
+        }
+        setMicLocked(true);
+      });
+
+      socket.on("force-mute-cam", () => {
+        const track = localStreamRef.current?.getVideoTracks?.()[0];
+        if (track) {
+          track.enabled = false;
+          setIsCamOn(false);
+        }
+        setCamLocked(true);
+      });
+
+      socket.on("allow-mic", () => {
+        const track = localStreamRef.current?.getAudioTracks?.()[0];
+        if (track) {
+          track.enabled = true;
+          setIsMicOn(true);
+        }
+        setMicLocked(false);
+      });
+
+      socket.on("allow-cam", () => {
+        const track = localStreamRef.current?.getVideoTracks?.()[0];
+        if (track) {
+          track.enabled = true;
+          setIsCamOn(true);
+        }
+        setCamLocked(false);
       });
 
       socket.on("knock-request", ({ peerId, displayName: guestName }) => {
@@ -630,6 +942,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     createOfferForPeer,
     createPeerConnection,
     cleanupAllPeerConnections,
+    cleanupCall,
     displayName,
     flushQueuedCandidates,
     isCreator,
@@ -684,6 +997,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   };
 
   const handleToggleMic = () => {
+    if (micLocked) {
+      return;
+    }
     const audioTrack = localStreamRef.current?.getAudioTracks?.()[0];
     if (!audioTrack) {
       return;
@@ -695,6 +1011,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   };
 
   const handleToggleCam = () => {
+    if (camLocked) {
+      return;
+    }
     const videoTrack = localStreamRef.current?.getVideoTracks?.()[0];
     if (!videoTrack) {
       return;
@@ -717,6 +1036,39 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     navigation.goBack();
   };
 
+  const handleForceMuteMic = (peerId: string, isPeerMicOn: boolean) => {
+    if (!isCreator) {
+      return;
+    }
+
+    socketRef.current?.emit(isPeerMicOn ? "force-mute-mic" : "allow-mic", { roomId, peerId });
+    upsertRemotePeer(peerId, {
+      hasAudio: true,
+      audioMuted: isPeerMicOn,
+    });
+  };
+
+  const handleForceMuteCam = (peerId: string, isPeerCamOn: boolean) => {
+    if (!isCreator) {
+      return;
+    }
+
+    socketRef.current?.emit(isPeerCamOn ? "force-mute-cam" : "allow-cam", { roomId, peerId });
+    upsertRemotePeer(peerId, {
+      hasVideo: true,
+      videoMuted: isPeerCamOn,
+    });
+  };
+
+  const handleKickPeer = (peerId: string) => {
+    if (!isCreator) {
+      return;
+    }
+
+    socketRef.current?.emit("kick-peer", { roomId, peerId });
+    removeRemotePeer(peerId);
+  };
+
   const participantsCount = remotePeers.length + 1;
   const columns = getTileColumns(participantsCount);
   const tileWidth = useMemo(() => {
@@ -732,17 +1084,60 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         id: "local",
         name: `${displayName} (Sen)`,
         isLocal: true,
+        hasAudio: true,
+        hasVideo: true,
+        audioMuted: !isMicOn,
+        videoMuted: !isCamOn,
         connectionState: undefined as string | undefined,
       },
       ...remotePeers.map((peer) => ({
         id: peer.peerId,
         name: peer.displayName,
         isLocal: false,
+        hasAudio: peer.hasAudio,
+        hasVideo: peer.hasVideo,
+        audioMuted: peer.audioMuted,
+        videoMuted: peer.videoMuted,
         connectionState: peer.connectionState,
       })),
     ],
-    [displayName, remotePeers],
+    [displayName, isCamOn, isMicOn, remotePeers],
   );
+
+  const remoteTiles = useMemo(
+    () => [
+      ...remotePeers.map((peer) => ({
+        tileId: peer.peerId,
+        peerId: peer.peerId,
+        label: peer.displayName,
+        stream: peer.stream,
+      })),
+      ...remoteScreenShares.map((peer) => ({
+        tileId: `${peer.peerId}:screen`,
+        peerId: peer.peerId,
+        label: `${peer.displayName} · Ekran`,
+        stream: peer.stream,
+      })),
+    ],
+    [remotePeers, remoteScreenShares],
+  );
+
+  const spotlightTile = useMemo(() => {
+    if (!selectedTileId || selectedTileId === "local") {
+      return null;
+    }
+
+    return remoteTiles.find((tile) => tile.tileId === selectedTileId) || null;
+  }, [remoteTiles, selectedTileId]);
+
+  const spotlightStream = selectedTileId === "local" ? localStream : spotlightTile?.stream || null;
+  const spotlightLabel =
+    selectedTileId === "local"
+      ? `${displayName} (Sen)`
+      : spotlightTile?.label || "";
+  const spotlightIsLocal = selectedTileId === "local";
+  const hasSpotlight = Boolean(selectedTileId && (selectedTileId === "local" || spotlightTile));
+  const spotlightPeerIds = new Set(selectedTileId ? [selectedTileId] : []);
 
   const renderTile = (
     key: string,
@@ -751,6 +1146,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     isLocalTile = false,
   ) => {
     const initial = label.slice(0, 1).toUpperCase();
+    const isScreenTile = key.endsWith(":screen");
 
     return (
       <View key={key} style={[styles.tile, { width: tileWidth }]}>
@@ -758,7 +1154,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           <RTCView
             streamURL={stream.toURL()}
             style={styles.tileVideo}
-            objectFit="cover"
+            objectFit={isScreenTile ? "contain" : "cover"}
             mirror={isLocalTile}
           />
         ) : (
@@ -772,24 +1168,39 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           <Text style={styles.tileLabel} numberOfLines={1}>
             {label}
           </Text>
-          {isLocalTile ? (
-            <View style={styles.tileBadges}>
-              {isMicOn ? (
-                <Mic size={12} color={Colors.accent} />
-              ) : (
-                <MicOff size={12} color={Colors.danger} />
-              )}
-              {isCamOn ? (
-                <Video size={12} color={Colors.accent} />
-              ) : (
-                <CameraOff size={12} color={Colors.danger} />
-              )}
-            </View>
-          ) : null}
+          <View style={styles.tileBadges}>
+            {isLocalTile ? (
+              <>
+                {isMicOn ? (
+                  <Mic size={12} color={Colors.accent} />
+                ) : (
+                  <MicOff size={12} color={Colors.danger} />
+                )}
+                {isCamOn ? (
+                  <Video size={12} color={Colors.accent} />
+                ) : (
+                  <CameraOff size={12} color={Colors.danger} />
+                )}
+                {micLocked || camLocked ? <Lock size={12} color={Colors.warning} /> : null}
+              </>
+            ) : null}
+            <Maximize2 size={12} color="#fff" />
+          </View>
         </View>
       </View>
     );
   };
+
+  const renderSelectableTile = (
+    key: string,
+    label: string,
+    stream: MediaStream | null,
+    isLocalTile = false,
+  ) => (
+    <Pressable key={key} onPress={() => setSelectedTileId((current) => (current === key ? null : key))}>
+      {renderTile(key, label, stream, isLocalTile)}
+    </Pressable>
+  );
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
@@ -817,6 +1228,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
             </View>
           </View>
           <View style={styles.headerActions}>
+            <View style={styles.qualityBadge}>
+              <Text style={styles.qualityBadgeText}>{qualityProfile.label}</Text>
+            </View>
             <Pressable style={styles.headerButton} onPress={handleCopy}>
               {copied ? (
                 <Check size={16} color={Colors.text} />
@@ -831,9 +1245,6 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                   <Text style={styles.notifText}>{knockRequests.length}</Text>
                 </View>
               ) : null}
-            </Pressable>
-            <Pressable style={[styles.headerButton, styles.headerButtonDanger]} onPress={() => void handleLeave()}>
-              <PhoneOff size={16} color="#fff" />
             </Pressable>
           </View>
         </View>
@@ -869,16 +1280,73 @@ export function GroupMeetScreen({ navigation, route }: Props) {
               </Pressable>
             </View>
           ) : (
-            <ScrollView
-              contentContainerStyle={styles.gridContent}
-              showsVerticalScrollIndicator={false}
-              bounces={false}
-            >
-              {renderTile("local", displayName, localStream, true)}
-              {remotePeers.map((peer) =>
-                renderTile(peer.peerId, peer.displayName, peer.stream, false),
+            <>
+              {hasSpotlight ? (
+                <View style={styles.spotlightWrap}>
+                  <View style={styles.spotlightHeader}>
+                    <Text style={styles.spotlightTitle} numberOfLines={1}>
+                      {spotlightLabel}
+                    </Text>
+                    <Pressable
+                      style={styles.spotlightClose}
+                      onPress={() => setSelectedTileId(null)}
+                    >
+                      <X size={14} color={Colors.text} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.spotlightTile}>
+                    {spotlightStream && (!spotlightIsLocal || isCamOn) ? (
+                      <RTCView
+                        streamURL={spotlightStream.toURL()}
+                        style={styles.spotlightVideo}
+                        objectFit={selectedTileId?.endsWith(":screen") ? "contain" : "cover"}
+                        mirror={spotlightIsLocal}
+                      />
+                    ) : (
+                      <View style={styles.tileFallback}>
+                        <View style={styles.tileAvatar}>
+                          <Text style={styles.tileAvatarText}>
+                            {spotlightLabel.slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                  <ScrollView
+                    horizontal
+                    style={styles.spotlightRail}
+                    contentContainerStyle={styles.spotlightRailContent}
+                    showsHorizontalScrollIndicator={false}
+                    bounces={false}
+                  >
+                    {!spotlightPeerIds.has("local")
+                      ? [renderSelectableTile("local", displayName, localStream, true)]
+                      : []}
+                    {remoteTiles
+                      .filter((peer) => !spotlightPeerIds.has(peer.tileId))
+                      .map((peer) =>
+                        renderSelectableTile(
+                          peer.tileId,
+                          peer.label,
+                          peer.stream,
+                          false,
+                        ),
+                      )}
+                  </ScrollView>
+                </View>
+              ) : (
+                <ScrollView
+                  contentContainerStyle={styles.gridContent}
+                  showsVerticalScrollIndicator={false}
+                  bounces={false}
+                >
+                  {renderSelectableTile("local", displayName, localStream, true)}
+                  {remoteTiles.map((peer) =>
+                    renderSelectableTile(peer.tileId, peer.label, peer.stream, false),
+                  )}
+                </ScrollView>
               )}
-            </ScrollView>
+            </>
           )}
         </View>
 
@@ -892,22 +1360,26 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           <Pressable
             style={[styles.controlButton, !isMicOn && styles.controlButtonMuted]}
             onPress={handleToggleMic}
+            disabled={micLocked}
           >
             {isMicOn ? (
               <Mic size={20} color="#fff" />
             ) : (
               <MicOff size={20} color="#fff" />
             )}
+            {micLocked ? <Lock size={10} color="#fff" style={styles.controlLock} /> : null}
           </Pressable>
           <Pressable
             style={[styles.controlButton, !isCamOn && styles.controlButtonMuted]}
             onPress={handleToggleCam}
+            disabled={camLocked}
           >
             {isCamOn ? (
               <CameraIcon size={20} color="#fff" />
             ) : (
               <CameraOff size={20} color="#fff" />
             )}
+            {camLocked ? <Lock size={10} color="#fff" style={styles.controlLock} /> : null}
           </Pressable>
           <Pressable style={styles.controlButton} onPress={handleSwitchCamera}>
             <RefreshCcw size={20} color="#fff" />
@@ -1011,8 +1483,82 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                             ? `${isMicOn ? "Mikrofon on" : "Mikrofon off"} · ${
                                 isCamOn ? "Kamera on" : "Kamera off"
                               }`
-                            : participant.connectionState || "Ulangan"}
+                            : `${participant.audioMuted ? "Mikrofon off" : "Mikrofon on"} · ${
+                                participant.videoMuted ? "Kamera off" : "Kamera on"
+                              }${participant.connectionState ? ` · ${participant.connectionState}` : ""}`}
                         </Text>
+                      </View>
+                      <View style={styles.memberIcons}>
+                        {participant.isLocal ? (
+                          <>
+                            {isMicOn ? (
+                              <Mic size={13} color={Colors.accent} />
+                            ) : (
+                              <MicOff size={13} color={Colors.danger} />
+                            )}
+                            {isCamOn ? (
+                              <Video size={13} color={Colors.accent} />
+                            ) : (
+                              <CameraOff size={13} color={Colors.danger} />
+                            )}
+                          </>
+                        ) : isCreator ? (
+                          <>
+                            <Pressable
+                              style={[
+                                styles.memberActionButton,
+                                participant.audioMuted
+                                  ? styles.memberActionButtonDanger
+                                  : styles.memberActionButtonSuccess,
+                              ]}
+                              onPress={() =>
+                                handleForceMuteMic(participant.id, !Boolean(participant.audioMuted))
+                              }
+                            >
+                              {participant.audioMuted ? (
+                                <Mic size={14} color="#fff" />
+                              ) : (
+                                <MicOff size={14} color="#fff" />
+                              )}
+                            </Pressable>
+                            <Pressable
+                              style={[
+                                styles.memberActionButton,
+                                participant.videoMuted
+                                  ? styles.memberActionButtonDanger
+                                  : styles.memberActionButtonSuccess,
+                              ]}
+                              onPress={() =>
+                                handleForceMuteCam(participant.id, !Boolean(participant.videoMuted))
+                              }
+                            >
+                              {participant.videoMuted ? (
+                                <Video size={14} color="#fff" />
+                              ) : (
+                                <CameraOff size={14} color="#fff" />
+                              )}
+                            </Pressable>
+                            <Pressable
+                              style={[styles.memberActionButton, styles.memberActionButtonDanger]}
+                              onPress={() => handleKickPeer(participant.id)}
+                            >
+                              <UserMinus size={14} color="#fff" />
+                            </Pressable>
+                          </>
+                        ) : (
+                          <>
+                            {participant.audioMuted ? (
+                              <MicOff size={13} color={Colors.danger} />
+                            ) : (
+                              <Mic size={13} color={Colors.accent} />
+                            )}
+                            {participant.videoMuted ? (
+                              <CameraOff size={13} color={Colors.danger} />
+                            ) : (
+                              <Video size={13} color={Colors.accent} />
+                            )}
+                          </>
+                        )}
                       </View>
                     </View>
                   ))}
@@ -1088,6 +1634,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  qualityBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "rgba(67,181,129,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(67,181,129,0.28)",
+  },
+  qualityBadgeText: {
+    color: Colors.accent,
+    fontSize: 11,
+    fontWeight: "800",
+  },
   headerButton: {
     width: 40,
     height: 40,
@@ -1131,6 +1690,52 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
+  },
+  spotlightWrap: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 8,
+  },
+  spotlightHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+    gap: 12,
+  },
+  spotlightTitle: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  spotlightClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  spotlightTile: {
+    flex: 1,
+    borderRadius: 24,
+    overflow: "hidden",
+    backgroundColor: "#161a22",
+  },
+  spotlightVideo: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#000",
+  },
+  spotlightRail: {
+    flexGrow: 0,
+    marginTop: 12,
+  },
+  spotlightRailContent: {
+    gap: 10,
+    paddingRight: 6,
   },
   centerState: {
     flex: 1,
@@ -1251,6 +1856,11 @@ const styles = StyleSheet.create({
   },
   controlButtonDanger: {
     backgroundColor: Colors.danger,
+  },
+  controlLock: {
+    position: "absolute",
+    right: 10,
+    bottom: 10,
   },
   drawerOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1428,5 +2038,24 @@ const styles = StyleSheet.create({
     marginTop: 3,
     color: "rgba(255,255,255,0.62)",
     fontSize: 12,
+  },
+  memberIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  memberActionButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  memberActionButtonSuccess: {
+    backgroundColor: "rgba(67,181,129,0.18)",
+  },
+  memberActionButtonDanger: {
+    backgroundColor: "rgba(240,71,71,0.18)",
   },
 });

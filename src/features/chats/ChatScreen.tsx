@@ -4,7 +4,6 @@ import {
   Alert,
   Animated,
   Keyboard,
-  Linking,
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -63,9 +62,13 @@ import {
 import { setActiveNotificationChatId } from "../../lib/notifications";
 import { realtime } from "../../lib/realtime";
 import type { RootStackParamList } from "../../navigation/types";
+import {
+  openJammAwareLink,
+  openJammProfileMention,
+} from "../../navigation/internalLinks";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
-import type { Message, User } from "../../types/entities";
+import type { ChatSummary, Message, User } from "../../types/entities";
 import {
   buildMessageItems,
   getChatAvatarUri,
@@ -107,6 +110,26 @@ const getMessageDeliveryStatus = (message: Message) => {
   }
 
   return normalizeReadByIds(message.readBy || []).length > 0 ? "read" : "sent";
+};
+
+const upsertChatSummary = (current: ChatSummary[], nextChat: ChatSummary) => {
+  const nextChatId = getEntityId(nextChat);
+  if (!nextChatId) {
+    return current;
+  }
+
+  const existingIndex = current.findIndex((chat) => getEntityId(chat) === nextChatId);
+  if (existingIndex === -1) {
+    return [nextChat, ...current];
+  }
+
+  const nextChats = [...current];
+  nextChats.splice(existingIndex, 1);
+  nextChats.unshift({
+    ...current[existingIndex],
+    ...nextChat,
+  });
+  return nextChats;
 };
 
 const isMatchingOptimisticMessage = (
@@ -320,7 +343,7 @@ type MessageContentPart =
 
 function parseMessageContent(content: string): MessageContentPart[] {
   const mentionRegex = /@(\w+)/g;
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const urlRegex = /((?:https?:\/\/[^\s]+)|(?:(?:www\.)?jamm\.uz(?:\/[^\s]*)?))/gi;
   const matches: Array<
     | {
         type: "mention";
@@ -422,7 +445,7 @@ function MessageRichText({
               selectable={selectable}
               onLongPress={onLongPress}
               onPress={() => {
-                void Linking.openURL(part.url).catch(() => {
+                void openJammAwareLink(part.url).catch(() => {
                   Alert.alert("Link ochilmadi", part.url);
                 });
               }}
@@ -695,6 +718,11 @@ export function ChatScreen({ navigation, route }: Props) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() => realtime.getOnlineUserIds());
+  const [outgoingCall, setOutgoingCall] = useState<{
+    roomId: string;
+    remoteUser: User;
+    chatId: string;
+  } | null>(null);
   const listRef = useRef<FlashListRef<MessageListItem>>(null);
   const composerInputRef = useRef<NativeTextInput>(null);
   const composerFocusedRef = useRef(false);
@@ -1226,10 +1254,111 @@ export function ChatScreen({ navigation, route }: Props) {
     setInfoDrawerUserId(getEntityId(member));
   };
 
+  const handleOpenPrivateChatWithMember = useCallback(
+    async (member: User) => {
+      const memberId = getEntityId(member);
+      if (!memberId) {
+        return;
+      }
+
+      if (memberId === currentUserId) {
+        handleOpenMemberInfo(member);
+        return;
+      }
+
+      try {
+        await Haptics.selectionAsync();
+        const privateChat = await chatsApi.createChat({
+          isGroup: false,
+          memberIds: [memberId],
+        });
+
+        queryClient.setQueryData<ChatSummary[]>(["chats"], (current) =>
+          upsertChatSummary(Array.isArray(current) ? current : [], privateChat),
+        );
+        await queryClient.invalidateQueries({ queryKey: ["chats"] });
+
+        dismissKeyboard();
+        setAvatarPreviewOpen(false);
+        setInfoDrawerOpen(false);
+        setInfoDrawerUserId(null);
+
+        navigation.push("ChatRoom", {
+          chatId: getEntityId(privateChat),
+          title: getChatTitle(privateChat, currentUserId),
+          isGroup: false,
+        });
+      } catch (error) {
+        Alert.alert(
+          "Private chat ochilmadi",
+          error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+        );
+      }
+    },
+    [currentUserId, navigation, queryClient],
+  );
+
   const handleBackToGroupInfo = () => {
     dismissKeyboard();
     setInfoDrawerUserId(null);
   };
+
+  useEffect(() => {
+    if (!outgoingCall) {
+      return;
+    }
+
+    const subscriptions = [
+      realtime.onPresenceEvent("call:accepted", (payload) => {
+        if (String(payload?.roomId || "") !== outgoingCall.roomId) {
+          return;
+        }
+
+        const remoteUser = outgoingCall.remoteUser;
+        setOutgoingCall(null);
+        navigation.navigate("PrivateMeet", {
+          chatId: outgoingCall.chatId,
+          roomId: outgoingCall.roomId,
+          title: getDirectChatUserLabel(remoteUser),
+          isCaller: true,
+          remoteUser,
+          requestAlreadySent: true,
+        });
+      }),
+      realtime.onPresenceEvent("call:rejected", (payload) => {
+        if (String(payload?.roomId || "") !== outgoingCall.roomId) {
+          return;
+        }
+
+        setOutgoingCall(null);
+        Alert.alert("Private meet", "Qo'ng'iroq rad etildi");
+      }),
+      realtime.onPresenceEvent("call:cancelled", (payload) => {
+        if (String(payload?.roomId || "") !== outgoingCall.roomId) {
+          return;
+        }
+
+        setOutgoingCall(null);
+      }),
+    ];
+
+    return () => {
+      subscriptions.forEach((unsubscribe) => unsubscribe?.());
+    };
+  }, [navigation, outgoingCall]);
+
+  useEffect(() => {
+    return () => {
+      if (!outgoingCall) {
+        return;
+      }
+
+      const remoteUserId = getEntityId(outgoingCall.remoteUser);
+      if (remoteUserId) {
+        realtime.emitCallCancel(remoteUserId, outgoingCall.roomId);
+      }
+    };
+  }, [outgoingCall]);
 
   const infoPagePanResponder = useMemo(
     () =>
@@ -1323,19 +1452,18 @@ export function ChatScreen({ navigation, route }: Props) {
     try {
       const chatId = getEntityId(currentChat);
       const activeCall = await chatsApi.getCallStatus(chatId);
-      const hasActiveCall = Boolean(activeCall.active && activeCall.roomId);
-      const result = hasActiveCall
+      const canReuseOwnActiveCall =
+        Boolean(activeCall.active && activeCall.roomId) &&
+        String(activeCall.creatorId || "") === currentUserId;
+      const result = canReuseOwnActiveCall
         ? { roomId: String(activeCall.roomId || "") }
         : await chatsApi.startVideoCall(chatId);
 
-      navigation.navigate("PrivateMeet", {
-        chatId,
+      realtime.emitCallRequest(getEntityId(otherMember), result.roomId, "video");
+      setOutgoingCall({
         roomId: result.roomId,
-        title: getDirectChatUserLabel(otherMember),
-        isCaller: hasActiveCall
-          ? String(activeCall.creatorId || "") === currentUserId
-          : true,
         remoteUser: otherMember,
+        chatId,
       });
     } catch (error) {
       Alert.alert(
@@ -1344,6 +1472,23 @@ export function ChatScreen({ navigation, route }: Props) {
       );
     }
   };
+
+  const handleCancelOutgoingCall = useCallback(async () => {
+    if (!outgoingCall) {
+      return;
+    }
+
+    const remoteUserId = getEntityId(outgoingCall.remoteUser);
+    if (remoteUserId) {
+      realtime.emitCallCancel(remoteUserId, outgoingCall.roomId);
+    }
+    try {
+      await chatsApi.endVideoCall(outgoingCall.chatId);
+    } catch {
+      // noop
+    }
+    setOutgoingCall(null);
+  }, [outgoingCall]);
 
   const handleDeleteOrLeave = () => {
     if (!currentChat) return;
@@ -1524,21 +1669,9 @@ export function ChatScreen({ navigation, route }: Props) {
   };
 
   const handleMentionPress = (username: string) => {
-    const matchedUser =
-      knownUsers.find((member) => member.username?.toLowerCase() === username.toLowerCase()) || null;
-
-    if (matchedUser && currentChat?.isGroup) {
-      setInfoDrawerUserId(getEntityId(matchedUser));
-      setInfoDrawerOpen(true);
-      return;
-    }
-
-    Alert.alert(
-      `@${username}`,
-      matchedUser
-        ? `${matchedUser.nickname || matchedUser.username}\nMention aniqlandi.`
-        : "Mention aniqlandi.",
-    );
+    void openJammProfileMention(username).catch(() => {
+      Alert.alert("Profil ochilmadi", `@${username}`);
+    });
   };
 
   const clearComposerMode = () => {
@@ -2700,7 +2833,7 @@ export function ChatScreen({ navigation, route }: Props) {
                               <Pressable
                                 key={memberId}
                                 style={styles.memberRow}
-                                onPress={() => handleOpenMemberInfo(member)}
+                                onPress={() => void handleOpenPrivateChatWithMember(member)}
                               >
                                 <View style={styles.memberRowMain}>
                                   <Avatar
@@ -2748,6 +2881,43 @@ export function ChatScreen({ navigation, route }: Props) {
           </Animated.View>
         </View>
       ) : null}
+
+      <Modal
+        visible={Boolean(outgoingCall)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          void handleCancelOutgoingCall();
+        }}
+      >
+        <View style={styles.callingOverlay}>
+          <View style={styles.callingCard}>
+            <Avatar
+              label={getDirectChatUserLabel(outgoingCall?.remoteUser) || "User"}
+              uri={outgoingCall?.remoteUser?.avatar}
+              size={72}
+              shape="circle"
+            />
+            <Text style={styles.callingTitle}>
+              {getDirectChatUserLabel(outgoingCall?.remoteUser) || "User"}
+            </Text>
+            <Text style={styles.callingSubtitle}>Calling...</Text>
+            <View style={styles.callingDotsRow}>
+              <View style={styles.callingDot} />
+              <View style={styles.callingDot} />
+              <View style={styles.callingDot} />
+            </View>
+            <Pressable
+              style={styles.callingCancelButton}
+              onPress={() => {
+                void handleCancelOutgoingCall();
+              }}
+            >
+              <Text style={styles.callingCancelButtonText}>Bekor qilish</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={avatarPreviewOpen}
@@ -3314,6 +3484,66 @@ const styles = StyleSheet.create({
     color: Colors.mutedText,
     fontSize: 14,
     textAlign: "center",
+  },
+  callingOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(8, 11, 18, 0.76)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  callingCard: {
+    width: "100%",
+    maxWidth: 360,
+    borderRadius: 28,
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 24,
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "#131722",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  callingTitle: {
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  callingSubtitle: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 14,
+    fontWeight: "500",
+    textAlign: "center",
+  },
+  callingDotsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  callingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.primary,
+  },
+  callingCancelButton: {
+    minWidth: 150,
+    height: 46,
+    borderRadius: 23,
+    paddingHorizontal: 20,
+    backgroundColor: Colors.danger,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  callingCancelButtonText: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
   },
   avatarPreviewOverlay: {
     flex: 1,

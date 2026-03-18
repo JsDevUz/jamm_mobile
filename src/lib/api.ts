@@ -145,7 +145,7 @@ async function request<T>(
   const appUnlockToken = await getAppUnlockToken();
   const isFormDataBody =
     typeof FormData !== "undefined" && init?.body instanceof FormData;
-  const isAppLockEnabled = Boolean(authUser?.appLockEnabled);
+  const isAppLockEnabled = authUser?.appLockEnabled === true;
   const isAppLocked =
     isAppLockEnabled &&
     authUser?.appLockSessionUnlocked === false &&

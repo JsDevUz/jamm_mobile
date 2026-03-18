@@ -78,7 +78,7 @@ const formatDuration = (elapsedSeconds: number) => {
 };
 
 export function PrivateMeetScreen({ navigation, route }: Props) {
-  const { roomId, remoteUser, isCaller, title, chatId } = route.params;
+  const { roomId, remoteUser, isCaller, title, chatId, requestAlreadySent } = route.params;
   const currentUser = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(currentUser);
   const remoteUserId = getEntityId(remoteUser);
@@ -107,7 +107,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const pendingKnockPeerIdRef = useRef<string | null>(null);
   const remoteAcceptedRef = useRef(!isCaller);
   const hangupStartedRef = useRef(false);
-  const callRequestSentRef = useRef(false);
+  const callRequestSentRef = useRef(Boolean(requestAlreadySent));
   const callConnectedAtRef = useRef<number | null>(null);
 
   useEffect(() => {

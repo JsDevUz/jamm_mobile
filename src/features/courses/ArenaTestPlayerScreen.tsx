@@ -87,16 +87,6 @@ export function ArenaTestPlayerScreen({ navigation, route }: Props) {
   const canLeaveScreen = !test?._id || Boolean(result);
 
   const handleReturnToQuizList = useCallback(() => {
-    if (Platform.OS === "web") {
-      navigation.navigate("ArenaQuizList");
-      return;
-    }
-
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-      return;
-    }
-
     navigation.navigate("ArenaQuizList");
   }, [navigation]);
 

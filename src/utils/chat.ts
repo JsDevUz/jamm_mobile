@@ -94,6 +94,10 @@ export const getChatTitle = (chat: ChatSummary, currentUserId: string) => {
 };
 
 export const getChatAvatarUri = (chat: ChatSummary, currentUserId: string) => {
+  if (chat.isGroup) {
+    return chat.avatar && chat.avatar.length > 1 ? chat.avatar : null;
+  }
+
   if (chat.avatar && chat.avatar.length > 1) {
     return chat.avatar;
   }

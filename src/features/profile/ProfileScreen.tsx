@@ -1276,12 +1276,8 @@ export function ProfileScreen({ navigation, route }: Props) {
             icon={<MessageSquare size={26} color={Colors.mutedText} />}
             title="Hali gurung yo'q"
             description={
-              isViewingOwnProfile
-                ? "Birinchi gurungingizni shu yerdan yozishingiz mumkin."
-                : "Bu foydalanuvchi hali gurung joylamagan."
+                 "Birinchi gurungingizni yozishingiz mumkin."
             }
-            actionLabel={isViewingOwnProfile ? "Yangi gurung" : undefined}
-            onAction={isViewingOwnProfile ? () => setComposerOpen(true) : undefined}
           />
         ) : (
           <ScrollView
@@ -1894,15 +1890,7 @@ export function ProfileScreen({ navigation, route }: Props) {
 
       </View>
 
-      <ProfilePostComposerModal
-        visible={composerOpen}
-        initialContent={editingPost?.content || ""}
-        onClose={() => {
-          setComposerOpen(false);
-          setEditingPost(null);
-        }}
-        onSubmit={handleCreateOrUpdatePost}
-      />
+     
 
       <ProfileEditModal
         visible={isViewingOwnProfile && profileEditOpen}

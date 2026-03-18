@@ -38,6 +38,8 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 10,
     backgroundColor: Colors.surface,
+    borderBottomColor: Colors.border,
+    borderBottomWidth: 1,
   },
   searchShell: {
     flex: 1,

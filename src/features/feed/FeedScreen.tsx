@@ -12,7 +12,6 @@ import {
   Animated,
   Keyboard,
   KeyboardAvoidingView,
-  Linking,
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -72,6 +71,10 @@ import {
   saveFeedLastActiveTab,
   saveFeedScrollPosition,
 } from "../../lib/feed-cache";
+import {
+  openJammAwareLink,
+  openJammProfileMention,
+} from "../../navigation/internalLinks";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -125,11 +128,12 @@ type FeedInlineToken =
   | { type: "em"; value: string }
   | { type: "underline"; value: string }
   | { type: "code"; value: string }
+  | { type: "mention"; value: string; username: string }
   | { type: "link"; value: string; href: string };
 
 function parseFeedInline(text: string): FeedInlineToken[] {
   const pattern =
-    /(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|_([^_]+)_)/g;
+    /(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|_([^_]+)_|@(\w+))/g;
   const tokens: FeedInlineToken[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -153,6 +157,12 @@ function parseFeedInline(text: string): FeedInlineToken[] {
       tokens.push({ type: "underline", value: match[6] });
     } else if (match[7]) {
       tokens.push({ type: "em", value: match[7] });
+    } else if (match[8]) {
+      tokens.push({
+        type: "mention",
+        value: `@${match[8]}`,
+        username: match[8],
+      });
     }
 
     lastIndex = match.index + match[0].length;
@@ -217,8 +227,24 @@ function FeedMarkdownText({
               key={`link-${index}`}
               style={styles.feedMarkdownLink}
               onPress={() => {
-                void Linking.openURL(token.href).catch(() => {
+                void openJammAwareLink(token.href).catch(() => {
                   Alert.alert("Link ochilmadi", token.href);
+                });
+              }}
+            >
+              {token.value}
+            </Text>
+          );
+        }
+
+        if (token.type === "mention") {
+          return (
+            <Text
+              key={`mention-${index}`}
+              style={styles.feedMarkdownLink}
+              onPress={() => {
+                void openJammProfileMention(token.username).catch(() => {
+                  Alert.alert("Profil ochilmadi", token.value);
                 });
               }}
             >

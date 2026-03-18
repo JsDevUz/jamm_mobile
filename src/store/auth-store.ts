@@ -35,14 +35,29 @@ type AuthState = {
 let bootstrapPromise: Promise<User | null> | null = null;
 const OFFLINE_SESSION_USER: User = {};
 
+const normalizeAuthUser = (user: User | null | undefined): User | null => {
+  if (!user) {
+    return null;
+  }
+
+  const appLockEnabled = user.appLockEnabled === true;
+
+  return {
+    ...user,
+    appLockEnabled,
+    appLockSessionUnlocked: appLockEnabled ? user.appLockSessionUnlocked !== false : true,
+  };
+};
+
 const useAuthStore = create<AuthState>((set) => ({
   user: null,
   initialized: false,
   bootstrapping: false,
   setUser: (user) => {
-    void setStoredAuthUser(user ?? null);
+    const normalizedUser = normalizeAuthUser(user);
+    void setStoredAuthUser(normalizedUser);
     set({
-      user,
+      user: normalizedUser,
       initialized: true,
       bootstrapping: false,
     });
@@ -64,7 +79,7 @@ const useAuthStore = create<AuthState>((set) => ({
       return null;
     }
 
-    const cachedUser = await getStoredAuthUser();
+    const cachedUser = normalizeAuthUser(await getStoredAuthUser());
     const appUnlockToken = await getAppUnlockToken();
     const fallbackUser =
       cachedUser && cachedUser.appLockEnabled && !appUnlockToken
@@ -87,13 +102,14 @@ const useAuthStore = create<AuthState>((set) => ({
     bootstrapPromise = authApi
       .restoreSession()
       .then(async (response) => {
-        await setStoredAuthUser(response.user);
+        const normalizedUser = normalizeAuthUser(response.user);
+        await setStoredAuthUser(normalizedUser);
         set({
-          user: response.user,
+          user: normalizedUser,
           initialized: true,
           bootstrapping: false,
         });
-        return response.user;
+        return normalizedUser;
       })
       .catch(async (error) => {
         if (error instanceof ApiError && error.status === 401) {
@@ -128,16 +144,17 @@ const useAuthStore = create<AuthState>((set) => ({
   login: async (payload) => {
     await setAppUnlockToken(null);
     const response = await authApi.login(payload);
+    const normalizedUser = normalizeAuthUser(response.user);
     if (response.access_token) {
       await setAuthToken(response.access_token);
     }
-    await setStoredAuthUser(response.user);
+    await setStoredAuthUser(normalizedUser);
     set({
-      user: response.user,
+      user: normalizedUser,
       initialized: true,
       bootstrapping: false,
     });
-    return response.user;
+    return normalizedUser as User;
   },
   signup: async (payload) => {
     const response = await authApi.signup(payload);

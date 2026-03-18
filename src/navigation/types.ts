@@ -82,6 +82,7 @@ export type RootStackParamList = {
     title: string;
     isCaller: boolean;
     remoteUser: User;
+    requestAlreadySent?: boolean;
   };
   GroupMeet: {
     roomId: string;

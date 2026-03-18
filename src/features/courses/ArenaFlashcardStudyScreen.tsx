@@ -41,6 +41,7 @@ import {
 } from "lucide-react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { arenaApi } from "../../lib/api";
+import { getFlashcardDeckCache, upsertFlashcardDeckCache } from "../../lib/flashcard-cache";
 import type { RootStackParamList } from "../../navigation/types";
 import { Colors } from "../../theme/colors";
 import type {
@@ -173,19 +174,35 @@ function buildOptions(
 function speakFlashcardText(text: string) {
   const value = String(text || "").trim();
   if (!value) {
-    return;
+    return Promise.resolve(false);
   }
 
   const isArabic = /[\u0600-\u06FF]/.test(value);
   SpeechModule?.stop?.();
 
   if (SpeechModule?.speak) {
-    SpeechModule.speak(value, {
-      language: isArabic ? "ar-SA" : "en-US",
-      rate: isArabic ? 0.92 : 0.96,
-      pitch: 1,
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finalize = (result: boolean) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(result);
+      };
+
+      SpeechModule.speak?.(value, {
+        language: isArabic ? "ar-SA" : "en-US",
+        rate: isArabic ? 0.92 : 0.96,
+        pitch: 1,
+        onDone: () => finalize(true),
+        onStopped: () => finalize(false),
+        onError: () => finalize(false),
+      });
     });
   }
+
+  return Promise.resolve(false);
 }
 
 function StudyFace({
@@ -294,6 +311,7 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
   const [classicIndex, setClassicIndex] = useState(0);
   const [classicShowBack, setClassicShowBack] = useState(false);
   const [classicRenderedBack, setClassicRenderedBack] = useState(false);
+  const [classicSpeakingSide, setClassicSpeakingSide] = useState<"prompt" | "answer" | null>(null);
   const [classicAnswers, setClassicAnswers] = useState<ClassicAnswer[]>([]);
   const [classicCompleted, setClassicCompleted] = useState(false);
   const [classicDragging, setClassicDragging] = useState(false);
@@ -387,6 +405,7 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
     if (seededDeck && Array.isArray(seededDeck.cards) && seededDeck.cards.length > 0) {
       setDeck(seededDeck);
       setLoading(false);
+      void upsertFlashcardDeckCache(seededDeck);
       return () => {
         active = false;
       };
@@ -401,13 +420,22 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
 
     void (async () => {
       setLoading(true);
+      let hadLocalDeck = false;
       try {
+        const cachedDeck = await getFlashcardDeckCache(deckId);
+        if (active && cachedDeck?.cards?.length) {
+          setDeck(cachedDeck);
+          setLoading(false);
+          hadLocalDeck = true;
+        }
+
         const payload = await arenaApi.fetchFlashcardDeck(deckId);
         if (active) {
           setDeck(payload);
         }
+        await upsertFlashcardDeckCache(payload);
       } catch (error) {
-        if (active) {
+        if (active && !hadLocalDeck) {
           Alert.alert(
             "Lugat yuklanmadi",
             error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
@@ -459,6 +487,7 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
     classicDragValueRef.current = 0;
     classicRenderedBackRef.current = false;
     setClassicRenderedBack(false);
+    setClassicSpeakingSide(null);
     setClassicDragAmount(0);
     setClassicDragging(false);
     setClassicExitDirection(null);
@@ -625,36 +654,32 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
     outputRange: [0.95, 1, 0.95],
   });
   const classicFlipRotate = classicFlipProgress.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: ["0deg", "90deg", "0deg"],
+    inputRange: [0, 1],
+    outputRange: ["0deg", "180deg"],
   });
 
   const goBackToList = useCallback(() => {
     SpeechModule?.stop?.();
-
-    if (Platform.OS === "web") {
-      navigation.navigate("ArenaFlashcardList");
-      return;
-    }
-
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-      return;
-    }
-
     navigation.navigate("ArenaFlashcardList");
   }, [navigation]);
 
   const speakClassicCard = useCallback(
-    (side: "prompt" | "answer") => {
+    async (side: "prompt" | "answer") => {
       const currentCard = classicQueue[classicIndex];
-      if (!currentCard) {
+      if (!currentCard || classicSpeakingSide) {
         return;
       }
 
-      speakFlashcardText(side === "answer" ? getAnswerText(currentCard) : getPromptText(currentCard));
+      setClassicSpeakingSide(side);
+      try {
+        await speakFlashcardText(
+          side === "answer" ? getAnswerText(currentCard) : getPromptText(currentCard),
+        );
+      } finally {
+        setClassicSpeakingSide((current) => (current === side ? null : current));
+      }
     },
-    [classicIndex, classicQueue, getAnswerText, getPromptText],
+    [classicIndex, classicQueue, classicSpeakingSide, getAnswerText, getPromptText],
   );
 
   const handleReviewRating = async (rating: ReviewRating) => {
@@ -1131,7 +1156,6 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                             >
                               <View style={styles.classicFlipLayer}>
                                 <View
-                                  pointerEvents="auto"
                                   style={[
                                     styles.classicCardFace,
                                     classicRenderedBack
@@ -1139,34 +1163,53 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                                       : styles.classicCardFaceFront,
                                   ]}
                                 >
-                                  <View style={styles.classicCardToolbar}>
+                                  <View
+                                    style={
+                                      classicRenderedBack
+                                        ? styles.classicCardFaceMirrorFix
+                                        : {flex:1}
+                                    }
+                                  >
+                                    <View style={styles.classicCardToolbar}>
                                     <Pressable
                                       style={styles.classicToolbarButton}
                                       onPress={() =>
-                                        speakClassicCard(classicRenderedBack ? "answer" : "prompt")
+                                        speakClassicCard(
+                                          classicRenderedBack ? "answer" : "prompt",
+                                        )
                                       }
+                                      disabled={Boolean(classicSpeakingSide)}
                                     >
-                                      <Volume2 size={20} color={Colors.text} />
+                                      {classicSpeakingSide ===
+                                      (classicRenderedBack ? "answer" : "prompt") ? (
+                                        <ActivityIndicator size="small" color={Colors.text} />
+                                      ) : (
+                                        <Volume2 size={20} color={Colors.text} />
+                                      )}
                                     </Pressable>
-                                  </View>
-                                  <View style={styles.classicCardBody}>
-                                    {classicVisibleImage ? (
-                                      <Image
-                                        source={{ uri: classicVisibleImage }}
-                                        style={styles.classicCardImage}
-                                        contentFit="contain"
-                                      />
-                                    ) : null}
-                                    <Text
-                                      style={[
-                                        styles.classicCardWord,
-                                        {
-                                          opacity: Math.max(0.34, 1 - classicSwipeProgress * 0.36),
-                                        },
-                                      ]}
-                                    >
-                                      {classicVisibleText}
-                                    </Text>
+                                    </View>
+                                    <View style={styles.classicCardBody}>
+                                      {classicVisibleImage ? (
+                                        <Image
+                                          source={{ uri: classicVisibleImage }}
+                                          style={styles.classicCardImage}
+                                          contentFit="contain"
+                                        />
+                                      ) : null}
+                                      <Text
+                                        style={[
+                                          styles.classicCardWord,
+                                          {
+                                            opacity: Math.max(
+                                              0.34,
+                                              1 - classicSwipeProgress * 0.36,
+                                            ),
+                                          },
+                                        ]}
+                                      >
+                                        {classicVisibleText}
+                                      </Text>
+                                    </View>
                                   </View>
                                 </View>
                               </View>
@@ -2139,7 +2182,10 @@ const styles = StyleSheet.create({
   },
   classicCardFaceBack: {
     backgroundColor: "#1E2633",
-    transform: [{ rotateY: "180deg" }],
+  },
+  classicCardFaceMirrorFix: {
+    flex: 1,
+    transform: [{ scaleX: -1 }],
   },
   classicCardFaceHidden: {
     opacity: 0,

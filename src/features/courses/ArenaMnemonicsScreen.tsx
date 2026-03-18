@@ -341,17 +341,10 @@ export function ArenaMnemonicsScreen({ navigation }: Props) {
       return;
     }
 
-    if (Platform.OS === "web") {
-      navigation.navigate("MainTabs", { screen: "Courses" });
-      return;
-    }
-
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-      return;
-    }
-
-    navigation.navigate("MainTabs", { screen: "Courses" });
+    navigation.navigate("MainTabs", {
+      screen: "Courses",
+      params: { viewMode: "arena" },
+    });
   }, [isModalOpen, navigation, resetTrainingState]);
 
   const createTrainingItems = useCallback(

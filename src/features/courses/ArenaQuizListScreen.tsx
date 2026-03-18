@@ -93,17 +93,10 @@ export function ArenaQuizListScreen({ navigation }: Props) {
   );
 
   const handleBack = useCallback(() => {
-    if (Platform.OS === "web") {
-      navigation.navigate("MainTabs", { screen: "Courses" });
-      return;
-    }
-
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-      return;
-    }
-
-    navigation.navigate("MainTabs", { screen: "Courses" });
+    navigation.navigate("MainTabs", {
+      screen: "Courses",
+      params: { viewMode: "arena" },
+    });
   }, [navigation]);
 
   const activeMenuTest = menuState?.test || null;
@@ -479,17 +472,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
+    gap: 8,
   },
   headerSlot: {
-    position: "absolute",
-    left: 20,
-    top: 10,
-    minWidth: 40,
+    width: 48,
     alignItems: "flex-start",
+    justifyContent: "center",
   },
   headerSlotEnd: {
-    left: undefined,
-    right: 20,
     alignItems: "flex-end",
   },
   headerButton: {
@@ -503,18 +493,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headerCenter: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
+    flexDirection: "row",
+    gap: 6,
   },
   headerTitle: {
+    flex: 1,
+    textAlign: "center",
     color: Colors.text,
-    fontSize: 24,
-    fontWeight: "800",
+    fontSize: 20,
+    fontWeight: "700",
   },
   headerCount: {
     color: Colors.mutedText,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "600",
   },
   listContent: {

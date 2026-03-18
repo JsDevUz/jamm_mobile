@@ -72,11 +72,18 @@ import { API_BASE_URL, APP_BASE_URL } from "../../config/env";
 import { APP_LIMITS } from "../../constants/appLimits";
 import { arenaApi, coursesApi } from "../../lib/api";
 import {
+  getCourseDetailCache,
+  loadCourseListCache,
+  replaceCourseListCache,
+  upsertCourseDetailCache,
+} from "../../lib/course-cache";
+import {
   downloadOfflineLessonPlayback,
   getOfflineLessonPlayback,
   removeOfflineLessonPlayback,
   type OfflineLessonPlayback,
 } from "../../lib/secure-course-video-cache";
+import { openJammAwareLink } from "../../navigation/internalLinks";
 import type { MainTabScreenProps, RootStackParamList } from "../../navigation/types";
 import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
 import useAuthStore from "../../store/auth-store";
@@ -906,6 +913,33 @@ function CoursesScreenContent({
     refetchOnReconnect: false,
   });
 
+  useEffect(() => {
+    let active = true;
+
+    const hydrateCourseListCache = async () => {
+      const cachedResponse = await loadCourseListCache();
+      if (!active || !cachedResponse?.data?.length || queryClient.getQueryData(["courses"])) {
+        return;
+      }
+
+      queryClient.setQueryData(["courses"], cachedResponse);
+    };
+
+    void hydrateCourseListCache();
+
+    return () => {
+      active = false;
+    };
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (!coursesQuery.data?.data?.length) {
+      return;
+    }
+
+    void replaceCourseListCache(coursesQuery.data).catch(() => undefined);
+  }, [coursesQuery.data]);
+
   const handleRefreshCourses = useCallback(async () => {
     setListRefreshing(true);
     try {
@@ -920,6 +954,39 @@ function CoursesScreenContent({
     queryFn: () => coursesApi.getCourse(selectedCourseId || ""),
     enabled: Boolean(selectedCourseId),
   });
+
+  useEffect(() => {
+    let active = true;
+
+    const hydrateSelectedCourseCache = async () => {
+      if (!selectedCourseId) {
+        return;
+      }
+
+      const cachedCourse = await getCourseDetailCache(selectedCourseId);
+      if (!active || !cachedCourse) {
+        return;
+      }
+
+      queryClient.setQueryData(["course", selectedCourseId], (current: Course | undefined) =>
+        current ? { ...cachedCourse, ...current } : cachedCourse,
+      );
+    };
+
+    void hydrateSelectedCourseCache();
+
+    return () => {
+      active = false;
+    };
+  }, [queryClient, selectedCourseId]);
+
+  useEffect(() => {
+    if (!selectedCourseQuery.data) {
+      return;
+    }
+
+    void upsertCourseDetailCache(selectedCourseQuery.data).catch(() => undefined);
+  }, [selectedCourseQuery.data]);
 
   const createMutation = useMutation({
     mutationFn: (payload: {
@@ -2436,7 +2503,7 @@ function CoursesScreenContent({
       const testId = String(linkedTest.testId || linkedTest.resourceId || "");
       if (!testId) {
         if (linkedTest.url) {
-          await Linking.openURL(linkedTest.url).catch(() => {
+          await openJammAwareLink(linkedTest.url).catch(() => {
             Alert.alert("Mashq ochilmadi", linkedTest.url || "");
           });
         }
