@@ -170,7 +170,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const socketIdRef = useRef<string | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Record<string, RTCPeerConnection>>({});
+  const screenPeerConnectionsRef = useRef<Record<string, RTCPeerConnection>>({});
   const candidateQueuesRef = useRef<Record<string, RTCIceCandidate[]>>({});
+  const screenCandidateQueuesRef = useRef<Record<string, RTCIceCandidate[]>>({});
   const knownPeerNamesRef = useRef<Record<string, string>>({});
   const knownStreamsRef = useRef<Record<string, string>>({});
   const stalePeerTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -286,14 +288,20 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     delete knownPeerNamesRef.current[peerId];
     delete knownStreamsRef.current[peerId];
     delete candidateQueuesRef.current[peerId];
+    delete screenCandidateQueuesRef.current[peerId];
     peerConnectionsRef.current[peerId]?.close();
+    screenPeerConnectionsRef.current[peerId]?.close();
     delete peerConnectionsRef.current[peerId];
+    delete screenPeerConnectionsRef.current[peerId];
   }, []);
 
   const cleanupAllPeerConnections = useCallback(() => {
     Object.values(peerConnectionsRef.current).forEach((connection) => connection.close());
+    Object.values(screenPeerConnectionsRef.current).forEach((connection) => connection.close());
     peerConnectionsRef.current = {};
+    screenPeerConnectionsRef.current = {};
     candidateQueuesRef.current = {};
+    screenCandidateQueuesRef.current = {};
     knownPeerNamesRef.current = {};
     knownStreamsRef.current = {};
     Object.values(stalePeerTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
@@ -339,6 +347,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const removeRemoteScreenShare = useCallback((peerId: string) => {
     setRemoteScreenShares((previous) => previous.filter((peer) => peer.peerId !== peerId));
     setSelectedTileId((current) => (current === `${peerId}:screen` ? null : current));
+    delete screenCandidateQueuesRef.current[peerId];
+    screenPeerConnectionsRef.current[peerId]?.close();
+    delete screenPeerConnectionsRef.current[peerId];
   }, []);
 
   const flushQueuedCandidates = useCallback(async (peerId: string) => {
@@ -358,6 +369,25 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     }
 
     delete candidateQueuesRef.current[peerId];
+  }, []);
+
+  const flushQueuedScreenCandidates = useCallback(async (peerId: string) => {
+    const connection = screenPeerConnectionsRef.current[peerId];
+    const queuedCandidates = screenCandidateQueuesRef.current[peerId];
+
+    if (!connection || !queuedCandidates?.length || !connection.remoteDescription) {
+      return;
+    }
+
+    for (const candidate of queuedCandidates) {
+      try {
+        await connection.addIceCandidate(candidate);
+      } catch {
+        continue;
+      }
+    }
+
+    delete screenCandidateQueuesRef.current[peerId];
   }, []);
 
   const createPeerConnection = useCallback(
@@ -481,6 +511,72 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       return connection;
     },
     [removeRemotePeer, removeRemoteScreenShare, upsertRemotePeer, upsertRemoteScreenShare],
+  );
+
+  const createScreenPeerConnection = useCallback(
+    (peerId: string, peerDisplayName?: string) => {
+      const existingConnection = screenPeerConnectionsRef.current[peerId];
+      if (existingConnection) {
+        return existingConnection;
+      }
+
+      const connection = new RTCPeerConnection(ICE_CONFIG) as RTCPeerConnection & {
+        onicecandidate?: ((event: any) => void) | null;
+        ontrack?: ((event: any) => void) | null;
+        onconnectionstatechange?: (() => void) | null;
+      };
+
+      connection.onicecandidate = (event: any) => {
+        const currentSocket = socketRef.current;
+        if (!event.candidate || !currentSocket || peerId === currentSocket.id) return;
+
+        currentSocket.emit("screen-ice-candidate", {
+          targetId: peerId,
+          candidate: event.candidate,
+        });
+      };
+
+      connection.ontrack = (event: any) => {
+        const [stream] = event.streams;
+        if (!stream) return;
+
+        stream.getTracks().forEach((track: MediaStreamTrack) => {
+          track.onended = () => removeRemoteScreenShare(peerId);
+        });
+
+        upsertRemoteScreenShare(
+          peerId,
+          stream,
+          knownPeerNamesRef.current[peerId] || peerDisplayName || peerId,
+        );
+      };
+
+      connection.onconnectionstatechange = () => {
+        const nextState = connection.connectionState;
+        if (nextState === "failed" || nextState === "closed") {
+          removeRemoteScreenShare(peerId);
+          return;
+        }
+
+        if (nextState === "disconnected") {
+          setTimeout(() => {
+            const currentState =
+              screenPeerConnectionsRef.current[peerId]?.connectionState || nextState;
+            if (
+              currentState === "disconnected" ||
+              currentState === "failed" ||
+              currentState === "closed"
+            ) {
+              removeRemoteScreenShare(peerId);
+            }
+          }, 3000);
+        }
+      };
+
+      screenPeerConnectionsRef.current[peerId] = connection;
+      return connection;
+    },
+    [removeRemoteScreenShare, upsertRemoteScreenShare],
   );
 
   const applyMediaOptimization = useCallback(
@@ -793,6 +889,30 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         }
       });
 
+      socket.on("screen-offer", async ({ senderId, sdp }) => {
+        const normalizedPeerId = String(senderId || "");
+        if (!normalizedPeerId || normalizedPeerId === socket.id) return;
+
+        try {
+          const connection = createScreenPeerConnection(
+            normalizedPeerId,
+            knownPeerNamesRef.current[normalizedPeerId],
+          );
+          await connection.setRemoteDescription(new RTCSessionDescription(sdp));
+          await flushQueuedScreenCandidates(normalizedPeerId);
+          const answer = await connection.createAnswer();
+          await connection.setLocalDescription(answer);
+          socket.emit("screen-answer", {
+            targetId: normalizedPeerId,
+            sdp: answer,
+          });
+        } catch (nextError) {
+          setError(
+            nextError instanceof Error ? nextError.message : "Screen share offer qabul qilinmadi",
+          );
+        }
+      });
+
       socket.on("ice-candidate", async ({ senderId, candidate }) => {
         const normalizedPeerId = String(senderId || "");
         if (!normalizedPeerId || normalizedPeerId === socket.id || !candidate) return;
@@ -803,6 +923,28 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         if (!connection || !connection.remoteDescription) {
           candidateQueuesRef.current[normalizedPeerId] = [
             ...(candidateQueuesRef.current[normalizedPeerId] || []),
+            normalizedCandidate,
+          ];
+          return;
+        }
+
+        try {
+          await connection.addIceCandidate(normalizedCandidate);
+        } catch {
+          return;
+        }
+      });
+
+      socket.on("screen-ice-candidate", async ({ senderId, candidate }) => {
+        const normalizedPeerId = String(senderId || "");
+        if (!normalizedPeerId || normalizedPeerId === socket.id || !candidate) return;
+
+        const normalizedCandidate = new RTCIceCandidate(candidate);
+        const connection = screenPeerConnectionsRef.current[normalizedPeerId];
+
+        if (!connection || !connection.remoteDescription) {
+          screenCandidateQueuesRef.current[normalizedPeerId] = [
+            ...(screenCandidateQueuesRef.current[normalizedPeerId] || []),
             normalizedCandidate,
           ];
           return;
@@ -945,9 +1087,11 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     cleanupCall,
     displayName,
     flushQueuedCandidates,
+    flushQueuedScreenCandidates,
     isCreator,
     localStream,
     removeRemotePeer,
+    createScreenPeerConnection,
     roomId,
     upsertRemotePeer,
   ]);

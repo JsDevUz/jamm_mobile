@@ -1,10 +1,11 @@
 import "react-native-gesture-handler";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
   AppState,
+  Dimensions,
   Easing,
   FlatList,
   Linking,
@@ -14,6 +15,7 @@ import {
   SectionList,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
@@ -34,14 +36,17 @@ import {
 } from "react-native-safe-area-context";
 import { BottomNav } from "./src/components/BottomNav";
 import { Colors } from "./src/theme/colors";
+import { useI18n } from "./src/i18n";
 import useAuthStore from "./src/store/auth-store";
+import useGuidedTourStore from "./src/store/guided-tour-store";
 import { AuthScreen } from "./src/features/auth/AuthScreen";
 import { ChatsScreen } from "./src/features/chats/ChatsScreen";
 import { ChatScreen } from "./src/features/chats/ChatScreen";
+import { GroupPreviewScreen } from "./src/features/chats/GroupPreviewScreen";
 import { GroupMeetRoute } from "./src/features/calls/GroupMeetRoute";
 import { PrivateMeetRoute } from "./src/features/calls/PrivateMeetRoute";
 import { FeedScreen } from "./src/features/feed/FeedScreen";
-import { ProfileScreen } from "./src/features/profile/ProfileScreen";
+import { ProfilePaneScreen, ProfileScreen } from "./src/features/profile/ProfileScreen";
 import { ArticleDetailScreen, ArticlesScreen } from "./src/features/articles/ArticlesScreen";
 import { ArenaFlashcardListScreen } from "./src/features/courses/ArenaFlashcardListScreen";
 import { ArenaFlashcardStudyScreen } from "./src/features/courses/ArenaFlashcardStudyScreen";
@@ -226,6 +231,56 @@ function RootNavigator() {
             options={{ animation: "none" }}
           />
           <Stack.Screen
+            name="ProfileGroups"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileArticles"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileCourses"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileAppearance"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileLanguage"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileSecurity"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfilePremium"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileSupport"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileFavorites"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileLearn"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
             name="ArticleDetail"
             component={ArticleDetailScreen}
             options={{ animation: "slide_from_right" }}
@@ -239,6 +294,11 @@ function RootNavigator() {
             name="ChatRoom"
             component={ChatScreen}
             options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="GroupPreview"
+            component={GroupPreviewScreen}
+            options={{ animation: "slide_from_right", headerShown: false }}
           />
           <Stack.Screen
             name="ArenaQuizList"
@@ -347,6 +407,315 @@ function GlobalScrollBehavior() {
   }, []);
 
   return null;
+}
+
+function GuidedTourOverlay() {
+  const { t } = useI18n();
+  const active = useGuidedTourStore((state) => state.active);
+  const stepIndex = useGuidedTourStore((state) => state.stepIndex);
+  const stepKey = useGuidedTourStore((state) => state.stepKey);
+  const targets = useGuidedTourStore((state) => state.targets);
+  const setStep = useGuidedTourStore((state) => state.setStep);
+  const close = useGuidedTourStore((state) => state.close);
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+
+  const steps = useMemo(
+    () => [
+      {
+        key: "profile-overview",
+        title: t("featureTour.profile.overviewTitle"),
+        description: t("featureTour.profile.overviewDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-groups-tab",
+        title: t("featureTour.profile.groupsTabTitle"),
+        description: t("featureTour.profile.groupsTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-courses-tab",
+        title: t("featureTour.profile.coursesTabTitle"),
+        description: t("featureTour.profile.coursesTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-articles-tab",
+        title: t("featureTour.profile.articlesTabTitle"),
+        description: t("featureTour.profile.articlesTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-appearance-tab",
+        title: t("featureTour.profile.appearanceTabTitle"),
+        description: t("featureTour.profile.appearanceTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-language-tab",
+        title: t("featureTour.profile.languageTabTitle"),
+        description: t("featureTour.profile.languageTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-premium-tab",
+        title: t("featureTour.profile.premiumTabTitle"),
+        description: t("featureTour.profile.premiumTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-support-tab",
+        title: t("featureTour.profile.supportTabTitle"),
+        description: t("featureTour.profile.supportTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-favorites-tab",
+        title: t("featureTour.profile.favoritesTabTitle"),
+        description: t("featureTour.profile.favoritesTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-edit-trigger",
+        title: t("featureTour.profile.editTriggerTitle"),
+        description: t("featureTour.profile.editTriggerDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "profile-edit-dialog",
+        title: t("featureTour.profile.editDialogTitle"),
+        description: t("featureTour.profile.editDialogDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Profile" } as never),
+      },
+      {
+        key: "courses-search",
+        title: t("featureTour.courses.searchTitle"),
+        description: t("featureTour.courses.searchDescription"),
+        open: () =>
+          navigationRef.navigate("MainTabs", {
+            screen: "Courses",
+            params: { viewMode: "courses" },
+          } as never),
+      },
+      {
+        key: "courses-tabs",
+        title: t("featureTour.courses.tabsTitle"),
+        description: t("featureTour.courses.tabsDescription"),
+        open: () =>
+          navigationRef.navigate("MainTabs", {
+            screen: "Courses",
+            params: { viewMode: "courses" },
+          } as never),
+      },
+      {
+        key: "courses-create",
+        title: t("featureTour.courses.createTitle"),
+        description: t("featureTour.courses.createDescription"),
+        open: () =>
+          navigationRef.navigate("MainTabs", {
+            screen: "Courses",
+            params: { viewMode: "courses" },
+          } as never),
+      },
+      {
+        key: "courses-list",
+        title: t("featureTour.courses.listTitle"),
+        description: t("featureTour.courses.listDescription"),
+        open: () =>
+          navigationRef.navigate("MainTabs", {
+            screen: "Courses",
+            params: { viewMode: "courses" },
+          } as never),
+      },
+      {
+        key: "courses-content",
+        title: t("featureTour.courses.contentTitle"),
+        description: t("featureTour.courses.contentDescription"),
+        open: () =>
+          navigationRef.navigate("MainTabs", {
+            screen: "Courses",
+            params: { viewMode: "courses" },
+          } as never),
+      },
+      {
+        key: "chats-search",
+        title: t("featureTour.chats.searchTitle"),
+        description: t("featureTour.chats.searchDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+      {
+        key: "chats-tabs",
+        title: t("featureTour.chats.tabsTitle"),
+        description: t("featureTour.chats.tabsDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+      {
+        key: "chats-private-tab",
+        title: t("featureTour.chats.privateTabTitle"),
+        description: t("featureTour.chats.privateTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+      {
+        key: "chats-groups-tab",
+        title: t("featureTour.chats.groupsTabTitle"),
+        description: t("featureTour.chats.groupsTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+      {
+        key: "chats-video-tab",
+        title: t("featureTour.chats.videoTabTitle"),
+        description: t("featureTour.chats.videoTabDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+      {
+        key: "chats-list",
+        title: t("featureTour.chats.listTitle"),
+        description: t("featureTour.chats.listDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+      {
+        key: "chats-content",
+        title: t("featureTour.chats.contentTitle"),
+        description: t("featureTour.chats.contentDescription"),
+        open: () => navigationRef.navigate("MainTabs", { screen: "Chats" } as never),
+      },
+    ],
+    [t],
+  );
+
+  useEffect(() => {
+    if (!active || !navigationRef.isReady()) {
+      return;
+    }
+
+    const step = steps[stepIndex];
+    step?.open?.();
+  }, [active, stepIndex, steps]);
+
+  if (!active) {
+    return null;
+  }
+
+  const currentStep = steps[stepIndex] || steps[0];
+  const isLastStep = stepIndex >= steps.length - 1;
+  const fallbackWindow = Dimensions.get("window");
+  const spotlight = stepKey ? targets[stepKey] : null;
+  const spotlightPadding = 10;
+  const spotlightRect = spotlight
+    ? {
+        x: Math.max(12, spotlight.x - spotlightPadding),
+        y: Math.max(12, spotlight.y - spotlightPadding),
+        width: Math.min(
+          Math.max(spotlight.width + spotlightPadding * 2, 0),
+          Math.max((viewportWidth || fallbackWindow.width) - 24, 0),
+        ),
+        height: Math.max(spotlight.height + spotlightPadding * 2, 0),
+      }
+    : null;
+  const screenWidth = viewportWidth || fallbackWindow.width;
+  const screenHeight = viewportHeight || fallbackWindow.height;
+  const holeRight = spotlightRect
+    ? Math.max(screenWidth - spotlightRect.x - spotlightRect.width, 0)
+    : 0;
+  const holeBottom = spotlightRect
+    ? Math.max(screenHeight - spotlightRect.y - spotlightRect.height, 0)
+    : 0;
+
+  return (
+    <View pointerEvents="box-none" style={styles.guidedTourRoot}>
+      {spotlightRect ? (
+        <>
+          <View
+            pointerEvents="none"
+            style={[styles.guidedTourShade, { left: 0, top: 0, right: 0, height: spotlightRect.y }]}
+          />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.guidedTourShade,
+              { left: 0, top: spotlightRect.y, width: spotlightRect.x, height: spotlightRect.height },
+            ]}
+          />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.guidedTourShade,
+              {
+                left: spotlightRect.x + spotlightRect.width,
+                top: spotlightRect.y,
+                width: holeRight,
+                height: spotlightRect.height,
+              },
+            ]}
+          />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.guidedTourShade,
+              { left: 0, top: spotlightRect.y + spotlightRect.height, right: 0, height: holeBottom },
+            ]}
+          />
+          <View
+            pointerEvents="none"
+            style={[
+              styles.guidedTourSpotlight,
+              {
+                left: spotlightRect.x,
+                top: spotlightRect.y,
+                width: spotlightRect.width,
+                height: spotlightRect.height,
+              },
+            ]}
+          />
+        </>
+      ) : (
+        <View pointerEvents="none" style={styles.guidedTourBackdrop} />
+      )}
+      <SafeAreaView style={styles.guidedTourSafeArea} edges={["top", "bottom", "left", "right"]}>
+        <View style={styles.guidedTourCard}>
+          <View style={styles.guidedTourHeader}>
+            <Text style={styles.guidedTourStep}>
+              {t("featureTour.step", {
+                current: stepIndex + 1,
+                total: steps.length,
+              })}
+            </Text>
+            <Pressable onPress={close}>
+              <Text style={styles.guidedTourSkip}>{t("featureTour.skip")}</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.guidedTourTitle}>{currentStep.title}</Text>
+          <Text style={styles.guidedTourDescription}>{currentStep.description}</Text>
+          <View style={styles.guidedTourDots}>
+            {steps.map((step: { key: string }, index: number) => (
+              <View
+                key={step.key}
+                style={[
+                  styles.guidedTourDot,
+                  index === stepIndex && styles.guidedTourDotActive,
+                ]}
+              />
+            ))}
+          </View>
+          <Pressable
+            style={styles.guidedTourButton}
+            onPress={() => {
+              if (isLastStep) {
+                close();
+                return;
+              }
+              const nextIndex = stepIndex + 1;
+              setStep(nextIndex, steps[nextIndex]?.key || "");
+            }}
+          >
+            <Text style={styles.guidedTourButtonText}>
+              {isLastStep ? t("featureTour.done") : t("featureTour.next")}
+            </Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </View>
+  );
 }
 
 function IncomingCallOverlay() {
@@ -1051,13 +1420,19 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
     [queryClient, syncChatsCache],
   );
 
-  const resolveGroupChat = useCallback(
+  const resolveExistingGroupChat = useCallback(
     async (identifier: string) => {
-      const chat = await chatsApi.joinGroupByLink(identifier);
-      saveChatToCache(chat);
-      return chat;
+      let chats = (queryClient.getQueryData<ChatSummary[]>(["chats"]) || []).slice();
+      let match = findChatByIdentifier(chats, identifier);
+
+      if (!match) {
+        chats = await syncChatsCache();
+        match = findChatByIdentifier(chats, identifier);
+      }
+
+      return match;
     },
-    [saveChatToCache],
+    [queryClient, syncChatsCache],
   );
 
   const resolveGenericChat = useCallback(
@@ -1069,12 +1444,17 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
       }
 
       if (identifier.startsWith("-")) {
-        return resolveGroupChat(identifier);
+        const groupMatch = await resolveExistingGroupChat(identifier);
+        if (groupMatch) {
+          return groupMatch;
+        }
+
+        throw new Error("Guruh chat topilmadi.");
       }
 
       return resolvePrivateChat(identifier);
     },
-    [queryClient, resolveGroupChat, resolvePrivateChat],
+    [queryClient, resolveExistingGroupChat, resolvePrivateChat],
   );
 
   const openDeepLinkTarget = useCallback(
@@ -1119,8 +1499,15 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
           });
           return;
         case "groupChat": {
-          const chat = await resolveGroupChat(target.identifier);
-          openChatRoom(chat, target.identifier, true);
+          const chat = await resolveExistingGroupChat(target.identifier);
+          if (chat) {
+            openChatRoom(chat, target.identifier, true);
+            return;
+          }
+
+          navigationRef.navigate("GroupPreview", {
+            identifier: target.identifier,
+          });
           return;
         }
         case "userChat": {
@@ -1153,7 +1540,9 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
         case "arenaFlashcards":
           navigationRef.navigate(
             "ArenaFlashcardList",
-            target.deckId ? { deckId: target.deckId } : undefined,
+            target.deckId || target.folderId
+              ? { deckId: target.deckId, folderId: target.folderId }
+              : undefined,
           );
           return;
         case "arenaSentenceBuilder":
@@ -1177,10 +1566,16 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
       openChatsTab,
       openCoursesTab,
       resolveGenericChat,
-      resolveGroupChat,
+      resolveExistingGroupChat,
       resolvePrivateChat,
     ],
   );
+
+  const internalLinkOpenerRef = useRef(openDeepLinkTarget);
+
+  useEffect(() => {
+    internalLinkOpenerRef.current = openDeepLinkTarget;
+  }, [openDeepLinkTarget]);
 
   const processPendingDeepLink = useCallback(async () => {
     const nextUrl = pendingUrlRef.current;
@@ -1229,11 +1624,11 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
   );
 
   useEffect(() => {
-    setJammInternalLinkOpener(openDeepLinkTarget);
+    setJammInternalLinkOpener((target) => internalLinkOpenerRef.current(target));
     return () => {
       setJammInternalLinkOpener(null);
     };
-  }, [openDeepLinkTarget]);
+  }, []);
 
   useEffect(() => {
     void Linking.getInitialURL()
@@ -1281,6 +1676,7 @@ export default function App() {
             </NavigationContainer>
             <IncomingCallOverlay />
             <AppLockOverlay />
+            <GuidedTourOverlay />
           </View>
         </QueryClientProvider>
       </SafeAreaProvider>
@@ -1452,6 +1848,113 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     paddingTop: 56,
     paddingHorizontal: 16,
+  },
+  guidedTourRoot: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 110,
+  },
+  guidedTourBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8, 10, 18, 0.56)",
+  },
+  guidedTourShade: {
+    position: "absolute",
+    backgroundColor: "rgba(8, 10, 18, 0.58)",
+  },
+  guidedTourSpotlight: {
+    position: "absolute",
+    borderRadius: 22,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.92)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    shadowColor: Colors.primary,
+    shadowOpacity: 0.34,
+    shadowRadius: 24,
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
+    elevation: 18,
+  },
+  guidedTourSafeArea: {
+    flex: 1,
+    justifyContent: "flex-end",
+    paddingHorizontal: 16,
+    paddingBottom: 18,
+  },
+  guidedTourCard: {
+    borderRadius: 24,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 16,
+    shadowColor: "#000",
+    shadowOpacity: 0.22,
+    shadowRadius: 20,
+    shadowOffset: {
+      width: 0,
+      height: 12,
+    },
+    elevation: 18,
+  },
+  guidedTourHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  guidedTourStep: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  guidedTourSkip: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  guidedTourTitle: {
+    color: Colors.text,
+    fontSize: 20,
+    fontWeight: "800",
+    marginTop: 10,
+  },
+  guidedTourDescription: {
+    color: Colors.mutedText,
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 8,
+  },
+  guidedTourDots: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 16,
+  },
+  guidedTourDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: Colors.border,
+  },
+  guidedTourDotActive: {
+    width: 18,
+    backgroundColor: Colors.primary,
+  },
+  guidedTourButton: {
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 18,
+  },
+  guidedTourButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
   },
   callCard: {
     borderRadius: 22,

@@ -61,6 +61,7 @@ import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
+import { useI18n } from "../../i18n";
 import {
   APP_LIMITS,
   countWords,
@@ -83,6 +84,7 @@ import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Articles">;
 type ArticleDetailProps = NativeStackScreenProps<RootStackParamList, "ArticleDetail">;
+type Translator = (key: string, replacements?: Record<string, string | number>) => string;
 type SharedProps = {
   navigation: Props["navigation"] | ArticleDetailProps["navigation"];
   routeParams?: {
@@ -111,17 +113,27 @@ type MarkdownBlock =
   | { type: "hr" }
   | { type: "image"; alt: string; src: string };
 
-function timeAgo(iso?: string) {
+const LOCALE_BY_LANGUAGE = {
+  uz: "uz-UZ",
+  en: "en-US",
+  ru: "ru-RU",
+} as const;
+
+function timeAgo(
+  iso: string | undefined,
+  t: Translator,
+  language: keyof typeof LOCALE_BY_LANGUAGE,
+) {
   if (!iso) return "";
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Hozir";
-  if (mins < 60) return `${mins}d`;
+  if (mins < 1) return t("feed.timeAgo.now");
+  if (mins < 60) return t("feed.timeAgo.minutesShort", { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}s`;
+  if (hrs < 24) return t("feed.timeAgo.hoursShort", { count: hrs });
   const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}k`;
-  return new Date(iso).toLocaleDateString("uz-UZ", {
+  if (days < 7) return t("feed.timeAgo.daysShort", { count: days });
+  return new Date(iso).toLocaleDateString(LOCALE_BY_LANGUAGE[language], {
     day: "numeric",
     month: "short",
   });
@@ -312,6 +324,7 @@ function parseMarkdown(content: string): MarkdownBlock[] {
 }
 
 function InlineText({ text, style }: { text: string; style?: object }) {
+  const { t } = useI18n();
   const tokens = useMemo(() => parseInline(text), [text]);
 
   return (
@@ -348,7 +361,7 @@ function InlineText({ text, style }: { text: string; style?: object }) {
               style={styles.markdownLink}
               onPress={() => {
                 void openJammAwareLink(token.href).catch(() => {
-                  Alert.alert("Link ochilmadi", token.href);
+                  Alert.alert(t("feed.linkOpenFailed"), token.href);
                 });
               }}
             >
@@ -364,7 +377,7 @@ function InlineText({ text, style }: { text: string; style?: object }) {
               style={styles.markdownLink}
               onPress={() => {
                 void openJammProfileMention(token.username).catch(() => {
-                  Alert.alert("Profil ochilmadi", token.value);
+                  Alert.alert(t("feed.profileOpenFailed"), token.value);
                 });
               }}
             >
@@ -498,6 +511,7 @@ function ArticleCommentsModal({
   onClose: () => void;
   onCommentsCountChange: (count: number) => void;
 }) {
+  const { t, language } = useI18n();
   const currentUser = useAuthStore((state) => state.user);
   const currentUserId = String(
     getEntityId(currentUser) || currentUser?.jammId || "",
@@ -622,10 +636,10 @@ function ArticleCommentsModal({
         return;
       }
 
-      Alert.alert("Izohni o'chirish", "Bu amalni ortga qaytarib bo'lmaydi.", [
-        { text: "Bekor qilish", style: "cancel" },
+      Alert.alert(t("comments.deleteTitle"), t("comments.deleteDescription"), [
+        { text: t("common.cancel"), style: "cancel" },
         {
-          text: "O'chirish",
+          text: t("common.delete"),
           style: "destructive",
           onPress: () => {
             void (async () => {
@@ -642,8 +656,8 @@ function ArticleCommentsModal({
                 await loadComments(1);
               } catch (error) {
                 Alert.alert(
-                  "Izoh o'chirilmadi",
-                  error instanceof Error ? error.message : "Qaytadan urinib ko'ring.",
+                  t("comments.deleteFailedTitle"),
+                  error instanceof Error ? error.message : t("comments.deleteFailedDescription"),
                 );
               }
             })();
@@ -697,7 +711,7 @@ function ArticleCommentsModal({
   return (
     <DraggableBottomSheet
       visible={visible}
-      title="Article izohlari"
+      title={t("comments.title")}
       onClose={handleCloseComments}
       minHeight={540}
       initialHeightRatio={0.94}
@@ -706,7 +720,7 @@ function ArticleCommentsModal({
           {editingComment ? (
             <View style={styles.replyingBar}>
               <Text style={styles.replyingText}>
-                Tahrirlash: @{editingComment.nickname}
+                {t("comments.editingLabel", { name: editingComment.nickname })}
               </Text>
               <Pressable
                 onPress={() => {
@@ -721,7 +735,7 @@ function ArticleCommentsModal({
           {replyingTo ? (
             <View style={styles.replyingBar}>
               <Text style={styles.replyingText} numberOfLines={1}>
-                Javob: @{replyingTo.nickname}
+                {t("comments.replyingLabel", { name: replyingTo.nickname })}
               </Text>
               <Pressable onPress={() => setReplyingTo(null)}>
                 <X size={14} color={Colors.mutedText} />
@@ -735,11 +749,11 @@ function ArticleCommentsModal({
               placeholder={
                 editingComment
                   ? editingComment.kind === "reply"
-                    ? "Javobni tahrirlash..."
-                    : "Izohni tahrirlash..."
+                    ? t("comments.editReplyPlaceholder")
+                    : t("comments.editCommentPlaceholder")
                   : replyingTo
-                    ? `@${replyingTo.nickname} ga javob...`
-                    : "Izoh yozing..."
+                    ? t("comments.replyPlaceholder", { name: replyingTo.nickname })
+                    : t("comments.commentPlaceholder")
               }
               placeholderTextColor={Colors.mutedText}
               style={styles.commentInput}
@@ -770,13 +784,13 @@ function ArticleCommentsModal({
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
       >
         {loading && comments.length === 0 ? (
-          <Text style={styles.commentsEmptyText}>Yuklanmoqda...</Text>
+          <Text style={styles.commentsEmptyText}>{t("comments.loading")}</Text>
         ) : comments.length === 0 ? (
-          <Text style={styles.commentsEmptyText}>Hozircha izoh yo'q</Text>
+          <Text style={styles.commentsEmptyText}>{t("comments.empty")}</Text>
         ) : (
           <>
             {comments.map((comment) => {
-              const name = comment.user?.nickname || comment.user?.username || "User";
+              const name = comment.user?.nickname || comment.user?.username || t("common.userFallback");
               const isOwnComment = isCurrentUsersComment(comment.user);
 
               return (
@@ -793,14 +807,14 @@ function ArticleCommentsModal({
                       <Text style={styles.commentText}>{comment.content}</Text>
                     </View>
                     <View style={styles.commentMetaRow}>
-                      <Text style={styles.commentMeta}>{timeAgo(comment.createdAt)}</Text>
+                      <Text style={styles.commentMeta}>{timeAgo(comment.createdAt, t, language)}</Text>
                       <Pressable onPress={() => startReply(comment._id, name)}>
-                        <Text style={styles.replyButtonText}>Javob</Text>
+                        <Text style={styles.replyButtonText}>{t("comments.reply")}</Text>
                       </Pressable>
                       {isOwnComment ? (
                         <>
                           <Pressable onPress={() => startEdit(comment, name, "comment")}>
-                            <Text style={styles.commentActionText}>Tahrirlash</Text>
+                            <Text style={styles.commentActionText}>{t("common.edit")}</Text>
                           </Pressable>
                           <Pressable onPress={() => handleDeleteComment(comment._id)}>
                             <Text
@@ -809,7 +823,7 @@ function ArticleCommentsModal({
                                 styles.commentActionTextDanger,
                               ]}
                             >
-                              O'chirish
+                              {t("common.delete")}
                             </Text>
                           </Pressable>
                         </>
@@ -818,7 +832,7 @@ function ArticleCommentsModal({
 
                     {comment.replies?.map((reply: ArticleCommentReply) => {
                       const replyName =
-                        reply.user?.nickname || reply.user?.username || "User";
+                        reply.user?.nickname || reply.user?.username || t("common.userFallback");
                       const isOwnReply = isCurrentUsersComment(reply.user);
 
                       return (
@@ -843,11 +857,11 @@ function ArticleCommentsModal({
                               </Text>
                             </View>
                             <View style={styles.replyMetaRow}>
-                              <Text style={styles.commentMeta}>{timeAgo(reply.createdAt)}</Text>
+                              <Text style={styles.commentMeta}>{timeAgo(reply.createdAt, t, language)}</Text>
                               {isOwnReply ? (
                                 <>
                                   <Pressable onPress={() => startEdit(reply, replyName, "reply")}>
-                                    <Text style={styles.commentActionText}>Tahrirlash</Text>
+                                    <Text style={styles.commentActionText}>{t("common.edit")}</Text>
                                   </Pressable>
                                   <Pressable onPress={() => handleDeleteComment(reply._id)}>
                                     <Text
@@ -856,7 +870,7 @@ function ArticleCommentsModal({
                                         styles.commentActionTextDanger,
                                       ]}
                                     >
-                                      O'chirish
+                                      {t("common.delete")}
                                     </Text>
                                   </Pressable>
                                 </>
@@ -874,7 +888,7 @@ function ArticleCommentsModal({
             {hasMore ? (
               <Pressable style={styles.loadMoreButton} onPress={() => void loadMore()}>
                 <Text style={styles.loadMoreText}>
-                  {loading ? "Yuklanmoqda..." : "Ko'proq izohlar"}
+                  {loading ? t("comments.loading") : t("comments.loadMore")}
                 </Text>
               </Pressable>
             ) : null}
@@ -910,6 +924,7 @@ function ArticleEditorModal({
     tags: string[];
   }) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<EditorMode>("write");
@@ -1022,7 +1037,7 @@ function ArticleEditorModal({
       insertSnippet(`\n\n![](${uploaded.url})\n\n`);
     } catch (error) {
       Alert.alert(
-        "Rasm yuklanmadi",
+        t("articles.imageUploadFailed"),
         error instanceof Error ? error.message : "Noma'lum xatolik",
       );
     } finally {
@@ -1040,7 +1055,7 @@ function ArticleEditorModal({
       setCoverImage(uploaded.url);
     } catch (error) {
       Alert.alert(
-        "Cover yuklanmadi",
+        t("articles.coverUploadFailed"),
         error instanceof Error ? error.message : "Noma'lum xatolik",
       );
     } finally {
@@ -1102,10 +1117,10 @@ function ArticleEditorModal({
           >
             <View style={[styles.editorHeaderMeta, isPhoneLayout && styles.editorHeaderMetaPhone]}>
               <Text style={styles.editorTitle}>
-                {initialArticle ? "Maqolani tahrirlash" : "Yangi maqola"}
+                {initialArticle ? t("articles.editTitle") : t("articles.createTitle")}
               </Text>
               <Text style={styles.editorSubtitle}>
-                Medium uslubidagi markdown editor: cover, inline image, preview va publish.
+                {t("articles.editorSubtitle")}
               </Text>
             </View>
             <View
@@ -1134,7 +1149,7 @@ function ArticleEditorModal({
                       mode === "write" && styles.modeButtonTextActive,
                     ]}
                   >
-                    Write
+                    {t("articles.modes.write")}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -1155,7 +1170,7 @@ function ArticleEditorModal({
                       mode === "split" && styles.modeButtonTextActive,
                     ]}
                   >
-                    Split
+                    {t("articles.modes.split")}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -1176,7 +1191,7 @@ function ArticleEditorModal({
                       mode === "preview" && styles.modeButtonTextActive,
                     ]}
                   >
-                    Preview
+                    {t("articles.modes.preview")}
                   </Text>
                 </Pressable>
               </View>
@@ -1194,7 +1209,7 @@ function ArticleEditorModal({
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
                   <Text style={styles.headerPublishButtonText}>
-                    {initialArticle ? "Saqlash" : "Publish"}
+                    {initialArticle ? t("common.save") : t("common.create")}
                   </Text>
                 )}
               </Pressable>
@@ -1227,10 +1242,10 @@ function ArticleEditorModal({
               >
                 <View style={styles.toolbarCard}>
                   <View style={styles.editorFieldHeader}>
-                    <Text style={styles.editorFieldLabel}>Markdown asboblari</Text>
-                    <Text style={styles.editorFieldMeta}>
-                      {uploading ? "Yuklanmoqda..." : `${wordCount}/${articleWordLimit} so'z`}
-                    </Text>
+                      <Text style={styles.editorFieldLabel}>{t("articles.editor.toolbar")}</Text>
+                      <Text style={styles.editorFieldMeta}>
+                      {uploading ? t("common.loading") : `${wordCount}/${articleWordLimit} so'z`}
+                      </Text>
                   </View>
                   <ScrollView
                     horizontal
@@ -1292,7 +1307,7 @@ function ArticleEditorModal({
                     }}
                   >
                     <View style={styles.editorFieldHeader}>
-                      <Text style={styles.editorFieldLabel}>Maqola sarlavhasi</Text>
+                      <Text style={styles.editorFieldLabel}>{t("articles.editor.titleField")}</Text>
                       <Text style={styles.editorFieldMeta}>
                         {title.trim().length}/{APP_LIMITS.articleTitleChars}
                       </Text>
@@ -1301,7 +1316,7 @@ function ArticleEditorModal({
                       value={title}
                       onChangeText={setTitle}
                       onFocus={() => scrollEditorToField("title")}
-                      placeholder="Sarlavha"
+                      placeholder={t("articles.editor.titlePlaceholder")}
                       placeholderTextColor={Colors.subtleText}
                       style={styles.titleInput}
                       maxLength={APP_LIMITS.articleTitleChars}
@@ -1315,7 +1330,7 @@ function ArticleEditorModal({
                     }}
                   >
                     <View style={styles.editorFieldHeader}>
-                      <Text style={styles.editorFieldLabel}>Qisqacha mazmun</Text>
+                      <Text style={styles.editorFieldLabel}>{t("articles.editor.excerptField")}</Text>
                       <Text style={styles.editorFieldMeta}>
                         {excerpt.trim().length}/{APP_LIMITS.articleExcerptChars}
                       </Text>
@@ -1324,7 +1339,7 @@ function ArticleEditorModal({
                       value={excerpt}
                       onChangeText={setExcerpt}
                       onFocus={() => scrollEditorToField("excerpt")}
-                      placeholder="Qisqacha mazmun"
+                      placeholder={t("articles.editor.excerptPlaceholder")}
                       placeholderTextColor={Colors.subtleText}
                       style={styles.excerptInput}
                       multiline
@@ -1339,7 +1354,7 @@ function ArticleEditorModal({
                     }}
                   >
                     <View style={styles.editorFieldHeader}>
-                      <Text style={styles.editorFieldLabel}>Teglar</Text>
+                      <Text style={styles.editorFieldLabel}>{t("articles.editor.tagsField")}</Text>
                       <Text style={styles.editorFieldMeta}>
                         {tags.length}/{APP_LIMITS.articleTagCount}
                       </Text>
@@ -1348,7 +1363,7 @@ function ArticleEditorModal({
                       value={tagsText}
                       onChangeText={setTagsText}
                       onFocus={() => scrollEditorToField("tags")}
-                      placeholder="tag1, tag2, tag3"
+                      placeholder={t("articles.editor.tagsPlaceholder")}
                       placeholderTextColor={Colors.subtleText}
                       style={styles.tagsInput}
                     />
@@ -1361,9 +1376,9 @@ function ArticleEditorModal({
                     }}
                   >
                     <View style={styles.editorFieldHeader}>
-                      <Text style={styles.editorFieldLabel}>Cover image</Text>
+                      <Text style={styles.editorFieldLabel}>{t("articles.editor.coverField")}</Text>
                       <Text style={styles.editorFieldMeta}>
-                        {uploading ? "Yuklanmoqda..." : coverImage ? "Tayyor" : "Ixtiyoriy"}
+                        {uploading ? t("articles.editor.coverUploading") : coverImage ? t("articles.editor.coverReady") : t("articles.editor.coverOptional")}
                       </Text>
                     </View>
                     <Pressable
@@ -1380,10 +1395,10 @@ function ArticleEditorModal({
                         <View style={styles.coverUploadHint}>
                           <ImagePlus size={26} color={Colors.text} />
                           <Text style={styles.coverUploadHintTitle}>
-                            {uploading ? "Cover yuklanmoqda..." : "Cover rasm yuklash"}
+                            {uploading ? t("articles.editor.coverUploading") : t("articles.editor.coverUploadTitle")}
                           </Text>
                           <Text style={styles.coverUploadHintText}>
-                            Frontenddagi kabi hero cover shu yerdan tanlanadi.
+                            {t("articles.editor.coverUploadDescription")}
                           </Text>
                         </View>
                       )}
@@ -1397,9 +1412,9 @@ function ArticleEditorModal({
                     }}
                   >
                     <View style={styles.editorFieldHeader}>
-                      <Text style={styles.editorFieldLabel}>Markdown kontent</Text>
+                      <Text style={styles.editorFieldLabel}>{t("articles.editor.markdownField")}</Text>
                       <Text style={styles.editorFieldMeta}>
-                        {markdown.trim() ? "Live preview tayyor" : "Kontent yozishni boshlang"}
+                        {markdown.trim() ? t("articles.editor.markdownReady") : t("articles.editor.markdownStart")}
                       </Text>
                     </View>
                     <TextInput
@@ -1409,7 +1424,7 @@ function ArticleEditorModal({
                       onSelectionChange={(event) => {
                         setSelection(event.nativeEvent.selection);
                       }}
-                      placeholder="Markdown yozing..."
+                      placeholder={t("articles.editor.markdownPlaceholder")}
                       placeholderTextColor={Colors.subtleText}
                       style={styles.markdownInput}
                       multiline
@@ -1436,13 +1451,13 @@ function ArticleEditorModal({
                 <View style={styles.previewPanel}>
                   <View style={styles.previewHeader}>
                     <View>
-                      <Text style={styles.previewEyebrow}>Live preview</Text>
-                      <Text style={styles.previewHeaderTitle}>Frontend ko'rinishi</Text>
+                      <Text style={styles.previewEyebrow}>{t("articles.editor.previewEyebrow")}</Text>
+                      <Text style={styles.previewHeaderTitle}>{t("articles.editor.previewHeaderTitle")}</Text>
                     </View>
                     <View style={styles.previewBadge}>
                       <Eye size={14} color={Colors.text} />
                       <Text style={styles.previewBadgeText}>
-                        {mode === "split" ? "Split" : "Preview"}
+                        {mode === "split" ? t("articles.modes.split") : t("articles.modes.preview")}
                       </Text>
                     </View>
                   </View>
@@ -1453,7 +1468,7 @@ function ArticleEditorModal({
                       requireManualDownload
                     />
                   ) : null}
-                  <Text style={styles.previewTitle}>{title || "Sarlavha"}</Text>
+                  <Text style={styles.previewTitle}>{title || t("articles.editor.titlePlaceholder")}</Text>
                   {excerpt ? <Text style={styles.previewExcerpt}>{excerpt}</Text> : null}
                   {tags.length ? (
                     <View style={styles.previewTagRow}>
@@ -1465,7 +1480,7 @@ function ArticleEditorModal({
                     </View>
                   ) : null}
                   <ArticleMarkdownRenderer
-                    content={markdown || "Markdown preview shu yerda chiqadi."}
+                    content={markdown || t("articles.editor.previewPlaceholder")}
                   />
                 </View>
               </ScrollView>
@@ -1479,7 +1494,7 @@ function ArticleEditorModal({
             ]}
           >
             <Text style={styles.editorCounter}>
-              {uploading ? "Media yuklanmoqda..." : "Markdown va preview doim birga yangilanadi"}
+              {uploading ? t("articles.editor.counterUploading") : t("articles.editor.counterHint")}
             </Text>
             <Text
               style={[
@@ -1502,6 +1517,7 @@ function ArticlesScreenContent({
   routeParams,
   detailOnly = false,
 }: SharedProps) {
+  const { t, language } = useI18n();
   const { width: screenWidth } = useWindowDimensions();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
@@ -1757,10 +1773,10 @@ function ArticlesScreenContent({
   const handleDeleteArticle = () => {
     if (!currentArticle) return;
 
-    Alert.alert("Maqolani o'chirish", "Haqiqatan ham bu maqolani o'chirmoqchimisiz?", [
-      { text: "Bekor qilish", style: "cancel" },
+    Alert.alert(t("articles.deleteTitle"), t("articles.deleteDescription"), [
+      { text: t("common.cancel"), style: "cancel" },
       {
-        text: "O'chirish",
+        text: t("common.delete"),
         style: "destructive",
         onPress: () => {
           deleteMutation.mutate(currentArticle.slug || currentArticle._id);
@@ -1777,7 +1793,10 @@ function ArticlesScreenContent({
     tags: string[];
   }) => {
     if (countWords(payload.markdown) > articleWordLimit) {
-      Alert.alert("Limit", `Maqola maksimal ${articleWordLimit} so'z bo'lishi kerak.`);
+      Alert.alert(
+        t("articles.wordLimitTitle"),
+        t("articles.wordLimitDescription", { count: articleWordLimit }),
+      );
       return;
     }
 
@@ -1794,7 +1813,7 @@ function ArticlesScreenContent({
       setEditingArticle(null);
     } catch (error) {
       Alert.alert(
-        "Maqola saqlanmadi",
+        t("articles.saveFailed"),
         error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
       );
     }
@@ -1826,7 +1845,7 @@ function ArticlesScreenContent({
             <ArrowLeft size={18} color={Colors.text} />
           </Pressable>
           <Text style={styles.readerHeaderTitle} numberOfLines={1}>
-            {currentArticle?.title || "Article"}
+            {currentArticle?.title || t("articles.detailFallback")}
           </Text>
           <View style={styles.readerHeaderActions}>
             {isOwnArticle ? (
@@ -1854,7 +1873,7 @@ function ArticlesScreenContent({
           </View>
         ) : !currentArticle ? (
           <View style={styles.loaderState}>
-            <Text style={styles.emptyText}>Maqola topilmadi</Text>
+            <Text style={styles.emptyText}>{t("articles.notFound")}</Text>
           </View>
         ) : (
           <ScrollView
@@ -1881,7 +1900,7 @@ function ArticlesScreenContent({
                 fallback={
                   currentArticle.author?.nickname ||
                   currentArticle.author?.username ||
-                  "Author"
+                  t("articles.author")
                 }
                 size="sm"
                 textStyle={styles.readerAuthor}
@@ -1890,7 +1909,7 @@ function ArticlesScreenContent({
               <Text style={styles.readerMetaText}>
                 {new Date(
                   currentArticle.publishedAt || currentArticle.createdAt || Date.now(),
-                ).toLocaleDateString("uz-UZ", {
+                ).toLocaleDateString(LOCALE_BY_LANGUAGE[language], {
                   day: "numeric",
                   month: "short",
                   year: "numeric",
@@ -1961,7 +1980,7 @@ function ArticlesScreenContent({
         <SearchHeaderBar
           value={query}
           onChangeText={setQuery}
-          placeholder="Maqola qidirish..."
+          placeholder={t("articles.searchPlaceholder")}
           rightSlot={
             <Pressable
               style={styles.addButton}
@@ -1994,9 +2013,9 @@ function ArticlesScreenContent({
           ) : filteredArticles.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons name="newspaper-outline" size={30} color={Colors.mutedText} />
-              <Text style={styles.emptyTitle}>Maqolalar topilmadi</Text>
+              <Text style={styles.emptyTitle}>{t("articles.emptyTitle")}</Text>
               <Text style={styles.emptyText}>
-                Qidiruvni o'zgartiring yoki yangi maqola yarating.
+                {t("articles.emptyDescription")}
               </Text>
             </View>
           ) : (
@@ -2022,17 +2041,17 @@ function ArticlesScreenContent({
                       {article.title}
                     </Text>
                     <Text style={styles.articleItemExcerpt} numberOfLines={2}>
-                      {article.excerpt || "Qisqacha mazmun mavjud emas"}
+                      {article.excerpt || t("articles.noExcerpt")}
                     </Text>
                     <View style={styles.articleItemMeta}>
                       <Text style={styles.articleItemMetaText}>
-                        {article.author?.nickname || article.author?.username || "Author"}
+                        {article.author?.nickname || article.author?.username || t("articles.author")}
                       </Text>
-                      <Text style={styles.articleItemMetaText}>{article.likes} like</Text>
-                      <Text style={styles.articleItemMetaText}>{article.comments} izoh</Text>
+                      <Text style={styles.articleItemMetaText}>{article.likes} {t("common.like")}</Text>
+                      <Text style={styles.articleItemMetaText}>{article.comments} {t("articles.comments")}</Text>
                     </View>
                     <Text style={styles.articleItemTime}>
-                      {timeAgo(article.publishedAt || article.createdAt)}
+                      {timeAgo(article.publishedAt || article.createdAt, t, language)}
                     </Text>
                   </View>
                 </Pressable>

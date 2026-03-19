@@ -16,6 +16,7 @@ import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { TextInput } from "../../components/TextInput";
 import { APP_LIMITS, getTierLimit } from "../../constants/appLimits";
 import { APP_BASE_URL } from "../../config/env";
+import { useI18n } from "../../i18n";
 import { arenaApi } from "../../lib/api";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -45,6 +46,7 @@ function formatDate(value?: string) {
 }
 
 export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: Props) {
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const user = useAuthStore((state) => state.user);
   const shareLimit = getTierLimit(
@@ -90,7 +92,7 @@ export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: 
 
   const handleCopyLink = async (shortCode?: string) => {
     await Clipboard.setStringAsync(buildUrl(shortCode));
-    Alert.alert("Nusxalandi", "Sentence builder havolasi clipboard'ga saqlandi.");
+    Alert.alert(t("arena.shareLinks.copiedTitle"), t("arena.shareLinks.builderCopiedDescription"));
   };
 
   const handleCreate = async () => {
@@ -99,12 +101,12 @@ export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: 
     }
 
     if (links.length >= shareLimit) {
-      Alert.alert("Limit", `Bu to'plam uchun maksimal ${shareLimit} ta havola yaratish mumkin.`);
+      Alert.alert(t("arenaShared.shareLinks.limitReached"), t("arena.testsList.limitDescription", { count: shareLimit }));
       return;
     }
 
     if (mode === "persist" && !groupName.trim()) {
-      Alert.alert("Guruh nomi kerak", "Saqlanadigan havola uchun guruh nomini kiriting.");
+      Alert.alert(t("arena.shareLinks.groupRequiredTitle"), t("arena.shareLinks.groupRequiredDescription"));
       return;
     }
 
@@ -124,7 +126,7 @@ export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: 
       setTimeLimit("0");
     } catch (error) {
       Alert.alert(
-        "Havola yaratilmadi",
+        t("arena.shareLinks.createFailed"),
         error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
       );
     } finally {
@@ -137,10 +139,10 @@ export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: 
       return;
     }
 
-    Alert.alert("Havolani o'chirasizmi?", "Bu qisqa havola bekor qilinadi.", [
-      { text: "Bekor qilish", style: "cancel" },
+    Alert.alert(t("arena.shareLinks.deleteTitle"), t("arena.shareLinks.deleteDescription"), [
+      { text: t("common.cancel"), style: "cancel" },
       {
-        text: "O'chirish",
+        text: t("common.delete"),
         style: "destructive",
         onPress: () => {
           void (async () => {
@@ -153,7 +155,7 @@ export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: 
               await linksQuery.refetch();
             } catch (error) {
               Alert.alert(
-                "Havola o'chirilmadi",
+                t("arena.shareLinks.deleteFailed"),
                 error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
               );
             } finally {
@@ -168,7 +170,7 @@ export function ArenaSentenceBuilderShareLinksSheet({ visible, deck, onClose }: 
   return (
     <DraggableBottomSheet
       visible={visible}
-      title="Havola yaratish"
+      title={t("arenaShared.shareLinks.create")}
       onClose={onClose}
       minHeight={560}
       initialHeightRatio={0.84}

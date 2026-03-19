@@ -1,5 +1,6 @@
-import { Linking, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { Globe2, Plus, Trash2 } from "lucide-react-native";
+import { openJammAwareLink } from "../../../navigation/internalLinks";
 import { Colors } from "../../../theme/colors";
 import type { CourseLessonMaterial } from "../../../types/courses";
 import { adminResourceSectionStyles as styles } from "./adminResourceSectionStyles";
@@ -39,9 +40,13 @@ export function AdminMaterialsSection({
               <View style={styles.materialActions}>
                 <Pressable
                   style={styles.materialIconButton}
-                  onPress={() =>
-                    item.fileUrl ? Linking.openURL(item.fileUrl).catch(() => undefined) : undefined
-                  }
+                  onPress={() => {
+                    if (!item.fileUrl) {
+                      return;
+                    }
+
+                    void openJammAwareLink(item.fileUrl).catch(() => undefined);
+                  }}
                 >
                   <Globe2 size={15} color={Colors.text} />
                 </Pressable>

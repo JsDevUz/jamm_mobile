@@ -16,7 +16,7 @@ export type JammDeepLinkTarget =
   | { kind: "groupMeet"; roomId: string }
   | { kind: "arenaTestsList" }
   | { kind: "arenaTest"; testId?: string; shareShortCode?: string }
-  | { kind: "arenaFlashcards"; deckId?: string }
+  | { kind: "arenaFlashcards"; deckId?: string; folderId?: string }
   | { kind: "arenaSentenceBuilder"; deckId?: string; shareShortCode?: string }
   | { kind: "arenaMnemonics" };
 
@@ -156,6 +156,12 @@ export function parseJammDeepLink(urlString: string): JammDeepLinkTarget | null 
     if (secondLower === "flashcard" || secondLower === "flashcards") {
       return third
         ? { kind: "arenaFlashcards", deckId: third }
+        : { kind: "arenaFlashcards" };
+    }
+
+    if (secondLower === "flashcard-folders") {
+      return third
+        ? { kind: "arenaFlashcards", folderId: third }
         : { kind: "arenaFlashcards" };
     }
 

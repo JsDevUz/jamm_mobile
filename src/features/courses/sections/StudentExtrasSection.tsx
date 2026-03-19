@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { ChevronDown, ChevronUp, ClipboardList, FileText } from "lucide-react-native";
+import { useI18n } from "../../../i18n";
 import { Colors } from "../../../theme/colors";
 import type { CourseHomeworkAssignment, CourseLinkedTest } from "../../../types/courses";
 
@@ -24,6 +25,7 @@ export function StudentExtrasSection({
   onOpenHomeworkSubmit,
   timeAgo,
 }: Props) {
+  const { t } = useI18n();
   if (!visible) {
     return null;
   }
@@ -36,25 +38,25 @@ export function StudentExtrasSection({
       <Pressable style={styles.header} onPress={onToggle}>
         <View style={styles.headerCopy}>
           <View style={styles.titleRow}>
-            <Text style={styles.title}>Dars qo'shimchalari</Text>
+            <Text style={styles.title}>{t("coursePlayer.extras.title")}</Text>
             {open ? (
               <ChevronUp size={16} color={Colors.subtleText} />
             ) : (
               <ChevronDown size={16} color={Colors.subtleText} />
             )}
           </View>
-          <Text style={styles.hint}>Test va uyga vazifani shu yerda ochasiz.</Text>
+          <Text style={styles.hint}>{t("coursePlayer.extras.description")}</Text>
         </View>
         {!open ? (
           <View style={styles.badgeRow}>
             {hasLessonTests ? (
               <View style={styles.badge}>
-                <Text style={styles.badgeText}>Lesson testi</Text>
+                <Text style={styles.badgeText}>{t("coursePlayer.lessonTests.title")}</Text>
               </View>
             ) : null}
             {hasHomework ? (
               <View style={styles.badge}>
-                <Text style={styles.badgeText}>Uyga vazifa</Text>
+                <Text style={styles.badgeText}>{t("coursePlayer.homework.title")}</Text>
               </View>
             ) : null}
           </View>
@@ -67,10 +69,13 @@ export function StudentExtrasSection({
             <View style={styles.block}>
               <View style={styles.blockHeader}>
                 <ClipboardList size={16} color={Colors.primary} />
-                <Text style={styles.blockTitle}>Lesson testi</Text>
+                <Text style={styles.blockTitle}>{t("coursePlayer.lessonTests.title")}</Text>
               </View>
               <Text style={styles.blockHint}>
-                {linkedTests.filter((item) => item.selfProgress?.passed).length} / {linkedTests.length} test bajarilgan
+                {t("coursePlayer.lessonTests.studentHint", {
+                  count: linkedTests.filter((item) => item.selfProgress?.passed).length,
+                  total: linkedTests.length,
+                })}
               </Text>
               <View style={styles.resourceList}>
                 {linkedTests.map((item) => (
@@ -78,16 +83,18 @@ export function StudentExtrasSection({
                     <View style={styles.resourceCopy}>
                       <Text style={styles.resourceTitle}>{item.title}</Text>
                       <Text style={styles.resourceMeta}>
-                        {item.resourceType === "sentenceBuilder" ? "Sentence builder" : "Quiz"} · min {item.minimumScore || 0}%
+                        {item.resourceType === "sentenceBuilder"
+                          ? t("coursePlayer.lessonTests.typeSentenceBuilder")
+                          : t("coursePlayer.lessonTests.typeTest")} · min {item.minimumScore || 0}%
                       </Text>
                       {item.selfProgress ? (
                         <Text style={styles.progressText}>
-                          {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% · {item.selfProgress.passed ? "Passed" : "Waiting"}
+                          {item.selfProgress.bestPercent || item.selfProgress.percent || 0}% · {item.selfProgress.passed ? t("coursePlayer.lessonTests.completed") : t("coursePlayer.homework.status.submitted")}
                         </Text>
                       ) : null}
                     </View>
                     <Pressable style={styles.resourceButton} onPress={() => void onOpenLinkedTest(item)}>
-                      <Text style={styles.resourceButtonText}>Boshlash</Text>
+                      <Text style={styles.resourceButtonText}>{t("coursePlayer.lessonTests.start")}</Text>
                     </Pressable>
                   </View>
                 ))}
@@ -99,31 +106,33 @@ export function StudentExtrasSection({
             <View style={styles.block}>
               <View style={styles.blockHeader}>
                 <FileText size={16} color={Colors.primary} />
-                <Text style={styles.blockTitle}>Uyga vazifa</Text>
+                <Text style={styles.blockTitle}>{t("coursePlayer.homework.title")}</Text>
               </View>
-              <Text style={styles.blockHint}>Javobni topshiriq turiga mos yuboring</Text>
+              <Text style={styles.blockHint}>{t("coursePlayer.homework.studentHint")}</Text>
               <View style={styles.resourceList}>
                 {homeworkAssignments.map((item) => (
                   <View key={item.assignmentId || item.title} style={styles.homeworkCard}>
                     <View style={styles.resourceCopy}>
                       <Text style={styles.resourceTitle}>{item.title}</Text>
                       <Text style={styles.resourceMeta}>
-                        {item.type} · {item.maxScore || 0} ball
+                        {item.type} · {item.maxScore || 0} {t("coursePlayer.homework.scoreLabel").toLowerCase()}
                         {item.deadline ? ` · ${timeAgo(item.deadline)}` : ""}
                       </Text>
                       {item.description ? <Text style={styles.homeworkDescription}>{item.description}</Text> : null}
                       {item.selfSubmission ? (
                         <Text style={styles.progressText}>
-                          {item.selfSubmission.status || "submitted"}
+                          {item.selfSubmission.status
+                            ? t(`coursePlayer.homework.status.${item.selfSubmission.status}`)
+                            : t("coursePlayer.homework.status.submitted")}
                           {item.selfSubmission.score !== null && item.selfSubmission.score !== undefined
-                            ? ` · ${item.selfSubmission.score} ball`
+                            ? ` · ${item.selfSubmission.score} ${t("coursePlayer.homework.scoreLabel").toLowerCase()}`
                             : ""}
                         </Text>
                       ) : null}
                     </View>
                     <Pressable style={styles.resourceButton} onPress={() => onOpenHomeworkSubmit(item)}>
                       <Text style={styles.resourceButtonText}>
-                        {item.selfSubmission ? "Yangilash" : "Topshirish"}
+                        {item.selfSubmission ? t("coursePlayer.lessonTests.retry") : t("coursePlayer.homework.submit")}
                       </Text>
                     </Pressable>
                   </View>

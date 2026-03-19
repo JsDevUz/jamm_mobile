@@ -12,6 +12,7 @@ import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { TextInput } from "../../components/TextInput";
+import { useI18n } from "../../i18n";
 import { arenaApi } from "../../lib/api";
 import { Colors } from "../../theme/colors";
 import type {
@@ -54,12 +55,13 @@ function stripGroupSuffix(nickname = "") {
   return String(nickname).replace(/\s*\([^()]+\)\s*$/, "").trim();
 }
 
-function formatDate(value?: string) {
+function formatDate(value: string | undefined, language: "uz" | "en" | "ru", unknownLabel: string) {
   if (!value) {
-    return "Vaqti noma'lum";
+    return unknownLabel;
   }
 
-  return new Date(value).toLocaleString("uz-UZ", {
+  const locale = language === "en" ? "en-US" : language === "ru" ? "ru-RU" : "uz-UZ";
+  return new Date(value).toLocaleString(locale, {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -69,6 +71,7 @@ function formatDate(value?: string) {
 }
 
 export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
+  const { t, language } = useI18n();
   const insets = useSafeAreaInsets();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [groupFilter, setGroupFilter] = useState("");
@@ -123,7 +126,7 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
           );
           const score = Number(participant.score || 0);
 
-          return {
+      return {
             id: `${history._id || history.createdAt}-${participant.userId || participantIndex}`,
             participantName:
               stripGroupSuffix(participant.nickname) || "Foydalanuvchi",
@@ -144,7 +147,7 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
                   question?.questionText ||
                   question?.question ||
                   question?.prompt ||
-                  `Savol #${Number(item.questionIndex || 0) + 1}`,
+                  `${t("arenaShared.results.question")} #${Number(item.questionIndex || 0) + 1}`,
                 isCorrect: Boolean(item.correct),
                 selectedText:
                   selectedIndex >= 0
@@ -173,16 +176,15 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
   const header = (
     <View style={styles.headerContent}>
       <Text style={styles.subtitle}>
-        "{test?.title || "Test"}" bo'yicha ishlagan foydalanuvchilar va har bir savoldagi
-        breakdown.
+        {t("arena.resultsScreen.subtitle", { title: test?.title || t("arena.testsList.untitled") })}
       </Text>
 
       <View style={styles.filterSection}>
         <View style={styles.filterHeader}>
-          <Text style={styles.filterLabel}>Guruh filtri</Text>
+          <Text style={styles.filterLabel}>{t("arena.resultsScreen.groupFilter")}</Text>
           {groupFilter ? (
             <Pressable onPress={() => setGroupFilter("")} hitSlop={8}>
-              <Text style={styles.filterClear}>Tozalash</Text>
+              <Text style={styles.filterClear}>{t("arena.resultsScreen.clear")}</Text>
             </Pressable>
           ) : null}
         </View>
@@ -190,7 +192,7 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
         <TextInput
           value={groupFilter}
           onChangeText={setGroupFilter}
-          placeholder="Guruh nomi bo'yicha qidiring"
+          placeholder={t("arena.resultsScreen.groupPlaceholder")}
           placeholderTextColor={Colors.subtleText}
           autoCorrect={false}
           autoCapitalize="none"
@@ -199,7 +201,7 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
         />
 
         <Text style={styles.filterHint}>
-          Natijalar guruh bo'yicha sahifalab yuklanadi.
+          {t("arena.resultsScreen.groupHint")}
         </Text>
       </View>
     </View>
@@ -208,7 +210,7 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
   return (
     <DraggableBottomSheet
       visible={visible}
-      title="Test natijalari"
+      title={t("arena.resultsScreen.title")}
       onClose={onClose}
       minHeight={560}
       initialHeightRatio={0.84}
@@ -220,12 +222,12 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
         </View>
       ) : resultsQuery.isError ? (
         <View style={styles.centerState}>
-          <Text style={styles.stateTitle}>Natijalar yuklanmadi</Text>
+          <Text style={styles.stateTitle}>{t("arena.resultsScreen.loadFailed")}</Text>
           <Pressable
             style={styles.retryButton}
             onPress={() => void resultsQuery.refetch()}
           >
-            <Text style={styles.retryButtonText}>Qayta yuklash</Text>
+            <Text style={styles.retryButtonText}>{t("arena.resultsScreen.retry")}</Text>
           </Pressable>
         </View>
       ) : (
@@ -252,11 +254,11 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
           ItemSeparatorComponent={() => <View style={styles.separator} />}
           ListEmptyComponent={
             <View style={styles.centerState}>
-              <Text style={styles.stateTitle}>Natijalar topilmadi</Text>
+              <Text style={styles.stateTitle}>{t("arena.resultsScreen.emptyTitle")}</Text>
               <Text style={styles.stateText}>
                 {debouncedGroupFilter
-                  ? `"${debouncedGroupFilter}" guruhiga mos urinishlar topilmadi.`
-                  : "Bu test bo'yicha hali saqlangan urinishlar yo'q."}
+                  ? t("arena.resultsScreen.emptyFiltered", { group: debouncedGroupFilter })
+                  : t("arena.resultsScreen.empty")}
               </Text>
             </View>
           }
@@ -284,7 +286,7 @@ export function ArenaTestResultsSheet({ visible, test, onClose }: Props) {
                     <Text style={styles.participantName}>{row.participantName}</Text>
                     <Text style={styles.participantMeta}>
                       {row.groupName ? `${row.groupName} • ` : ""}
-                      {formatDate(row.createdAt)}
+                      {formatDate(row.createdAt, language, t("arena.resultsScreen.unknownTime"))}
                     </Text>
                   </View>
 

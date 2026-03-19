@@ -36,9 +36,48 @@ export type MainTabsParamList = {
     | undefined;
 };
 
+export type ProfilePaneSection =
+  | "groups"
+  | "articles"
+  | "courses"
+  | "appearance"
+  | "language"
+  | "security"
+  | "premium"
+  | "support"
+  | "favorites"
+  | "learn";
+
+export type ProfilePaneRouteParams = {
+  userId?: string | null;
+  jammId?: string | number | null;
+};
+
+export type ProfilePaneRouteName =
+  | "ProfileGroups"
+  | "ProfileArticles"
+  | "ProfileCourses"
+  | "ProfileAppearance"
+  | "ProfileLanguage"
+  | "ProfileSecurity"
+  | "ProfilePremium"
+  | "ProfileSupport"
+  | "ProfileFavorites"
+  | "ProfileLearn";
+
 export type RootStackParamList = {
   Auth: undefined;
   MainTabs: NavigatorScreenParams<MainTabsParamList>;
+  ProfileGroups: ProfilePaneRouteParams;
+  ProfileArticles: ProfilePaneRouteParams;
+  ProfileCourses: ProfilePaneRouteParams;
+  ProfileAppearance: ProfilePaneRouteParams;
+  ProfileLanguage: ProfilePaneRouteParams;
+  ProfileSecurity: ProfilePaneRouteParams;
+  ProfilePremium: ProfilePaneRouteParams;
+  ProfileSupport: ProfilePaneRouteParams;
+  ProfileFavorites: ProfilePaneRouteParams;
+  ProfileLearn: ProfilePaneRouteParams;
   ArticleDetail: {
     articleId: string;
   };
@@ -50,6 +89,7 @@ export type RootStackParamList = {
   ArenaFlashcardList:
     | {
         deckId?: string;
+        folderId?: string;
       }
     | undefined;
   ArenaSentenceBuilderList:
@@ -75,6 +115,9 @@ export type RootStackParamList = {
     chatId: string;
     title: string;
     isGroup: boolean;
+  };
+  GroupPreview: {
+    identifier: string;
   };
   PrivateMeet: {
     chatId?: string;

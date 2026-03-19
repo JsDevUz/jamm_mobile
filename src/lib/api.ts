@@ -10,6 +10,7 @@ import type {
   ChatAdmin,
   ProfileDecoration,
   ChatSummary,
+  GroupLinkPreview,
   MeetSummary,
   Message,
   PaginatedMessages,
@@ -43,6 +44,9 @@ import type {
 import type {
   ArenaFlashcardDeck,
   ArenaFlashcardDecksResponse,
+  ArenaFlashcardFolder,
+  ArenaFlashcardFolderMutationPayload,
+  ArenaFlashcardFoldersResponse,
   ArenaFlashcardMutationPayload,
   ArenaMnemonicLeaderboardResponse,
   ArenaMnemonicMode,
@@ -241,7 +245,7 @@ async function requestWithFallback<T>(
 const normalizeChatSummary = (chat: ChatSummary): ChatSummary => ({
   ...chat,
   id: chat.id || chat._id,
-  urlSlug: chat.urlSlug || chat.jammId || chat.privateurl || chat._id,
+  urlSlug: chat.privateurl || chat.urlSlug || chat.jammId || chat._id,
   type: chat.type || (chat.isGroup ? "group" : "user"),
   unread:
     typeof chat.unread === "number"
@@ -410,6 +414,8 @@ export const chatsApi = {
     request(`/chats/${chatId}/leave`, {
       method: "POST",
     }),
+  previewGroupByLink: (slugOrId: string) =>
+    request<GroupLinkPreview>(`/chats/preview/${encodeURIComponent(slugOrId)}`),
   joinGroupByLink: async (slugOrId: string) => {
     const payload = await request<ChatSummary>(
       `/chats/${encodeURIComponent(slugOrId)}/join-link`,
@@ -564,6 +570,27 @@ export const usersApi = {
       body: JSON.stringify(payload || {}),
     }),
   getProfileDecorations: () => request<ProfileDecoration[]>("/users/profile-decorations"),
+};
+
+export const premiumApi = {
+  getPlans: () =>
+    request<
+      Array<{
+        _id?: string;
+        id?: string;
+        name: string;
+        durationInDays: number;
+        price: number;
+        features?: string[];
+        isActive?: boolean;
+      }>
+    >("/premium/plans"),
+  redeemPromo: (code: string) =>
+    request("/premium/redeem", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  getStatus: () => request<{ status: string }>("/premium/status"),
 };
 
 export const presenceApi = {
@@ -803,6 +830,24 @@ export const coursesApi = {
     request<CoursesResponse>(
       `/courses?page=${page}&limit=${limit}`,
     ),
+  fetchLikedLessons: () =>
+    request<
+      Array<{
+        _id: string;
+        title?: string;
+        description?: string;
+        likes?: number;
+        views?: number;
+        urlSlug?: string;
+        addedAt?: string;
+        course?: {
+          _id?: string;
+          name?: string;
+          image?: string;
+          urlSlug?: string;
+        } | null;
+      }>
+    >("/courses/liked-lessons"),
   getCourse: (identifier: string) => request<Course>(`/courses/${identifier}`),
   createCourse: (payload: {
     name: string;
@@ -1208,6 +1253,7 @@ export const arenaApi = {
       body: JSON.stringify({
         title: payload.title,
         cards: payload.cards || [],
+        folderId: payload.folderId || null,
         isPublic: payload.isPublic !== false,
       }),
     }),
@@ -1217,6 +1263,7 @@ export const arenaApi = {
       body: JSON.stringify({
         title: payload.title,
         cards: payload.cards || [],
+        folderId: payload.folderId || null,
         isPublic: payload.isPublic !== false,
       }),
     }),
@@ -1232,6 +1279,41 @@ export const arenaApi = {
     request<Record<string, unknown>>(`/arena/flashcards/${deckId}/leave`, {
       method: "DELETE",
     }),
+  fetchFlashcardFolders: () =>
+    request<ArenaFlashcardFoldersResponse>("/arena/flashcard-folders"),
+  fetchFlashcardFolder: (folderId: string) =>
+    request<ArenaFlashcardFolder>(`/arena/flashcard-folders/${folderId}`),
+  createFlashcardFolder: (payload: ArenaFlashcardFolderMutationPayload) =>
+    request<ArenaFlashcardFolder>("/arena/flashcard-folders", {
+      method: "POST",
+      body: JSON.stringify({
+        title: payload.title,
+        isPublic: payload.isPublic !== false,
+      }),
+    }),
+  updateFlashcardFolder: (folderId: string, payload: ArenaFlashcardFolderMutationPayload) =>
+    request<ArenaFlashcardFolder>(`/arena/flashcard-folders/${folderId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        title: payload.title,
+        isPublic: payload.isPublic !== false,
+      }),
+    }),
+  joinFlashcardFolder: (folderId: string) =>
+    request<ArenaFlashcardFolder>(`/arena/flashcard-folders/${folderId}/join`, {
+      method: "POST",
+    }),
+  leaveFlashcardFolder: (folderId: string) =>
+    request<ArenaFlashcardFolder>(`/arena/flashcard-folders/${folderId}/leave`, {
+      method: "DELETE",
+    }),
+  deleteFlashcardFolder: (folderId: string) =>
+    request<{ success?: boolean; deletedFolderId?: string }>(
+      `/arena/flashcard-folders/${folderId}`,
+      {
+        method: "DELETE",
+      },
+    ),
   reviewFlashcard: (deckId: string, cardId: string, quality: number) =>
     request<ArenaFlashcardReviewResponse>(
       `/arena/flashcards/${deckId}/cards/${cardId}/review`,

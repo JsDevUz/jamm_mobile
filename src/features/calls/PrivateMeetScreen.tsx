@@ -89,11 +89,10 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
-  const [callStatus, setCallStatus] = useState(
-    isCaller ? "Private qo'ng'iroq yuborilmoqda..." : "Private qo'ng'iroqqa ulanmoqda...",
-  );
+  const [callStatus, setCallStatus] = useState("Ulanmoqda...");
   const [loadingMedia, setLoadingMedia] = useState(true);
   const [roomTitle, setRoomTitle] = useState(title || "Private meet");
   const [roomIsPrivate, setRoomIsPrivate] = useState(true);
@@ -101,9 +100,11 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
   const socketRef = useRef<Socket | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const screenPeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remotePeerIdRef = useRef<string | null>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([]);
+  const pendingScreenIceCandidatesRef = useRef<RTCIceCandidate[]>([]);
   const pendingKnockPeerIdRef = useRef<string | null>(null);
   const remoteAcceptedRef = useRef(!isCaller);
   const hangupStartedRef = useRef(false);
@@ -141,10 +142,14 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const cleanupPeerConnection = useCallback(() => {
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
+    screenPeerConnectionRef.current?.close();
+    screenPeerConnectionRef.current = null;
     remotePeerIdRef.current = null;
     pendingIceCandidatesRef.current = [];
+    pendingScreenIceCandidatesRef.current = [];
     pendingKnockPeerIdRef.current = null;
     setRemoteStream(null);
+    setRemoteScreenStream(null);
   }, []);
 
   const flushPendingIceCandidates = useCallback(async () => {
@@ -155,6 +160,24 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
     const queuedCandidates = [...pendingIceCandidatesRef.current];
     pendingIceCandidatesRef.current = [];
+
+    for (const candidate of queuedCandidates) {
+      try {
+        await connection.addIceCandidate(candidate);
+      } catch {
+        continue;
+      }
+    }
+  }, []);
+
+  const flushPendingScreenIceCandidates = useCallback(async () => {
+    const connection = screenPeerConnectionRef.current;
+    if (!connection?.remoteDescription || !pendingScreenIceCandidatesRef.current.length) {
+      return;
+    }
+
+    const queuedCandidates = [...pendingScreenIceCandidatesRef.current];
+    pendingScreenIceCandidatesRef.current = [];
 
     for (const candidate of queuedCandidates) {
       try {
@@ -299,6 +322,50 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     [],
   );
 
+  const createScreenPeerConnection = useCallback(
+    (targetPeerId: string) => {
+      if (screenPeerConnectionRef.current) {
+        return screenPeerConnectionRef.current;
+      }
+
+      remotePeerIdRef.current = targetPeerId;
+      const connection = new RTCPeerConnection(ICE_CONFIG) as RTCPeerConnection & {
+        onicecandidate?: ((event: any) => void) | null;
+        ontrack?: ((event: any) => void) | null;
+        onconnectionstatechange?: (() => void) | null;
+      };
+
+      connection.onicecandidate = (event: any) => {
+        if (!event.candidate || !remotePeerIdRef.current) {
+          return;
+        }
+
+        socketRef.current?.emit("screen-ice-candidate", {
+          targetId: remotePeerIdRef.current,
+          candidate: event.candidate,
+        });
+      };
+
+      connection.ontrack = (event: any) => {
+        const [stream] = event.streams;
+        if (stream) {
+          setRemoteScreenStream(stream);
+        }
+      };
+
+      connection.onconnectionstatechange = () => {
+        const state = connection.connectionState;
+        if (state === "failed" || state === "closed" || state === "disconnected") {
+          setRemoteScreenStream(null);
+        }
+      };
+
+      screenPeerConnectionRef.current = connection;
+      return connection;
+    },
+    [],
+  );
+
   const createOfferForPeer = useCallback(
     async (targetPeerId: string) => {
       try {
@@ -369,7 +436,6 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
         callRequestSentRef.current = true;
         realtime.emitCallRequest(remoteUserId, roomId, "video");
-        setCallStatus("Javob kutilmoqda...");
       });
 
       socket.on("room-info", ({ title: nextTitle, isPrivate: nextIsPrivate }) => {
@@ -492,6 +558,23 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         }
       });
 
+      socket.on("screen-offer", async ({ senderId, sdp }) => {
+        try {
+          remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
+          const connection = createScreenPeerConnection(String(senderId));
+          await connection.setRemoteDescription(new RTCSessionDescription(sdp));
+          await flushPendingScreenIceCandidates();
+          const answer = await connection.createAnswer();
+          await connection.setLocalDescription(answer);
+          socket.emit("screen-answer", { targetId: senderId, sdp: answer });
+        } catch (error) {
+          Alert.alert(
+            "Screen share xatosi",
+            error instanceof Error ? error.message : "Screen share offer qabul qilinmadi.",
+          );
+        }
+      });
+
       socket.on("ice-candidate", async ({ senderId, candidate }) => {
         try {
           if (!candidate) {
@@ -517,15 +600,48 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         }
       });
 
+      socket.on("screen-ice-candidate", async ({ senderId, candidate }) => {
+        try {
+          if (!candidate) {
+            return;
+          }
+          remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
+          if (!screenPeerConnectionRef.current) {
+            createScreenPeerConnection(String(senderId));
+          }
+
+          const normalizedCandidate = new RTCIceCandidate(candidate);
+          if (!screenPeerConnectionRef.current?.remoteDescription) {
+            pendingScreenIceCandidatesRef.current = [
+              ...pendingScreenIceCandidatesRef.current,
+              normalizedCandidate,
+            ];
+            return;
+          }
+
+          await screenPeerConnectionRef.current?.addIceCandidate(normalizedCandidate);
+        } catch {
+          return;
+        }
+      });
+
       socket.on("peer-left", () => {
         setCallStatus("Qo'ng'iroq tugadi");
         setRemoteStream(null);
+        setRemoteScreenStream(null);
         cleanupPeerConnection();
         if (!hangupStartedRef.current) {
           setTimeout(() => {
             navigation.goBack();
           }, 400);
         }
+      });
+
+      socket.on("screen-share-stopped", () => {
+        setRemoteScreenStream(null);
+        screenPeerConnectionRef.current?.close();
+        screenPeerConnectionRef.current = null;
+        pendingScreenIceCandidatesRef.current = [];
       });
 
       socket.on("error", ({ message }) => {
@@ -542,8 +658,10 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     cleanupPeerConnection,
     createOfferForPeer,
     createPeerConnection,
+    createScreenPeerConnection,
     displayName,
     flushPendingIceCandidates,
+    flushPendingScreenIceCandidates,
     isCaller,
     localStream,
     navigation,
@@ -665,9 +783,9 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         </View>
 
         <View style={styles.stage}>
-          {remoteStream ? (
+          {remoteScreenStream || remoteStream ? (
             <RTCView
-              streamURL={remoteStream.toURL()}
+              streamURL={(remoteScreenStream || remoteStream)?.toURL() || ""}
               style={styles.remoteVideo}
               objectFit="cover"
             />
@@ -691,6 +809,9 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
                   <Text style={styles.remoteName} numberOfLines={1}>
                     {remoteDisplayName}
                   </Text>
+                  {remoteScreenStream ? (
+                    <Text style={styles.remotePlaceholderText}>Ekran ulashmoqda</Text>
+                  ) : null}
                   <Text style={styles.remotePlaceholderText}>{callStatus}</Text>
                 </>
               )}

@@ -24,10 +24,12 @@ import { Plus, Video } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
+import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { CreateMeetDialog } from "../calls/CreateMeetDialog";
 import { CreateGroupDialog } from "./GroupDialogs";
 import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
+import { useI18n } from "../../i18n";
 import { chatsApi, meetsApi } from "../../lib/api";
 import { loadCachedChats, saveCachedChats } from "../../lib/chat-cache";
 import { buildJoinUrl } from "../../config/env";
@@ -37,12 +39,8 @@ import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import type { ChatSummary, MeetSummary, User } from "../../types/entities";
 import {
-  formatChatTime,
   getChatAvatarUri,
-  getChatPreview,
-  getChatSecondaryLabel,
   getOtherMember,
-  getChatTitle,
   getEntityId,
   getDirectChatUserLabel,
 } from "../../utils/chat";
@@ -52,6 +50,11 @@ type ChatTab = "private" | "group";
 const ONLINE_PRESENCE_WINDOW_MS = 45_000;
 const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
 const MEET_ROOM_ID_PATTERN = /^[a-z0-9_-]{4,128}$/i;
+const LOCALE_BY_LANGUAGE = {
+  uz: "uz-UZ",
+  en: "en-US",
+  ru: "ru-RU",
+} as const;
 
 const randomMeetToken = () =>
   Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
@@ -68,6 +71,7 @@ const buildMeetPayload = () => {
 };
 
 export function ChatsScreen({ navigation }: Props) {
+  const { t, language } = useI18n();
   const { width: screenWidth } = useWindowDimensions();
   const user = useAuthStore((state) => state.user);
   const queryClient = useQueryClient();
@@ -304,9 +308,9 @@ export function ChatsScreen({ navigation }: Props) {
       }
 
       const haystack = [
-        getChatTitle(chat, currentUserId),
-        getChatPreview(chat),
-        getChatSecondaryLabel(chat, currentUserId),
+        getLocalizedChatTitle(chat),
+        getLocalizedChatPreview(chat),
+        getLocalizedSecondaryLabel(chat),
         chat.urlSlug,
       ]
         .filter(Boolean)
@@ -344,7 +348,7 @@ export function ChatsScreen({ navigation }: Props) {
     await Haptics.selectionAsync();
     rootNavigation?.navigate("ChatRoom", {
       chatId: getEntityId(chat),
-      title: getChatTitle(chat, currentUserId),
+      title: getLocalizedChatTitle(chat),
       isGroup: Boolean(chat.isGroup),
     });
   };
@@ -387,7 +391,7 @@ export function ChatsScreen({ navigation }: Props) {
       setMeetDialogError(
         error instanceof Error
           ? error.message
-          : "Meet tayyorlab bo'lmadi. Qaytadan urinib ko'ring.",
+          : t("chatsSidebar.meetDialog.fallbackError"),
       );
     } finally {
       setMeetDialogLoading(false);
@@ -452,7 +456,7 @@ export function ChatsScreen({ navigation }: Props) {
     setCreateGroupOpen(false);
     rootNavigation?.navigate("ChatRoom", {
       chatId: getEntityId(createdChat),
-      title: getChatTitle(createdChat, currentUserId),
+      title: getLocalizedChatTitle(createdChat),
       isGroup: true,
     });
   };
@@ -466,32 +470,108 @@ export function ChatsScreen({ navigation }: Props) {
         })
       : 0;
 
+  function formatLocalizedChatTime(chat: ChatSummary) {
+    if (chat.time?.trim()) {
+      return chat.time.trim();
+    }
+
+    const source = chat.updatedAt || chat.createdAt;
+    if (!source) {
+      return "";
+    }
+
+    const date = new Date(source);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    const locale = LOCALE_BY_LANGUAGE[language];
+    const sameDay = date.toDateString() === new Date().toDateString();
+    if (sameDay) {
+      return date.toLocaleTimeString(locale, {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
+    return date.toLocaleDateString(locale, {
+      month: "short",
+      day: "numeric",
+    });
+  }
+
+  function getLocalizedChatTitle(chat: ChatSummary) {
+    if (chat.isSavedMessages) {
+      return t("chatsSidebar.savedMessages");
+    }
+
+    if (chat.isGroup) {
+      return chat.name || t("chatsSidebar.groupFallback");
+    }
+
+    const otherMember = getOtherMember(chat, currentUserId);
+    return getDirectChatUserLabel(otherMember) || chat.name || t("chatsSidebar.chatFallback");
+  }
+
+  function getLocalizedChatPreview(chat: ChatSummary) {
+    if (chat.lastMessage?.trim()) {
+      return chat.lastMessage.trim();
+    }
+
+    if (chat.isGroup) {
+      return t("chatsSidebar.search.groupMeta", { count: chat.members?.length || 0 });
+    }
+
+    return t("chatsSidebar.startConversation");
+  }
+
+  function getLocalizedSecondaryLabel(chat: ChatSummary) {
+    if (chat.isSavedMessages) {
+      return t("chatsSidebar.selfLabel");
+    }
+
+    if (chat.isGroup) {
+      return t("chatsSidebar.search.groupMeta", { count: chat.members?.length || 0 });
+    }
+
+    const otherMember = getOtherMember(chat, currentUserId);
+    if (otherMember?.username) {
+      return `@${otherMember.username}`;
+    }
+
+    return t("chatsSidebar.offline");
+  }
+
   const renderChatList = (tab: ChatTab, chats: ChatSummary[]) => (
     <>
       {!chatCacheHydrated || (chatsQuery.isLoading && !hasChatsSnapshot) ? (
         <View style={styles.centerState}>
           <ActivityIndicator color={Colors.primary} />
-          <Text style={styles.helperText}>Chatlar yuklanmoqda...</Text>
+          <Text style={styles.helperText}>{t("chatsSidebar.loading")}</Text>
         </View>
       ) : chatsQuery.isError && !hasChatsSnapshot ? (
         <View style={styles.centerState}>
           <Ionicons name="cloud-offline-outline" size={28} color={Colors.warning} />
-          <Text style={styles.errorTitle}>Serverga ulanib bo'lmadi</Text>
+          <Text style={styles.errorTitle}>{t("chatsSidebar.connectError")}</Text>
           <Text style={styles.helperText}>
             {chatsQuery.error instanceof Error
               ? chatsQuery.error.message
-              : "Noma'lum xatolik"}
+              : t("chatsSidebar.connectError")}
           </Text>
           <Pressable style={styles.retryButton} onPress={() => chatsQuery.refetch()}>
-            <Text style={styles.retryText}>Qayta urinish</Text>
+            <Text style={styles.retryText}>{t("chatsSidebar.retry")}</Text>
           </Pressable>
         </View>
       ) : (
         <FlashList
+          style={styles.chatList}
           data={chats}
           keyExtractor={(item) => getEntityId(item)}
           drawDistance={320}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            chats.length === 0 && styles.listContentEmpty,
+          ]}
           refreshControl={
             <RefreshControl
               refreshing={isPullRefreshing}
@@ -508,19 +588,19 @@ export function ChatsScreen({ navigation }: Props) {
               />
               <Text style={styles.emptyTitle}>
                 {tab === "private"
-                  ? "Hozircha private chat yo'q"
-                  : "Hozircha group yo'q"}
+                  ? t("chatsSidebar.emptyPrivate")
+                  : t("chatsSidebar.emptyGroups")}
               </Text>
-              <Text style={styles.helperText}>Qidiruv yoki yangi suhbatdan boshlang.</Text>
+              <Text style={styles.helperText}>{t("chatsSidebar.emptyDescription")}</Text>
             </View>
           }
           renderItem={({ item }) => {
-            const title = getChatTitle(item, currentUserId);
+            const title = getLocalizedChatTitle(item);
             const avatarUri = getChatAvatarUri(item, currentUserId);
-            const secondaryLabel = getChatSecondaryLabel(item, currentUserId);
+            const secondaryLabel = getLocalizedSecondaryLabel(item);
             const unreadCount = Math.max(0, Number(item.unread) || 0);
             const otherMember = item.isGroup ? null : getOtherMember(item, currentUserId);
-            const previewText = getChatPreview(item) || secondaryLabel;
+            const previewText = getLocalizedChatPreview(item) || secondaryLabel;
             const isPrivateOnline = Boolean(otherMember && isUserCurrentlyOnline(otherMember));
             const groupOnlineCount = item.isGroup
               ? item.members?.filter((member) => {
@@ -572,13 +652,13 @@ export function ChatsScreen({ navigation }: Props) {
                       )}
                       <Text style={styles.previewText} numberOfLines={1}>
                         {item.isGroup && groupOnlineCount > 0
-                          ? `${previewText} · ${groupOnlineCount} online`
+                          ? `${previewText} · ${t("chatsSidebar.online", { count: groupOnlineCount })}`
                           : previewText}
                       </Text>
                     </View>
 
                     <View style={styles.chatMeta}>
-                      <Text style={styles.timeText}>{formatChatTime(item)}</Text>
+                      <Text style={styles.timeText}>{formatLocalizedChatTime(item)}</Text>
                       {unreadCount > 0 ? (
                         <View style={styles.unreadBadge}>
                           <Text style={styles.unreadText}>{unreadCount}</Text>
@@ -606,27 +686,32 @@ export function ChatsScreen({ navigation }: Props) {
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
-        <SearchHeaderBar
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder="Qidirish"
-          rightSlot={
-            activeTab === "group" ? (
-              <Pressable style={styles.actionButton} onPress={() => setCreateGroupOpen(true)}>
-                <Plus size={18} color={Colors.text} />
-              </Pressable>
-            ) : (
-              <Pressable style={styles.actionButton} onPress={handleOpenMeet}>
-                <Video size={18} color={Colors.text} />
-              </Pressable>
-            )
-          }
-        />
+        <GuidedTourTarget targetKey="chats-search">
+          <SearchHeaderBar
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder={t("chatsSidebar.searchPlaceholder")}
+            rightSlot={
+              activeTab === "group" ? (
+                <Pressable style={styles.actionButton} onPress={() => setCreateGroupOpen(true)}>
+                  <Plus size={18} color={Colors.text} />
+                </Pressable>
+              ) : (
+                <GuidedTourTarget targetKey="chats-video-tab">
+                  <Pressable style={styles.actionButton} onPress={handleOpenMeet}>
+                    <Video size={18} color={Colors.text} />
+                  </Pressable>
+                </GuidedTourTarget>
+              )
+            }
+          />
+        </GuidedTourTarget>
 
-        <View
-          style={styles.segmentedControl}
-          onLayout={(event) => setTabsWidth(event.nativeEvent.layout.width)}
-        >
+        <GuidedTourTarget targetKey="chats-tabs">
+          <View
+            style={styles.segmentedControl}
+            onLayout={(event) => setTabsWidth(event.nativeEvent.layout.width)}
+          >
           <Animated.View
             pointerEvents="none"
             style={[
@@ -639,79 +724,88 @@ export function ChatsScreen({ navigation }: Props) {
                 : null,
             ]}
           />
-          <Pressable
-            style={styles.segmentButton}
-            onPress={() => animateToTab("private", true)}
-          >
-            <Text style={[styles.segmentText, activeTab === "private" && styles.segmentTextActive]}>
-              Chats
-            </Text>
-            {privateUnreadTotal > 0 ? (
-              <View
-                style={[
-                  styles.segmentBadge,
-                  activeTab === "private" && styles.segmentBadgeActive,
-                ]}
+            <GuidedTourTarget targetKey="chats-private-tab">
+              <Pressable
+                style={styles.segmentButton}
+                onPress={() => animateToTab("private", true)}
               >
-                <Text style={styles.segmentBadgeText}>
-                  {privateUnreadTotal > 99 ? "99+" : privateUnreadTotal}
+                <Text style={[styles.segmentText, activeTab === "private" && styles.segmentTextActive]}>
+                  {t("chatsSidebar.tabs.private")}
                 </Text>
-              </View>
-            ) : null}
-          </Pressable>
-          <Pressable
-            style={styles.segmentButton}
-            onPress={() => animateToTab("group", true)}
-          >
-            <Text style={[styles.segmentText, activeTab === "group" && styles.segmentTextActive]}>
-              Groups
-            </Text>
-            {groupUnreadTotal > 0 ? (
-              <View
-                style={[
-                  styles.segmentBadge,
-                  activeTab === "group" && styles.segmentBadgeActive,
-                ]}
+                {privateUnreadTotal > 0 ? (
+                  <View
+                    style={[
+                      styles.segmentBadge,
+                      activeTab === "private" && styles.segmentBadgeActive,
+                    ]}
+                  >
+                    <Text style={styles.segmentBadgeText}>
+                      {privateUnreadTotal > 99 ? "99+" : privateUnreadTotal}
+                    </Text>
+                  </View>
+                ) : null}
+              </Pressable>
+            </GuidedTourTarget>
+            <GuidedTourTarget targetKey="chats-groups-tab">
+              <Pressable
+                style={styles.segmentButton}
+                onPress={() => animateToTab("group", true)}
               >
-                <Text style={styles.segmentBadgeText}>
-                  {groupUnreadTotal > 99 ? "99+" : groupUnreadTotal}
+                <Text style={[styles.segmentText, activeTab === "group" && styles.segmentTextActive]}>
+                  {t("chatsSidebar.tabs.groups")}
                 </Text>
-              </View>
-            ) : null}
-          </Pressable>
-        </View>
+                {groupUnreadTotal > 0 ? (
+                  <View
+                    style={[
+                      styles.segmentBadge,
+                      activeTab === "group" && styles.segmentBadgeActive,
+                    ]}
+                  >
+                    <Text style={styles.segmentBadgeText}>
+                      {groupUnreadTotal > 99 ? "99+" : groupUnreadTotal}
+                    </Text>
+                  </View>
+                ) : null}
+              </Pressable>
+            </GuidedTourTarget>
+          </View>
+        </GuidedTourTarget>
 
-        <View style={styles.contentArea}>
-          <Animated.ScrollView
-            ref={pagerRef}
-            horizontal
-            pagingEnabled
-            bounces={false}
-            nestedScrollEnabled
-            showsHorizontalScrollIndicator={false}
-            scrollEventThrottle={16}
-            onMomentumScrollEnd={(event) => {
-              const nextIndex = Math.round(
-                event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
-              );
-              const nextTab = nextIndex === 1 ? "group" : "private";
-              currentIndexRef.current = nextIndex;
-              setActiveTab(nextTab);
-            }}
-            onScroll={Animated.event(
-              [{ nativeEvent: { contentOffset: { x: pagerScrollX } } }],
-              { useNativeDriver: false },
-            )}
-            style={styles.pagerTrack}
-          >
-            <View style={[styles.pagerPage, { width: screenWidth }]}>
-              {renderChatList("private", privateChats)}
+        <GuidedTourTarget targetKey="chats-list" style={styles.flexTarget}>
+          <GuidedTourTarget targetKey="chats-content" style={styles.flexTarget}>
+            <View style={styles.contentArea}>
+              <Animated.ScrollView
+                ref={pagerRef}
+                horizontal
+                pagingEnabled
+                bounces={false}
+                nestedScrollEnabled
+                showsHorizontalScrollIndicator={false}
+                scrollEventThrottle={16}
+                onMomentumScrollEnd={(event) => {
+                  const nextIndex = Math.round(
+                    event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
+                  );
+                  const nextTab = nextIndex === 1 ? "group" : "private";
+                  currentIndexRef.current = nextIndex;
+                  setActiveTab(nextTab);
+                }}
+                onScroll={Animated.event(
+                  [{ nativeEvent: { contentOffset: { x: pagerScrollX } } }],
+                  { useNativeDriver: false },
+                )}
+                style={styles.pagerTrack}
+              >
+                <View style={[styles.pagerPage, { width: screenWidth }]}>
+                  {renderChatList("private", privateChats)}
+                </View>
+                <View style={[styles.pagerPage, { width: screenWidth }]}>
+                  {renderChatList("group", groupChats)}
+                </View>
+              </Animated.ScrollView>
             </View>
-            <View style={[styles.pagerPage, { width: screenWidth }]}>
-              {renderChatList("group", groupChats)}
-            </View>
-          </Animated.ScrollView>
-        </View>
+          </GuidedTourTarget>
+        </GuidedTourTarget>
 
       </View>
 
@@ -790,10 +884,15 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
     position: "relative",
+    justifyContent:'space-around',
+    minHeight: 50,
   },
   contentArea: {
     flex: 1,
     overflow: "hidden",
+  },
+  flexTarget: {
+    flex: 1,
   },
   segmentButton: {
     flex: 1,
@@ -868,7 +967,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   listContent: {
+    flexGrow: 1,
     paddingBottom: 110,
+  },
+  listContentEmpty: {
+    justifyContent: "center",
+  },
+  chatList: {
+    flex: 1,
   },
   pagerTrack: {
     flex: 1,

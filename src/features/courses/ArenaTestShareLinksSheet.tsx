@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { TextInput } from "../../components/TextInput";
 import { APP_BASE_URL } from "../../config/env";
+import { useI18n } from "../../i18n";
 import { arenaApi } from "../../lib/api";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -42,6 +43,7 @@ function formatDate(value?: string) {
 }
 
 export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const user = useAuthStore((state) => state.user);
   const isPremium =
@@ -85,7 +87,7 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
   const handleCopyLink = async (shortCode?: string) => {
     await Clipboard.setStringAsync(buildUrl(shortCode));
     await Haptics.selectionAsync();
-    Alert.alert("Nusxalandi", "Test havolasi clipboard'ga saqlandi.");
+    Alert.alert(t("arena.shareLinks.copiedTitle"), t("arena.shareLinks.testCopiedDescription"));
   };
 
   const handleCreate = async () => {
@@ -94,12 +96,12 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
     }
 
     if (links.length >= shareLimit) {
-      Alert.alert("Limitga yetildi", `Bu test uchun maksimal ${shareLimit} ta havola yaratish mumkin.`);
+      Alert.alert(t("arenaShared.shareLinks.limitReached"), t("arena.testsList.limitDescription", { count: shareLimit }));
       return;
     }
 
     if (mode === "persist" && !groupName.trim()) {
-      Alert.alert("Guruh nomi kerak", "Saqlanadigan havola uchun guruh nomini kiriting.");
+      Alert.alert(t("arena.shareLinks.groupRequiredTitle"), t("arena.shareLinks.groupRequiredDescription"));
       return;
     }
 
@@ -119,7 +121,7 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
       setTimeLimit("0");
     } catch (error) {
       Alert.alert(
-        "Havola yaratilmadi",
+        t("arena.shareLinks.createFailed"),
         error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
       );
     } finally {
@@ -132,13 +134,13 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
       return;
     }
 
-    Alert.alert("Havolani o'chirasizmi?", "Bu qisqa havola bekor qilinadi.", [
+    Alert.alert(t("arena.shareLinks.deleteTitle"), t("arena.shareLinks.deleteDescription"), [
       {
-        text: "Bekor qilish",
+        text: t("common.cancel"),
         style: "cancel",
       },
       {
-        text: "O'chirish",
+        text: t("common.delete"),
         style: "destructive",
         onPress: () => {
           void (async () => {
@@ -148,7 +150,7 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
               await linksQuery.refetch();
             } catch (error) {
               Alert.alert(
-                "Havola o'chirilmadi",
+                t("arena.shareLinks.deleteFailed"),
                 error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
               );
             } finally {
@@ -163,7 +165,7 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
   return (
     <DraggableBottomSheet
       visible={visible}
-      title="Havola yaratish"
+      title={t("arenaShared.shareLinks.create")}
       onClose={onClose}
       minHeight={560}
       initialHeightRatio={0.84}
@@ -174,7 +176,8 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>Limit</Text>
+          <Text style={styles.metaLabel}>{t("arenaShared.shareLinks.limit")}</Text>
+
           <View style={styles.metaPill}>
             <Text style={styles.metaPillText}>
               {links.length}/{shareLimit}
@@ -183,7 +186,7 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
         </View>
 
         <View style={styles.group}>
-          <Text style={styles.label}>Havola turi</Text>
+          <Text style={styles.label}>{t("arenaShared.shareLinks.persistLabel")}</Text>
           <View style={styles.segmentedRow}>
             <Pressable
               style={[styles.segmentButton, mode === "persist" && styles.segmentButtonActive]}
@@ -195,9 +198,9 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
                   mode === "persist" && styles.segmentTitleActive,
                 ]}
               >
-                Saqlanadigan
+                {t("arenaShared.shareLinks.persist")}
               </Text>
-              <Text style={styles.segmentHint}>Natijalar history’da saqlanadi</Text>
+              <Text style={styles.segmentHint}>{t("arenaShared.shareLinks.persistHint")}</Text>
             </Pressable>
             <Pressable
               style={[styles.segmentButton, mode === "ephemeral" && styles.segmentButtonActive]}
@@ -209,20 +212,20 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
                   mode === "ephemeral" && styles.segmentTitleActive,
                 ]}
               >
-                Bir martalik
+                {t("arenaShared.shareLinks.ephemeral")}
               </Text>
-              <Text style={styles.segmentHint}>Natija history’da saqlanmaydi</Text>
+              <Text style={styles.segmentHint}>{t("arenaShared.shareLinks.ephemeralHint")}</Text>
             </Pressable>
           </View>
         </View>
 
         {mode === "persist" ? (
           <View style={styles.group}>
-            <Text style={styles.label}>Guruh nomi</Text>
+            <Text style={styles.label}>{t("arenaShared.shareLinks.groupName")}</Text>
             <TextInput
               value={groupName}
               onChangeText={(value) => setGroupName(value.slice(0, 40))}
-              placeholder="Masalan: 9A"
+              placeholder={t("arenaShared.shareLinks.groupPlaceholder")}
               placeholderTextColor={Colors.subtleText}
               style={styles.input}
             />
@@ -230,7 +233,7 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
         ) : null}
 
         <View style={styles.group}>
-          <Text style={styles.label}>Natijani ko'rsatish</Text>
+          <Text style={styles.label}>{t("arenaShared.shareLinks.showResults")}</Text>
           <View style={styles.segmentedRow}>
             <Pressable
               style={[styles.segmentButton, showResults && styles.segmentButtonActive]}
@@ -242,9 +245,9 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
                   showResults && styles.segmentTitleActive,
                 ]}
               >
-                Ko'rsatish
+                {t("arenaShared.shareLinks.showResultsOn")}
               </Text>
-              <Text style={styles.segmentHint}>Foydalanuvchi yakunda natijani ko'radi</Text>
+              <Text style={styles.segmentHint}>{t("arenaShared.shareLinks.showResultsOnHint")}</Text>
             </Pressable>
             <Pressable
               style={[styles.segmentButton, !showResults && styles.segmentButtonActive]}
@@ -256,24 +259,24 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
                   !showResults && styles.segmentTitleActive,
                 ]}
               >
-                Yashirish
+                {t("arenaShared.shareLinks.showResultsOff")}
               </Text>
-              <Text style={styles.segmentHint}>Faqat siz history’da ko'rasiz</Text>
+              <Text style={styles.segmentHint}>{t("arenaShared.shareLinks.showResultsOffHint")}</Text>
             </Pressable>
           </View>
         </View>
 
         <View style={styles.group}>
-          <Text style={styles.label}>Vaqt limiti</Text>
+          <Text style={styles.label}>{t("arenaShared.shareLinks.timeLimit")}</Text>
           <TextInput
             value={timeLimit}
             onChangeText={(value) => setTimeLimit(value.replace(/[^0-9]/g, "").slice(0, 3))}
-            placeholder="0"
+            placeholder={t("arenaShared.shareLinks.timeLimitPlaceholder")}
             placeholderTextColor={Colors.subtleText}
             keyboardType="number-pad"
             style={styles.input}
           />
-          <Text style={styles.hint}>0 bo'lsa cheklanmagan, aks holda minut bilan.</Text>
+          <Text style={styles.hint}>{t("arenaShared.shareLinks.timeLimitPlaceholder")}</Text>
         </View>
 
         <Pressable
@@ -286,13 +289,13 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
           ) : (
             <>
               <Link2 size={15} color="#fff" />
-              <Text style={styles.createButtonText}>Havola yaratish</Text>
+              <Text style={styles.createButtonText}>{t("arenaShared.shareLinks.create")}</Text>
             </>
           )}
         </Pressable>
 
         <View style={styles.listGroup}>
-          <Text style={styles.label}>Avvalgi havolalar</Text>
+          <Text style={styles.label}>{t("arenaShared.shareLinks.previousLinks")}</Text>
 
           {linksQuery.isLoading ? (
             <View style={styles.centerState}>
@@ -300,16 +303,16 @@ export function ArenaTestShareLinksSheet({ visible, test, onClose }: Props) {
             </View>
           ) : linksQuery.isError ? (
             <View style={styles.centerState}>
-              <Text style={styles.hint}>Havolalar yuklanmadi.</Text>
+              <Text style={styles.hint}>{t("arena.resultsScreen.loadFailed")}</Text>
               <Pressable
                 style={styles.retryButton}
                 onPress={() => void linksQuery.refetch()}
               >
-                <Text style={styles.retryButtonText}>Qayta yuklash</Text>
+                <Text style={styles.retryButtonText}>{t("arena.resultsScreen.retry")}</Text>
               </Pressable>
             </View>
           ) : links.length === 0 ? (
-            <Text style={styles.hint}>Bu test uchun hali havola yaratilmagan.</Text>
+            <Text style={styles.hint}>{t("arenaShared.shareLinks.empty")}</Text>
           ) : (
             <View style={styles.linksList}>
               {links.map((item) => (

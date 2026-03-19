@@ -121,11 +121,38 @@ export type ArenaFlashcardMember = {
   joinedAt?: string;
 };
 
+export type ArenaFlashcardFolderMember = {
+  userId?: ArenaFlashcardUserRef;
+  joinedAt?: string;
+};
+
+export type ArenaFlashcardFolder = {
+  _id?: string;
+  urlSlug?: string;
+  title?: string;
+  createdBy?: ArenaFlashcardUserRef;
+  members?: ArenaFlashcardFolderMember[];
+  decks?: ArenaFlashcardDeck[];
+  deckCount?: number;
+  isPublic?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type ArenaFlashcardDeck = {
   _id?: string;
   urlSlug?: string;
   title?: string;
   createdBy?: ArenaFlashcardUserRef;
+  folderId?:
+    | string
+    | {
+        _id?: string;
+        id?: string;
+        title?: string;
+        urlSlug?: string;
+      }
+    | null;
   cards?: ArenaFlashcardCard[];
   members?: ArenaFlashcardMember[];
   isPublic?: boolean;
@@ -143,6 +170,7 @@ export type ArenaFlashcardCardInput = {
 export type ArenaFlashcardMutationPayload = {
   title: string;
   cards: ArenaFlashcardCardInput[];
+  folderId?: string | null;
   isPublic?: boolean;
 };
 
@@ -152,6 +180,15 @@ export type ArenaFlashcardDecksResponse = {
   page?: number;
   limit?: number;
   totalPages?: number;
+};
+
+export type ArenaFlashcardFolderMutationPayload = {
+  title: string;
+  isPublic?: boolean;
+};
+
+export type ArenaFlashcardFoldersResponse = {
+  data?: ArenaFlashcardFolder[];
 };
 
 export type ArenaFlashcardReviewResponse = {

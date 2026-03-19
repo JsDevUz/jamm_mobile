@@ -4,13 +4,11 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,6 +17,7 @@ import {
   Calendar,
   Camera,
   Check,
+  ChevronDown,
   ChevronRight,
   Eye,
   Globe,
@@ -40,26 +39,42 @@ import {
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Avatar } from "../../components/Avatar";
+import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { APP_LIMITS, countWords } from "../../constants/appLimits";
 import {
   articlesApi,
+  authApi,
+  chatsApi,
   coursesApi,
+  premiumApi,
   postsApi,
   usersApi,
 } from "../../lib/api";
 import { setAppUnlockToken } from "../../lib/session";
-import type { MainTabScreenProps } from "../../navigation/types";
+import { useI18n } from "../../i18n";
+import type {
+  MainTabScreenProps,
+  ProfilePaneRouteName,
+  ProfilePaneSection,
+  RootStackParamList,
+} from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
+import useGuidedTourStore from "../../store/guided-tour-store";
 import { Colors } from "../../theme/colors";
-import type { ProfileDecoration, User } from "../../types/entities";
+import type { ChatSummary, ProfileDecoration, User } from "../../types/entities";
 import type { FeedImage, FeedPost } from "../../types/posts";
 import { getEntityId } from "../../utils/chat";
 
+const appPackage = require("../../../package.json") as { version?: string };
+const APP_VERSION = String(appPackage?.version || "");
+
 type Props = MainTabScreenProps<"Profile">;
+type ProfilePaneProps = NativeStackScreenProps<RootStackParamList, ProfilePaneRouteName>;
 
 type ProfileTab =
   | null
@@ -99,36 +114,102 @@ type CourseItem = {
   totalMembersCount?: number;
 };
 
+type UtilitySelectionSheet = null | "language" | "theme";
+type SecurityPinMode = "change" | "disable" | "setup";
+
+type PremiumPlan = {
+  _id?: string;
+  id?: string;
+  name: string;
+  durationInDays: number;
+  price: number;
+  features?: string[];
+  isActive?: boolean;
+};
+
+type FavoriteLesson = {
+  _id: string;
+  title?: string;
+  description?: string;
+  likes?: number;
+  views?: number;
+  urlSlug?: string;
+  addedAt?: string;
+  course?: {
+    _id?: string;
+    name?: string;
+    image?: string;
+    urlSlug?: string;
+  } | null;
+};
+
 const PRIMARY_TABS: Array<{
   key: Exclude<ProfileTab, null>;
-  label: string;
+  labelKey: string;
   icon: typeof MessageSquare;
   color: string;
 }> = [
-  { key: "groups", label: "Gurunglar", icon: MessageSquare, color: "#3ba55d" },
-  { key: "articles", label: "Maqolalar", icon: Newspaper, color: "#2563eb" },
-  { key: "courses", label: "Darslar", icon: GraduationCap, color: "#f59e0b" },
+  { key: "groups", labelKey: "profile.tabs.groups", icon: MessageSquare, color: "#3ba55d" },
+  { key: "articles", labelKey: "profile.tabs.articles", icon: Newspaper, color: "#2563eb" },
+  { key: "courses", labelKey: "profile.tabs.courses", icon: GraduationCap, color: "#f59e0b" },
 ];
 
 const UTILITY_TABS: Array<{
   key: Exclude<ProfileTab, null>;
-  label: string;
+  labelKey: string;
   icon: typeof Palette;
   color: string;
 }> = [
-  { key: "appearance", label: "Ko'rinish", icon: Palette, color: "#5865f2" },
-  { key: "language", label: "Til", icon: Globe, color: "#0ea5e9" },
-  { key: "security", label: "Xavfsizlik", icon: Lock, color: "#ef4444" },
-  { key: "premium", label: "Premium", icon: Shield, color: "#f59e0b" },
-  { key: "support", label: "Yordam", icon: Headphones, color: "#16a34a" },
-  { key: "favorites", label: "Sevimlilar", icon: Heart, color: "#ec4899" },
-  { key: "learn", label: "O'rganish", icon: Sparkles, color: "#8b5cf6" },
+  { key: "appearance", labelKey: "profile.tabs.appearance", icon: Palette, color: "#5865f2" },
+  { key: "language", labelKey: "profile.tabs.language", icon: Globe, color: "#0ea5e9" },
+  { key: "security", labelKey: "profile.tabs.security", icon: Lock, color: "#ef4444" },
+  { key: "premium", labelKey: "profile.tabs.premium", icon: Shield, color: "#f59e0b" },
+  { key: "support", labelKey: "profile.tabs.support", icon: Headphones, color: "#16a34a" },
+  { key: "favorites", labelKey: "profile.tabs.favorites", icon: Heart, color: "#ec4899" },
+  { key: "learn", labelKey: "profile.tabs.learn", icon: Sparkles, color: "#8b5cf6" },
 ];
 
 const PROFILE_HEADER_FADE_START = 126;
 const PROFILE_HEADER_FADE_END = 252;
 const PROFILE_SUMMARY_FADE_START = 32;
 const PROFILE_SUMMARY_FADE_END = 196;
+
+const PROFILE_PANE_ROUTES: Record<Exclude<ProfileTab, null>, ProfilePaneRouteName> = {
+  groups: "ProfileGroups",
+  articles: "ProfileArticles",
+  courses: "ProfileCourses",
+  appearance: "ProfileAppearance",
+  language: "ProfileLanguage",
+  security: "ProfileSecurity",
+  premium: "ProfilePremium",
+  support: "ProfileSupport",
+  favorites: "ProfileFavorites",
+  learn: "ProfileLearn",
+};
+
+const PROFILE_PANE_SECTIONS_BY_ROUTE: Record<ProfilePaneRouteName, ProfilePaneSection> = {
+  ProfileGroups: "groups",
+  ProfileArticles: "articles",
+  ProfileCourses: "courses",
+  ProfileAppearance: "appearance",
+  ProfileLanguage: "language",
+  ProfileSecurity: "security",
+  ProfilePremium: "premium",
+  ProfileSupport: "support",
+  ProfileFavorites: "favorites",
+  ProfileLearn: "learn",
+};
+
+const PROFILE_TAB_TOUR_KEYS: Partial<Record<Exclude<ProfileTab, null>, string>> = {
+  groups: "profile-groups-tab",
+  articles: "profile-articles-tab",
+  courses: "profile-courses-tab",
+  appearance: "profile-appearance-tab",
+  language: "profile-language-tab",
+  premium: "profile-premium-tab",
+  support: "profile-support-tab",
+  favorites: "profile-favorites-tab",
+};
 
 function formatJoinedDate(value?: string | null) {
   if (!value) return "";
@@ -547,13 +628,14 @@ function ProfileEditModal({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.modalOverlayStrong} onPress={onClose}>
-        <Pressable style={styles.profileEditCard} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.profileEditHeader}>
-            <Text style={styles.profileEditTitle}>Profilni tahrirlash</Text>
-            <Pressable style={styles.profileEditClose} onPress={onClose}>
-              <X size={18} color={Colors.text} />
-            </Pressable>
-          </View>
+        <GuidedTourTarget targetKey="profile-edit-dialog">
+          <Pressable style={styles.profileEditCard} onPress={(event) => event.stopPropagation()}>
+            <View style={styles.profileEditHeader}>
+              <Text style={styles.profileEditTitle}>Profilni tahrirlash</Text>
+              <Pressable style={styles.profileEditClose} onPress={onClose}>
+                <X size={18} color={Colors.text} />
+              </Pressable>
+            </View>
 
           <ScrollView
             style={styles.profileEditBody}
@@ -665,39 +747,40 @@ function ProfileEditModal({
             </View>
           </ScrollView>
 
-          <View style={styles.profileEditSaveBar}>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                (!hasChanges || saving || uploadingAvatar) && styles.primaryButtonDisabled,
-              ]}
-              disabled={!hasChanges || saving || uploadingAvatar}
-              onPress={() => void handleSave()}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <View style={styles.profileEditSaveInner}>
-                  <Check size={14} color="#fff" />
-                  <Text style={styles.primaryButtonText}>Saqlash</Text>
+            <View style={styles.profileEditSaveBar}>
+              <Pressable
+                style={[
+                  styles.primaryButton,
+                  (!hasChanges || saving || uploadingAvatar) && styles.primaryButtonDisabled,
+                ]}
+                disabled={!hasChanges || saving || uploadingAvatar}
+                onPress={() => void handleSave()}
+              >
+                {saving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <View style={styles.profileEditSaveInner}>
+                    <Check size={14} color="#fff" />
+                    <Text style={styles.primaryButtonText}>Saqlash</Text>
+                  </View>
+                )}
+              </Pressable>
+              {saveStatus === "ok" ? (
+                <View style={styles.profileEditStatus}>
+                  <Check size={13} color={Colors.accent} />
+                  <Text style={styles.profileEditStatusText}>Muvaffaqiyatli saqlandi</Text>
                 </View>
-              )}
-            </Pressable>
-            {saveStatus === "ok" ? (
-              <View style={styles.profileEditStatus}>
-                <Check size={13} color={Colors.accent} />
-                <Text style={styles.profileEditStatusText}>Muvaffaqiyatli saqlandi</Text>
-              </View>
-            ) : saveStatus ? (
-              <View style={styles.profileEditStatus}>
-                <AlertCircle size={13} color={Colors.danger} />
-                <Text style={[styles.profileEditStatusText, styles.profileEditStatusTextError]}>
-                  {saveStatus}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-        </Pressable>
+              ) : saveStatus ? (
+                <View style={styles.profileEditStatus}>
+                  <AlertCircle size={13} color={Colors.danger} />
+                  <Text style={[styles.profileEditStatusText, styles.profileEditStatusTextError]}>
+                    {saveStatus}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </Pressable>
+        </GuidedTourTarget>
       </Pressable>
     </Modal>
   );
@@ -705,64 +788,167 @@ function ProfileEditModal({
 
 function SecurityPinModal({
   visible,
-  enabled,
+  mode,
   loading,
   onClose,
   onSubmit,
 }: {
   visible: boolean;
-  enabled: boolean;
+  mode: SecurityPinMode;
   loading: boolean;
   onClose: () => void;
-  onSubmit: (pin: string) => Promise<void>;
+  onSubmit: (payload: { currentPin?: string; nextPin?: string }) => Promise<void>;
 }) {
-  const [pin, setPin] = useState("");
+  const { t } = useI18n();
+  const [currentPin, setCurrentPin] = useState("");
+  const [nextPin, setNextPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!visible) {
-      setPin("");
+      setCurrentPin("");
+      setNextPin("");
+      setConfirmPin("");
+      setError("");
     }
   }, [visible]);
+
+  const title =
+    mode === "disable"
+      ? t("profileUtility.security.turnOffTitle")
+      : mode === "change"
+        ? t("profileUtility.security.currentPinTitle")
+        : t("profileUtility.security.newPinTitle");
+  const description =
+    mode === "disable"
+      ? t("profileUtility.security.turnOffDescription")
+      : mode === "change"
+        ? t("profileUtility.security.currentPinDescription")
+        : t("profileUtility.security.newPinDescription");
+
+  const handleSubmit = async () => {
+    if (loading) return;
+
+    if (mode === "disable") {
+      if (currentPin.length !== 4) return;
+      setError("");
+      await onSubmit({ currentPin });
+      return;
+    }
+
+    if (mode === "change" && currentPin.length !== 4) {
+      return;
+    }
+
+    if (nextPin.length !== 4 || confirmPin.length !== 4) {
+      return;
+    }
+
+    if (nextPin !== confirmPin) {
+      setError(t("profileUtility.security.pinMismatch"));
+      return;
+    }
+
+    setError("");
+    await onSubmit({
+      currentPin: mode === "change" ? currentPin : undefined,
+      nextPin,
+    });
+  };
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.modalOverlay} onPress={onClose}>
         <Pressable style={styles.securityModal} onPress={(event) => event.stopPropagation()}>
-          <Text style={styles.modalTitle}>
-            {enabled ? "App lock PIN ni olib tashlash" : "App lock PIN o'rnatish"}
-          </Text>
-          <Text style={styles.securityHelp}>
-            {enabled
-              ? "Joriy PIN ni kiriting."
-              : "Ilovaga kirishda ishlatiladigan PIN kiriting."}
-          </Text>
-          <TextInput
-            value={pin}
-            onChangeText={(value) => setPin(value.replace(/[^0-9]/g, ""))}
-            placeholder="PIN"
-            placeholderTextColor={Colors.subtleText}
-            keyboardType="number-pad"
-            secureTextEntry
-            style={styles.securityInput}
-            maxLength={4}
-            autoFocus
-          />
+          <Text style={styles.modalTitle}>{title}</Text>
+          <Text style={styles.securityHelp}>{description}</Text>
+
+          {mode === "change" || mode === "disable" ? (
+            <TextInput
+              value={currentPin}
+              onChangeText={(value) => {
+                setCurrentPin(value.replace(/[^0-9]/g, ""));
+                setError("");
+              }}
+              placeholder={t("profileUtility.security.currentPinTitle")}
+              placeholderTextColor={Colors.subtleText}
+              keyboardType="number-pad"
+              secureTextEntry
+              style={styles.securityInput}
+              maxLength={4}
+              autoFocus
+            />
+          ) : null}
+
+          {mode !== "disable" ? (
+            <>
+              <TextInput
+                value={nextPin}
+                onChangeText={(value) => {
+                  setNextPin(value.replace(/[^0-9]/g, ""));
+                  setError("");
+                }}
+                placeholder={t("profileUtility.security.newPinTitle")}
+                placeholderTextColor={Colors.subtleText}
+                keyboardType="number-pad"
+                secureTextEntry
+                style={styles.securityInput}
+                maxLength={4}
+                autoFocus={mode === "setup"}
+              />
+              <TextInput
+                value={confirmPin}
+                onChangeText={(value) => {
+                  setConfirmPin(value.replace(/[^0-9]/g, ""));
+                  setError("");
+                }}
+                placeholder={t("profileUtility.security.confirmPinTitle")}
+                placeholderTextColor={Colors.subtleText}
+                keyboardType="number-pad"
+                secureTextEntry
+                style={styles.securityInput}
+                maxLength={4}
+              />
+            </>
+          ) : null}
+
+          {error ? <Text style={styles.securityError}>{error}</Text> : null}
           <View style={styles.securityActions}>
             <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
+              <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
             </Pressable>
             <Pressable
-              style={[styles.primaryButton, (!pin || loading) && styles.primaryButtonDisabled]}
-              disabled={!pin || loading}
-              onPress={() => void onSubmit(pin)}
+              style={[
+                mode === "disable" ? styles.dangerButton : styles.primaryButton,
+                (
+                  (mode === "disable" && currentPin.length !== 4) ||
+                  (mode === "change" &&
+                    (currentPin.length !== 4 || nextPin.length !== 4 || confirmPin.length !== 4)) ||
+                  (mode === "setup" && (nextPin.length !== 4 || confirmPin.length !== 4)) ||
+                  loading
+                ) && styles.primaryButtonDisabled,
+              ]}
+              disabled={
+                (mode === "disable" && currentPin.length !== 4) ||
+                (mode === "change" &&
+                  (currentPin.length !== 4 || nextPin.length !== 4 || confirmPin.length !== 4)) ||
+                (mode === "setup" && (nextPin.length !== 4 || confirmPin.length !== 4)) ||
+                loading
+              }
+              onPress={() => void handleSubmit()}
             >
               {loading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.primaryButtonText}>
-                  {enabled ? "Olib tashlash" : "Saqlash"}
+                <Text style={mode === "disable" ? styles.dangerButtonText : styles.primaryButtonText}>
+                  {mode === "disable"
+                    ? t("profileUtility.security.disableAction")
+                    : mode === "change"
+                      ? t("profileUtility.security.changeAction")
+                      : t("profileUtility.security.enableAction")}
                 </Text>
-              )}
+          )}
             </Pressable>
           </View>
         </Pressable>
@@ -771,31 +957,71 @@ function SecurityPinModal({
   );
 }
 
-export function ProfileScreen({ navigation, route }: Props) {
-  const { width: screenWidth } = useWindowDimensions();
+function ProfileScreenContent({
+  navigation,
+  routeParams,
+  forcedTab,
+}: {
+  navigation: Props["navigation"] | ProfilePaneProps["navigation"];
+  routeParams?: { userId?: string | null; jammId?: string | number | null };
+  forcedTab?: ProfilePaneSection;
+}) {
   const queryClient = useQueryClient();
+  const { language, setLanguage, theme, setTheme, t } = useI18n();
+  const guidedTourActive = useGuidedTourStore((state) => state.active);
+  const guidedTourStepKey = useGuidedTourStore((state) => state.stepKey);
+  const startGuidedTour = useGuidedTourStore((state) => state.start);
   const user = useAuthStore((state) => state.user);
   const setUser = useAuthStore((state) => state.setUser);
   const logout = useAuthStore((state) => state.logout);
   const currentUserId = getEntityId(user);
-  const requestedUserId = String(route.params?.userId || "").trim();
-  const requestedJammId = String(route.params?.jammId || "").trim();
+  const requestedUserId = String(routeParams?.userId || "").trim();
+  const requestedJammId = String(routeParams?.jammId || "").trim();
   const requestedProfileIdentifier = requestedJammId || requestedUserId;
   const isRequestedOwnProfile =
     !requestedProfileIdentifier ||
     requestedUserId === currentUserId ||
     requestedJammId === String(user?.jammId || "");
   const isViewingOwnProfile = Boolean(user) && isRequestedOwnProfile;
-  const [activeTab, setActiveTab] = useState<ProfileTab>(null);
-  const [paneVisible, setPaneVisible] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<FeedPost | null>(null);
   const [profileEditOpen, setProfileEditOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [securityModalOpen, setSecurityModalOpen] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState("uz");
-  const paneTranslateX = useRef(new Animated.Value(screenWidth)).current;
-  const paneStartXRef = useRef(screenWidth);
+  const [securityModalMode, setSecurityModalMode] = useState<SecurityPinMode>("setup");
+  const [utilitySelectionSheet, setUtilitySelectionSheet] =
+    useState<UtilitySelectionSheet>(null);
+  const [promoCode, setPromoCode] = useState("");
   const profileScrollY = useRef(new Animated.Value(0)).current;
+  const activeTab = forcedTab ?? null;
+  const themeOptions = useMemo(
+    () =>
+      (["dark", "light"] as const).map((value) => ({
+        value,
+        label: t(`theme.${value}`),
+      })),
+    [t],
+  );
+  const languageOptions = useMemo(
+    () =>
+      (["uz", "ru", "en"] as const).map((value) => ({
+        value,
+        label: t(`language.${value}`),
+      })),
+    [t],
+  );
+  const currentThemeLabel =
+    themeOptions.find((option) => option.value === theme)?.label || t(`theme.${theme}`);
+  const currentLanguageLabel =
+    languageOptions.find((option) => option.value === language)?.label ||
+    t(`language.${language}`);
+  const utilitySheetTitle =
+    utilitySelectionSheet === "theme"
+      ? t("profileUtility.appearance.themeLabel")
+      : t("profileUtility.language.languageLabel");
+  const utilitySheetOptions =
+    utilitySelectionSheet === "theme" ? themeOptions : languageOptions;
+  const selectedUtilityValue = utilitySelectionSheet === "theme" ? theme : language;
 
   const publicProfileQuery = useQuery({
     queryKey: ["public-profile", requestedProfileIdentifier],
@@ -840,9 +1066,21 @@ export function ProfileScreen({ navigation, route }: Props) {
     enabled: isViewingOwnProfile && activeTab === "security",
   });
 
+  const premiumPlansQuery = useQuery({
+    queryKey: ["premium-plans"],
+    queryFn: premiumApi.getPlans,
+    enabled: isViewingOwnProfile && activeTab === "premium",
+  });
+
   const likedPostsQuery = useQuery({
     queryKey: ["liked-posts"],
     queryFn: postsApi.fetchLikedPosts,
+    enabled: isViewingOwnProfile && activeTab === "favorites",
+  });
+
+  const likedLessonsQuery = useQuery({
+    queryKey: ["liked-lessons"],
+    queryFn: coursesApi.fetchLikedLessons,
     enabled: isViewingOwnProfile && activeTab === "favorites",
   });
 
@@ -895,20 +1133,27 @@ export function ProfileScreen({ navigation, route }: Props) {
   });
 
   const appLockMutation = useMutation({
-    mutationFn: async (pin: string) => {
-      if (appLockQuery.data?.enabled) {
-        const response = await usersApi.removeAppLockPin({ pin });
+    mutationFn: async (payload: {
+      currentPin?: string;
+      nextPin?: string;
+      mode: SecurityPinMode;
+    }) => {
+      if (payload.mode === "disable") {
+        const response = await usersApi.removeAppLockPin({ pin: payload.currentPin || "" });
         return {
           ...response,
           unlockToken: null,
         };
       }
 
-      const response = await usersApi.setAppLockPin({ pin });
+      const response = await usersApi.setAppLockPin({
+        pin: payload.nextPin || "",
+        currentPin: payload.mode === "change" ? payload.currentPin : undefined,
+      });
       let unlockToken: string | null = null;
 
       try {
-        const verification = await usersApi.verifyAppLockPin({ pin });
+        const verification = await usersApi.verifyAppLockPin({ pin: payload.nextPin || "" });
         if (verification?.valid && verification.unlockToken) {
           unlockToken = verification.unlockToken;
         }
@@ -938,6 +1183,27 @@ export function ProfileScreen({ navigation, route }: Props) {
     },
   });
 
+  const redeemPromoMutation = useMutation({
+    mutationFn: (code: string) => premiumApi.redeemPromo(code),
+    onSuccess: async () => {
+      const refreshedUser = await authApi.me();
+      setUser(refreshedUser);
+      setPromoCode("");
+      await queryClient.invalidateQueries({ queryKey: ["premium-plans"] });
+      await queryClient.invalidateQueries({ queryKey: ["profile-decorations"] });
+      Alert.alert(
+        t("premiumModal.title"),
+        t("profileUtility.premium.activated"),
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        t("premiumModal.title"),
+        error instanceof Error ? error.message : t("profileUtility.premium.invalidPromo"),
+      );
+    },
+  });
+
   const ownedCourses = useMemo(() => {
     const allCourses = coursesQuery.data?.data || [];
     return allCourses.filter((course: CourseItem) => {
@@ -951,12 +1217,18 @@ export function ProfileScreen({ navigation, route }: Props) {
 
   const stats = useMemo(
     () => [
-      { label: "Obunachilar", value: String(displayUser?.followersCount || 0) },
-      { label: "Gurunglar", value: String(postsQuery.data?.length || 0) },
-      { label: "Maqolalar", value: String(articlesQuery.data?.length || 0) },
-      { label: "Darslar", value: String(ownedCourses.length || 0) },
+      { label: t("profile.stats.members"), value: String(displayUser?.followersCount || 0) },
+      { label: t("profile.stats.posts"), value: String(postsQuery.data?.length || 0) },
+      { label: t("profile.stats.articles"), value: String(articlesQuery.data?.length || 0) },
+      { label: t("profile.stats.courses"), value: String(ownedCourses.length || 0) },
     ],
-    [articlesQuery.data?.length, displayUser?.followersCount, ownedCourses.length, postsQuery.data?.length],
+    [
+      articlesQuery.data?.length,
+      displayUser?.followersCount,
+      ownedCourses.length,
+      postsQuery.data?.length,
+      t,
+    ],
   );
   const headerProgress = profileScrollY.interpolate({
     inputRange: [PROFILE_HEADER_FADE_START, PROFILE_HEADER_FADE_END],
@@ -973,16 +1245,75 @@ export function ProfileScreen({ navigation, route }: Props) {
     outputRange: [16, 0],
     extrapolate: "clamp",
   });
+  const headerContentScale = profileScrollY.interpolate({
+    inputRange: [PROFILE_HEADER_FADE_START - 28, PROFILE_HEADER_FADE_END],
+    outputRange: [0.94, 1],
+    extrapolate: "clamp",
+  });
+  const headerNameTranslateX = profileScrollY.interpolate({
+    inputRange: [PROFILE_HEADER_FADE_START, PROFILE_HEADER_FADE_END],
+    outputRange: [10, 0],
+    extrapolate: "clamp",
+  });
+  const headerHandleOpacity = profileScrollY.interpolate({
+    inputRange: [PROFILE_HEADER_FADE_START + 14, PROFILE_HEADER_FADE_END],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
   const summaryOpacity = profileScrollY.interpolate({
     inputRange: [PROFILE_SUMMARY_FADE_START, PROFILE_SUMMARY_FADE_END],
-    outputRange: [1, 0.08],
+    outputRange: [1, 0],
     extrapolate: "clamp",
   });
   const summaryTranslateY = profileScrollY.interpolate({
     inputRange: [PROFILE_SUMMARY_FADE_START, PROFILE_SUMMARY_FADE_END + 20],
+    outputRange: [0, -28],
+    extrapolate: "clamp",
+  });
+  const summaryScale = profileScrollY.interpolate({
+    inputRange: [PROFILE_SUMMARY_FADE_START, PROFILE_SUMMARY_FADE_END + 20],
+    outputRange: [1, 0.94],
+    extrapolate: "clamp",
+  });
+  const coverTranslateY = profileScrollY.interpolate({
+    inputRange: [0, PROFILE_HEADER_FADE_END],
     outputRange: [0, -22],
     extrapolate: "clamp",
   });
+  const infoTranslateY = profileScrollY.interpolate({
+    inputRange: [0, PROFILE_HEADER_FADE_END],
+    outputRange: [0, -18],
+    extrapolate: "clamp",
+  });
+  const statsTranslateY = profileScrollY.interpolate({
+    inputRange: [0, PROFILE_HEADER_FADE_END],
+    outputRange: [0, -12],
+    extrapolate: "clamp",
+  });
+  const avatarScale = profileScrollY.interpolate({
+    inputRange: [0, PROFILE_HEADER_FADE_END],
+    outputRange: [1, 0.84],
+    extrapolate: "clamp",
+  });
+  const avatarTranslateY = profileScrollY.interpolate({
+    inputRange: [0, PROFILE_HEADER_FADE_END],
+    outputRange: [0, -10],
+    extrapolate: "clamp",
+  });
+
+  useEffect(() => {
+    if (!guidedTourActive || !isViewingOwnProfile) {
+      return;
+    }
+
+    setProfileEditOpen(guidedTourStepKey === "profile-edit-dialog");
+  }, [guidedTourActive, guidedTourStepKey, isViewingOwnProfile]);
+
+  useEffect(() => {
+    if (!guidedTourActive && guidedTourStepKey === null) {
+      setProfileEditOpen(false);
+    }
+  }, [guidedTourActive, guidedTourStepKey]);
 
   const handleCreateOrUpdatePost = async (content: string) => {
     if (editingPost?._id) {
@@ -1008,8 +1339,58 @@ export function ProfileScreen({ navigation, route }: Props) {
   };
 
   const handleLogout = async () => {
+    if (loggingOut) {
+      return;
+    }
+
+    setLoggingOut(true);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await logout();
+    try {
+      await logout();
+    } finally {
+      setLoggingOut(false);
+    }
+  };
+
+  const handleOpenSupportChat = async (username: string) => {
+    try {
+      const users = await usersApi.searchGlobal(username);
+      const supportUser = users.find(
+        (item) => String(item.username || "").toLowerCase() === username.toLowerCase(),
+      );
+
+      if (!supportUser) {
+        throw new Error(t("profileUtility.support.chatError"));
+      }
+
+      const privateChat = await chatsApi.createChat({
+        isGroup: false,
+        memberIds: [getEntityId(supportUser)],
+      });
+
+      queryClient.setQueryData<ChatSummary[]>(["chats"], (current) => {
+        const next = Array.isArray(current) ? [...current] : [];
+        const chatId = getEntityId(privateChat);
+        const existingIndex = next.findIndex((item) => getEntityId(item) === chatId);
+        if (existingIndex >= 0) {
+          next.splice(existingIndex, 1);
+        }
+        next.unshift(privateChat);
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
+
+      navigation.push("ChatRoom", {
+        chatId: getEntityId(privateChat),
+        title: supportUser.nickname || supportUser.username || username,
+        isGroup: false,
+      } as never);
+    } catch (error) {
+      Alert.alert(
+        t("profile.tabs.support"),
+        error instanceof Error ? error.message : t("profileUtility.support.chatError"),
+      );
+    }
   };
 
   const handleProfileSaved = async (updatedUser: User) => {
@@ -1020,90 +1401,26 @@ export function ProfileScreen({ navigation, route }: Props) {
   };
 
   const openPane = (tab: Exclude<ProfileTab, null>) => {
-    setActiveTab(tab);
-    setPaneVisible(true);
-    paneTranslateX.stopAnimation();
-    paneTranslateX.setValue(screenWidth);
-    Animated.spring(paneTranslateX, {
-      toValue: 0,
-      damping: 24,
-      stiffness: 220,
-      mass: 0.9,
-      useNativeDriver: true,
-    }).start();
+    navigation.push(PROFILE_PANE_ROUTES[tab], {
+      userId: requestedUserId || null,
+      jammId: requestedJammId || null,
+    } as never);
   };
 
   const closePane = () => {
-    paneTranslateX.stopAnimation();
-    Animated.timing(paneTranslateX, {
-      toValue: screenWidth,
-      duration: 220,
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (!finished) return;
-      setPaneVisible(false);
-      setActiveTab(null);
-    });
+    if (forcedTab) {
+      navigation.goBack();
+      return;
+    }
+
+    navigation.goBack();
   };
 
-  useEffect(() => {
-    if (!paneVisible) {
-      paneTranslateX.setValue(screenWidth);
-    }
-  }, [paneTranslateX, paneVisible, screenWidth]);
-
-  const panePanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (_event, gestureState) => {
-          const { dx, dy, vx } = gestureState;
-          return dx > 4 && (Math.abs(dx) > Math.abs(dy) * 0.72 || vx > 0.02);
-        },
-        onMoveShouldSetPanResponder: (_event, gestureState) => {
-          const { dx, dy, vx } = gestureState;
-          return dx > 4 && (Math.abs(dx) > Math.abs(dy) * 0.72 || vx > 0.02);
-        },
-        onPanResponderGrant: () => {
-          paneTranslateX.stopAnimation((value) => {
-            paneStartXRef.current = value;
-          });
-        },
-        onPanResponderMove: (_event, gestureState) => {
-          const nextValue = Math.max(
-            0,
-            Math.min(screenWidth, paneStartXRef.current + gestureState.dx),
-          );
-          paneTranslateX.setValue(nextValue);
-        },
-        onPanResponderRelease: (_event, gestureState) => {
-          const shouldClose =
-            gestureState.dx > screenWidth * 0.22 || gestureState.vx > 0.35;
-
-          if (shouldClose) {
-            closePane();
-            return;
-          }
-
-          Animated.spring(paneTranslateX, {
-            toValue: 0,
-            damping: 24,
-            stiffness: 220,
-            mass: 0.9,
-            useNativeDriver: true,
-          }).start();
-        },
-        onPanResponderTerminate: () => {
-          Animated.spring(paneTranslateX, {
-            toValue: 0,
-            damping: 24,
-            stiffness: 220,
-            mass: 0.9,
-            useNativeDriver: true,
-          }).start();
-        },
-      }),
-    [paneTranslateX, screenWidth],
-  );
+  const openFeedTab = () => {
+    const rootNavigation =
+      navigation as NativeStackScreenProps<RootStackParamList>["navigation"];
+    rootNavigation.navigate("MainTabs", { screen: "Feed" } as never);
+  };
 
   const renderOverview = () => (
     <Animated.ScrollView
@@ -1116,36 +1433,56 @@ export function ProfileScreen({ navigation, route }: Props) {
         { useNativeDriver: true },
       )}
     >
-      <Animated.View
-        style={[
-          styles.profileSummary,
-          {
-            opacity: summaryOpacity,
-            transform: [{ translateY: summaryTranslateY }],
-          },
-        ]}
-      >
-        <View style={styles.cover}>
+      <GuidedTourTarget targetKey="profile-overview">
+        <Animated.View
+          style={[
+            styles.profileSummary,
+            {
+              opacity: summaryOpacity,
+              transform: [{ translateY: summaryTranslateY }, { scale: summaryScale }],
+            },
+          ]}
+        >
+        <Animated.View
+          style={[
+            styles.cover,
+            { transform: [{ translateY: coverTranslateY }] },
+          ]}
+        >
           <View style={styles.coverShade} />
           {isViewingOwnProfile ? (
-            <Pressable
-              style={styles.coverAction}
-              onPress={() => setProfileEditOpen(true)}
-            >
-              <Pencil size={15} color="#fff" />
-            </Pressable>
+            <GuidedTourTarget targetKey="profile-edit-trigger">
+              <Pressable
+                style={styles.coverAction}
+                onPress={() => setProfileEditOpen(true)}
+              >
+                <Pencil size={15} color="#fff" />
+              </Pressable>
+            </GuidedTourTarget>
           ) : null}
-        </View>
+        </Animated.View>
 
-        <View style={styles.avatarWrap}>
+        <Animated.View
+          style={[
+            styles.avatarWrap,
+            {
+              transform: [{ translateY: avatarTranslateY }, { scale: avatarScale }],
+            },
+          ]}
+        >
           <Avatar
             label={displayUser?.nickname || displayUser?.username || "User"}
             uri={displayUser?.avatar}
             size={76}
           />
-        </View>
+        </Animated.View>
 
-        <View style={styles.infoBlock}>
+        <Animated.View
+          style={[
+            styles.infoBlock,
+            { transform: [{ translateY: infoTranslateY }] },
+          ]}
+        >
           <UserDisplayName
             user={displayUser}
             fallback={displayUser?.nickname || displayUser?.username || "Foydalanuvchi"}
@@ -1157,36 +1494,43 @@ export function ProfileScreen({ navigation, route }: Props) {
           <Text style={styles.bio}>
             {displayUser?.bio ||
               (isViewingOwnProfile
-                ? "Profilingizga qisqa ta'rif qo'shing."
-                : "Foydalanuvchi hali bio qo'shmagan.")}
+                ? t("profile.bioMissingOwn")
+                : t("profile.bioMissingOther"))}
           </Text>
           <View style={styles.metaRow}>
             <Calendar size={13} color={Colors.mutedText} />
             <Text style={styles.metaText}>
-              {formatJoinedDate(displayUser?.createdAt) || "Jamm foydalanuvchisi"}
+              {formatJoinedDate(displayUser?.createdAt) || "Jamm"}
             </Text>
           </View>
-        </View>
+        </Animated.View>
 
-        <View style={styles.statsCard}>
+        <Animated.View
+          style={[
+            styles.statsCard,
+            { transform: [{ translateY: statsTranslateY }] },
+          ]}
+        >
           {stats.map((item, index) => (
             <View
               key={item.label}
               style={[styles.statItem, index === stats.length - 1 && styles.statItemLast]}
             >
-              <Text style={styles.statValue}>{item.value}</Text>
+                <Text style={styles.statValue}>{item.value}</Text>
               <Text style={styles.statLabel}>{item.label}</Text>
             </View>
           ))}
-        </View>
-      </Animated.View>
+        </Animated.View>
+        </Animated.View>
+      </GuidedTourTarget>
 
       <View style={styles.tabRailContent}>
         <View style={styles.tabCard}>
           {PRIMARY_TABS.map((item, index) => {
             const Icon = item.icon;
             const isActive = activeTab === item.key;
-            return (
+            const targetKey = PROFILE_TAB_TOUR_KEYS[item.key];
+            const row = (
               <Pressable
                 key={item.key}
                 style={[styles.tabRow, isActive && styles.tabRowActive]}
@@ -1200,10 +1544,19 @@ export function ProfileScreen({ navigation, route }: Props) {
                 >
                   <Icon size={15} color={isActive ? Colors.text : Colors.mutedText} />
                 </View>
-                <Text style={styles.tabLabel}>{item.label}</Text>
+                <Text style={styles.tabLabel}>{t(item.labelKey)}</Text>
                 <ChevronRight size={16} color={Colors.subtleText} style={styles.tabChevron} />
                 {index < PRIMARY_TABS.length - 1 ? <View style={styles.tabDivider} /> : null}
               </Pressable>
+            );
+            return (
+              targetKey ? (
+                <GuidedTourTarget key={item.key} targetKey={targetKey}>
+                  {row}
+                </GuidedTourTarget>
+              ) : (
+                row
+              )
             );
           })}
         </View>
@@ -1214,7 +1567,8 @@ export function ProfileScreen({ navigation, route }: Props) {
               {UTILITY_TABS.map((item, index) => {
                 const Icon = item.icon;
                 const isActive = activeTab === item.key;
-                return (
+                const targetKey = PROFILE_TAB_TOUR_KEYS[item.key];
+                const row = (
                   <Pressable
                     key={item.key}
                     style={[styles.tabRow, isActive && styles.tabRowActive]}
@@ -1228,31 +1582,52 @@ export function ProfileScreen({ navigation, route }: Props) {
                     >
                       <Icon size={15} color={isActive ? Colors.text : Colors.mutedText} />
                     </View>
-                    <Text style={styles.tabLabel}>{item.label}</Text>
+                    <Text style={styles.tabLabel}>{t(item.labelKey)}</Text>
                     <ChevronRight size={16} color={Colors.subtleText} style={styles.tabChevron} />
                     {index < UTILITY_TABS.length - 1 ? <View style={styles.tabDivider} /> : null}
                   </Pressable>
+                );
+                return (
+                  targetKey ? (
+                    <GuidedTourTarget key={item.key} targetKey={targetKey}>
+                      {row}
+                    </GuidedTourTarget>
+                  ) : (
+                    row
+                  )
                 );
               })}
             </View>
 
             <View style={styles.footerCard}>
               <View style={styles.footerRow}>
-                <View>
+                <View style={styles.footerMeta}>
                   <Text style={styles.footerTitle}>App version</Text>
                   <Text style={styles.footerSubtitle}>Current production version</Text>
                 </View>
-                <Text style={styles.versionBadge}>Expo</Text>
+                <Text style={styles.versionBadge}>v{APP_VERSION}</Text>
               </View>
 
-              <Pressable style={styles.footerRow} onPress={handleLogout}>
-                <View>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.footerRow,
+                  pressed && !loggingOut ? styles.footerRowPressed : null,
+                  loggingOut ? styles.footerRowDisabled : null,
+                ]}
+                disabled={loggingOut}
+                onPress={handleLogout}
+              >
+                <View style={styles.footerMeta}>
                   <Text style={styles.footerTitle}>Log out</Text>
-                  <Text style={styles.footerSubtitle}>Ushbu qurilmadan chiqish</Text>
+                  <Text style={styles.footerSubtitle}>Sign out from this device</Text>
                 </View>
                 <View style={styles.logoutBadge}>
-                  <LogOut size={14} color={Colors.danger} />
-                  <Text style={styles.logoutBadgeText}>Chiqish</Text>
+                  {loggingOut ? (
+                    <ActivityIndicator size="small" color={Colors.danger} />
+                  ) : (
+                    <LogOut size={14} color={Colors.danger} />
+                  )}
+                  <Text style={styles.logoutBadgeText}>Log out</Text>
                 </View>
               </Pressable>
             </View>
@@ -1471,68 +1846,35 @@ export function ProfileScreen({ navigation, route }: Props) {
   );
 
   const renderAppearancePane = () => {
-    const decorations = decorationsQuery.data || [];
-    const premiumActive = user?.premiumStatus === "active";
-
     return (
       <ScrollView
         style={styles.paneScroll}
         contentContainerStyle={styles.genericPaneContent}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.settingGroup}>
-          <Text style={styles.settingGroupTitle}>Theme</Text>
-          <Text style={styles.settingGroupText}>
-            Mobile build hozircha frontend bilan mos ravishda dark theme’da ishlaydi.
-          </Text>
-          <View style={styles.badgePill}>
-            <Text style={styles.badgePillText}>Dark</Text>
+        <View style={styles.utilityGroup}>
+          <View style={styles.utilityGroupHeader}>
+            <Text style={styles.utilityGroupTitle}>{t("profileUtility.appearance.groupTitle")}</Text>
+            <Text style={styles.utilityGroupDescription}>
+              {t("profileUtility.appearance.groupDescription")}
+            </Text>
           </View>
-        </View>
-
-        <View style={styles.settingGroup}>
-          <Text style={styles.settingGroupTitle}>Profile decoration</Text>
-          <Text style={styles.settingGroupText}>
-            Badge yoki dekoratsiyani shu yerdan almashtiring.
-          </Text>
-
-          <View style={styles.decorationGrid}>
+          <View style={styles.utilitySettingRow}>
+            <View style={styles.utilitySettingMeta}>
+              <Text style={styles.utilitySettingStrong}>
+                {t("profileUtility.appearance.themeLabel")}
+              </Text>
+              <Text style={styles.utilitySettingDescription}>
+                {t("profileUtility.appearance.themeDescription")}
+              </Text>
+            </View>
             <Pressable
-              style={[
-                styles.decorationCard,
-                !user?.selectedProfileDecorationId && styles.decorationCardActive,
-              ]}
-              onPress={() => updateDecorationMutation.mutate(null)}
+              style={styles.utilitySelect}
+              onPress={() => setUtilitySelectionSheet("theme")}
             >
-              <Text style={styles.decorationTitle}>Oddiy</Text>
-              <Text style={styles.decorationMeta}>Dekoratsiyasiz ko'rinish</Text>
+              <Text style={styles.utilitySelectText}>{currentThemeLabel}</Text>
+              <ChevronDown size={14} color={Colors.mutedText} />
             </Pressable>
-
-            {decorations.map((decoration: ProfileDecoration) => {
-              const locked = Boolean(decoration.premiumOnly && !premiumActive);
-              const active = user?.selectedProfileDecorationId === decoration.key;
-
-              return (
-                <Pressable
-                  key={decoration.key}
-                  style={[
-                    styles.decorationCard,
-                    active && styles.decorationCardActive,
-                    locked && styles.decorationCardLocked,
-                  ]}
-                  disabled={locked}
-                  onPress={() => updateDecorationMutation.mutate(decoration.key)}
-                >
-                  <View style={styles.decorationPreview}>
-                    <Text style={styles.decorationEmoji}>{decoration.emoji}</Text>
-                    <Text style={styles.decorationTitle}>{decoration.label}</Text>
-                  </View>
-                  <Text style={styles.decorationMeta}>
-                    {locked ? "Premium kerak" : decoration.animation}
-                  </Text>
-                </Pressable>
-              );
-            })}
           </View>
         </View>
       </ScrollView>
@@ -1545,36 +1887,44 @@ export function ProfileScreen({ navigation, route }: Props) {
       contentContainerStyle={styles.genericPaneContent}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Ilova tili</Text>
-        <Text style={styles.settingGroupText}>
-          Mobile build uchun tezkor tanlov. Hozircha UI matnlari asosiy ravishda o'zbekcha.
-        </Text>
+      <View style={styles.utilityGroup}>
+        <View style={styles.utilityGroupHeader}>
+          <Text style={styles.utilityGroupTitle}>{t("profileUtility.language.groupTitle")}</Text>
+          <Text style={styles.utilityGroupDescription}>
+            {t("profileUtility.language.groupDescription")}
+          </Text>
+        </View>
 
-        <View style={styles.languageRow}>
-          {[
-            { id: "uz", label: "O'zbek" },
-            { id: "ru", label: "Русский" },
-            { id: "en", label: "English" },
-          ].map((option) => (
-            <Pressable
-              key={option.id}
-              style={[
-                styles.languageChip,
-                selectedLanguage === option.id && styles.languageChipActive,
-              ]}
-              onPress={() => setSelectedLanguage(option.id)}
-            >
-              <Text
-                style={[
-                  styles.languageChipText,
-                  selectedLanguage === option.id && styles.languageChipTextActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
+        <View style={styles.utilitySettingRow}>
+          <View style={styles.utilitySettingMeta}>
+            <Text style={styles.utilitySettingStrong}>
+              {t("profileUtility.language.languageLabel")}
+            </Text>
+            <Text style={styles.utilitySettingDescription}>
+              {t("profileUtility.language.languageDescription")}
+            </Text>
+          </View>
+          <Pressable
+            style={styles.utilitySelect}
+            onPress={() => setUtilitySelectionSheet("language")}
+          >
+            <Text style={styles.utilitySelectText}>{currentLanguageLabel}</Text>
+            <ChevronDown size={14} color={Colors.mutedText} />
+          </Pressable>
+        </View>
+
+        <View style={styles.utilitySettingRow}>
+          <View style={styles.utilitySettingMeta}>
+            <Text style={styles.utilitySettingStrong}>
+              {t("profileUtility.language.regionLabel")}
+            </Text>
+            <Text style={styles.utilitySettingDescription}>
+              {t("profileUtility.language.regionDescription")}
+            </Text>
+          </View>
+          <View style={styles.utilityBadge}>
+            <Text style={styles.utilityBadgeText}>{t("common.global")}</Text>
+          </View>
         </View>
       </View>
     </ScrollView>
@@ -1586,79 +1936,349 @@ export function ProfileScreen({ navigation, route }: Props) {
       contentContainerStyle={styles.genericPaneContent}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>App lock</Text>
-        <Text style={styles.settingGroupText}>
-          Ilovani qayta ochganda PIN bilan himoyalash.
-        </Text>
-        {appLockQuery.isLoading ? (
-          <ActivityIndicator color={Colors.primary} />
-        ) : (
-          <>
-            <View style={styles.settingRow}>
-              <View>
-                <Text style={styles.settingLabel}>Holat</Text>
-                <Text style={styles.settingText}>
-                  {appLockQuery.data?.enabled ? "Yoqilgan" : "O'chirilgan"}
+      <View style={styles.utilityStack}>
+        <View style={styles.utilityGroup}>
+          <View style={styles.utilityGroupHeader}>
+            <Text style={styles.utilityGroupTitle}>{t("profileUtility.security.statusTitle")}</Text>
+            <Text style={styles.utilityGroupDescription}>
+              {t("profileUtility.security.statusDescription")}
+            </Text>
+          </View>
+          {appLockQuery.isLoading ? (
+            <View style={styles.utilityLoadingRow}>
+              <ActivityIndicator color={Colors.primary} />
+            </View>
+          ) : (
+            <View style={styles.utilitySettingRow}>
+              <View style={styles.utilitySettingMeta}>
+                <Text style={styles.utilitySettingStrong}>
+                  {t("profileUtility.security.appLockLabel")}
+                </Text>
+                <Text style={styles.utilitySettingDescription}>
+                  {t("profileUtility.security.appLockMeta")}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.utilityStatusBadge,
+                  appLockQuery.data?.enabled && styles.utilityStatusBadgeActive,
+                ]}
+              >
+                <Lock
+                  size={14}
+                  color={appLockQuery.data?.enabled ? "#faa61a" : Colors.primary}
+                />
+                <Text
+                  style={[
+                    styles.utilityStatusBadgeText,
+                    appLockQuery.data?.enabled && styles.utilityStatusBadgeTextActive,
+                  ]}
+                >
+                  {appLockQuery.data?.enabled
+                    ? t("profileUtility.security.enabledBadge")
+                    : t("profileUtility.security.disabledBadge")}
+                </Text>
+              </View>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.utilityCardsGrid}>
+          <View style={styles.utilityInfoCard}>
+            <Text style={styles.utilityInfoCardTitle}>
+              {t("profileUtility.security.passcodeTitle")}
+            </Text>
+            <Text style={styles.utilityInfoCardDescription}>
+              {t("profileUtility.security.passcodeDescription")}
+            </Text>
+            <Pressable
+              style={styles.primaryButton}
+              onPress={() => {
+                setSecurityModalMode(appLockQuery.data?.enabled ? "change" : "setup");
+                setSecurityModalOpen(true);
+              }}
+            >
+              <Lock size={14} color="#fff" />
+              <Text style={styles.primaryButtonText}>
+                {appLockQuery.data?.enabled
+                  ? t("profileUtility.security.changeAction")
+                  : t("profileUtility.security.enableAction")}
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.utilityInfoCard}>
+            <Text style={styles.utilityInfoCardTitle}>
+              {t("profileUtility.security.autoLockTitle")}
+            </Text>
+            <Text style={styles.utilityInfoCardDescription}>
+              {t("profileUtility.security.autoLockDescription")}
+            </Text>
+            <Pressable
+              style={[
+                styles.dangerButton,
+                !appLockQuery.data?.enabled && styles.primaryButtonDisabled,
+              ]}
+              disabled={!appLockQuery.data?.enabled}
+              onPress={() => {
+                setSecurityModalMode("disable");
+                setSecurityModalOpen(true);
+              }}
+            >
+              <Lock size={14} color={Colors.danger} />
+              <Text style={styles.dangerButtonText}>
+                {t("profileUtility.security.disableAction")}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </ScrollView>
+  );
+
+  const renderPremiumPane = () => {
+    const premiumActive = user?.premiumStatus === "active";
+    const plans = (premiumPlansQuery.data || []).filter((plan) => plan.isActive !== false);
+    const decorations = decorationsQuery.data || [];
+
+    return (
+      <ScrollView
+        style={styles.paneScroll}
+        contentContainerStyle={styles.genericPaneContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.utilityStack}>
+          <View style={styles.utilityGroup}>
+            <View style={styles.utilityGroupHeader}>
+              <Text style={styles.utilityGroupTitle}>{t("profileUtility.premium.statusTitle")}</Text>
+              <Text style={styles.utilityGroupDescription}>
+                {t("profileUtility.premium.statusDescription")}
+              </Text>
+            </View>
+
+            <View style={styles.utilitySettingRow}>
+              <View style={styles.utilitySettingMeta}>
+                <Text style={styles.utilitySettingStrong}>
+                  {t("profileUtility.premium.statusLabel")}
+                </Text>
+                <Text style={styles.utilitySettingDescription}>
+                  {t("profileUtility.premium.statusMeta")}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.utilityStatusBadge,
+                  premiumActive && styles.utilityStatusBadgeActive,
+                ]}
+              >
+                <Sparkles
+                  size={14}
+                  color={premiumActive ? "#faa61a" : Colors.primary}
+                />
+                <Text
+                  style={[
+                    styles.utilityStatusBadgeText,
+                    premiumActive && styles.utilityStatusBadgeTextActive,
+                  ]}
+                >
+                  {premiumActive ? t("common.active") : t("profileUtility.premium.freeAccount")}
+                </Text>
+              </View>
+            </View>
+
+            {!premiumActive ? (
+              <View style={styles.utilitySettingRow}>
+                <View style={styles.utilitySettingMeta}>
+                  <Text style={styles.utilitySettingStrong}>
+                    {t("profileUtility.premium.promoLabel")}
+                  </Text>
+                  <Text style={styles.utilitySettingDescription}>
+                    {t("profileUtility.premium.promoDescription")}
+                  </Text>
+                </View>
+                <View style={styles.utilityPromoRow}>
+                  <TextInput
+                    value={promoCode}
+                    onChangeText={setPromoCode}
+                    placeholder={t("profileUtility.premium.promoPlaceholder")}
+                    placeholderTextColor={Colors.subtleText}
+                    style={styles.utilityPromoInput}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                  />
+                  <Pressable
+                    style={[
+                      styles.primaryButton,
+                      (!promoCode.trim() || redeemPromoMutation.isPending) &&
+                        styles.primaryButtonDisabled,
+                    ]}
+                    disabled={!promoCode.trim() || redeemPromoMutation.isPending}
+                    onPress={() => redeemPromoMutation.mutate(promoCode.trim())}
+                  >
+                    {redeemPromoMutation.isPending ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.primaryButtonText}>
+                        {t("common.activate")}
+                      </Text>
+                    )}
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.utilitySettingRow}>
+              <View style={styles.utilitySettingMeta}>
+                <Text style={styles.utilitySettingStrong}>
+                  {t("profileUtility.premium.aboutTitle")}
+                </Text>
+                <Text style={styles.utilitySettingDescription}>
+                  {t("profileUtility.premium.aboutDescription")}
                 </Text>
               </View>
               <Pressable
-                style={styles.primaryButton}
-                onPress={() => setSecurityModalOpen(true)}
+                style={styles.secondaryButton}
+                onPress={() => void handleOpenSupportChat("premium")}
               >
-                <Text style={styles.primaryButtonText}>
-                  {appLockQuery.data?.enabled ? "PIN olib tashlash" : "PIN o'rnatish"}
+                <Sparkles size={14} color={Colors.text} />
+                <Text style={styles.secondaryButtonText}>
+                  {t("profileUtility.premium.aboutAction")}
                 </Text>
               </Pressable>
             </View>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={() => appLockQuery.refetch()}
-            >
-              <Text style={styles.secondaryButtonText}>Holatni yangilash</Text>
-            </Pressable>
-          </>
-        )}
-      </View>
-    </ScrollView>
-  );
+          </View>
 
-  const renderPremiumPane = () => (
-    <ScrollView
-      style={styles.paneScroll}
-      contentContainerStyle={styles.genericPaneContent}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Premium holati</Text>
-        <Text style={styles.settingGroupText}>
-          Premium obuna dekoratsiyalar va media imkoniyatlarini ochadi.
-        </Text>
-        <View
-          style={[
-            styles.statusBadge,
-            user?.premiumStatus === "active" && styles.statusBadgeActive,
-          ]}
-        >
-          <Text
-            style={[
-              styles.statusBadgeText,
-              user?.premiumStatus === "active" && styles.statusBadgeTextActive,
-            ]}
-          >
-            {user?.premiumStatus === "active" ? "Premium active" : "Standard"}
-          </Text>
+          {!premiumActive ? (
+            <View style={styles.utilityGroup}>
+              <View style={styles.utilityGroupHeader}>
+                <Text style={styles.utilityGroupTitle}>{t("profileUtility.premium.plansTitle")}</Text>
+                <Text style={styles.utilityGroupDescription}>
+                  {t("profileUtility.premium.plansDescription")}
+                </Text>
+              </View>
+              <View style={styles.utilitySectionBody}>
+                {premiumPlansQuery.isLoading ? (
+                  <View style={styles.utilityLoadingPanel}>
+                    <ActivityIndicator color={Colors.primary} />
+                  </View>
+                ) : (
+                  <View style={styles.utilityPlansGrid}>
+                    {plans.map((plan: PremiumPlan) => (
+                      <View
+                        key={plan._id || plan.id || plan.name}
+                        style={[styles.utilityPlanCard, styles.utilityPlanCardPremium]}
+                      >
+                        <Text style={styles.utilityPlanName}>{plan.name}</Text>
+                        <Text style={styles.utilityPlanPrice}>${plan.price}</Text>
+                        <Text style={styles.utilityPlanMeta}>
+                          {plan.durationInDays} {t("profileUtility.premium.days")}
+                        </Text>
+                        <Pressable
+                          style={styles.primaryButton}
+                          onPress={() => void handleOpenSupportChat("premium")}
+                        >
+                          <Text style={styles.primaryButtonText}>
+                            {t("profileUtility.premium.contactPremium")}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                    {!plans.length ? (
+                      <View style={styles.utilityPlanCard}>
+                        <Text style={styles.utilityPlanName}>Premium</Text>
+                        <Text style={styles.utilityPlanMeta}>
+                          {t("profileUtility.premium.plansUnavailable")}
+                        </Text>
+                        <Pressable
+                          style={styles.primaryButton}
+                          onPress={() => void handleOpenSupportChat("premium")}
+                        >
+                          <Text style={styles.primaryButtonText}>{t("common.contact")}</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+              </View>
+            </View>
+          ) : null}
+
+          <View style={styles.utilityGroup}>
+            <View style={styles.utilityGroupHeader}>
+              <Text style={styles.utilityGroupTitle}>{t("profileUtility.premium.decorationTitle")}</Text>
+              <Text style={styles.utilityGroupDescription}>
+                {t("profileUtility.premium.decorationDescription")}
+              </Text>
+            </View>
+            <View style={styles.utilitySectionBody}>
+              {decorationsQuery.isLoading ? (
+                <View style={styles.utilityLoadingPanel}>
+                  <ActivityIndicator color={Colors.primary} />
+                </View>
+              ) : (
+                <View style={styles.decorationGrid}>
+                  <Pressable
+                    style={[
+                      styles.decorationCard,
+                      !user?.selectedProfileDecorationId && styles.decorationCardActive,
+                    ]}
+                    onPress={() => updateDecorationMutation.mutate(null)}
+                  >
+                    <View style={styles.decorationPreview}>
+                      <Text style={styles.decorationEmoji}>•</Text>
+                      <Text style={styles.decorationTitle}>
+                        {t("profileUtility.premium.decorationNone")}
+                      </Text>
+                    </View>
+                    <Text style={styles.decorationMeta}>
+                      {t("profileUtility.premium.decorationNoneMeta")}
+                    </Text>
+                  </Pressable>
+
+                  {decorations
+                    .filter(
+                      (item) => item?.key && item.key !== "custom-upload" && item.key !== "official-badge",
+                    )
+                    .map((decoration: ProfileDecoration) => {
+                      const locked = Boolean(decoration.premiumOnly && !premiumActive);
+                      const active = user?.selectedProfileDecorationId === decoration.key;
+
+                      return (
+                        <Pressable
+                          key={decoration.key}
+                          style={[
+                            styles.decorationCard,
+                            active && styles.decorationCardActive,
+                            locked && styles.decorationCardLocked,
+                          ]}
+                          onPress={() => {
+                            if (locked) {
+                              void handleOpenSupportChat("premium");
+                              return;
+                            }
+                            updateDecorationMutation.mutate(decoration.key);
+                          }}
+                        >
+                          <View style={styles.decorationPreview}>
+                            <Text style={styles.decorationEmoji}>{decoration.emoji}</Text>
+                            <Text style={styles.decorationTitle}>{decoration.label}</Text>
+                          </View>
+                          <Text style={styles.decorationMeta}>
+                            {locked
+                              ? t("profileUtility.premium.decorationLockedDescription")
+                              : t("profileUtility.premium.decorationBadgeMeta")}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                </View>
+              )}
+            </View>
+          </View>
         </View>
-      </View>
-
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Dekoratsiyalar</Text>
-        <Text style={styles.settingGroupText}>
-          {decorationsQuery.data?.length || 0} ta dekoratsiya mavjud.
-        </Text>
-      </View>
-    </ScrollView>
-  );
+      </ScrollView>
+    );
+  };
 
   const renderSupportPane = () => (
     <ScrollView
@@ -1666,20 +2286,39 @@ export function ProfileScreen({ navigation, route }: Props) {
       contentContainerStyle={styles.genericPaneContent}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Yordam markazi</Text>
-        <Text style={styles.settingGroupText}>
-          Muammo bo'lsa support bilan ulanish va build holatini ko'rish uchun tezkor bloklar.
-        </Text>
-        <View style={styles.supportCard}>
-          <Text style={styles.supportTitle}>API ulanishi</Text>
-          <Text style={styles.supportText}>Server bilan sessiya faol.</Text>
-        </View>
-        <View style={styles.supportCard}>
-          <Text style={styles.supportTitle}>Chatlar</Text>
-          <Text style={styles.supportText}>
-            {postsQuery.isError || articlesQuery.isError ? "Ba'zi so'rovlar xato qaytardi." : "Asosiy modul ishlayapti."}
+      <View style={styles.utilityCardsGrid}>
+        <View style={styles.utilityInfoCard}>
+          <Text style={styles.utilityInfoCardTitle}>
+            {t("profileUtility.support.premiumTitle")}
           </Text>
+          <Text style={styles.utilityInfoCardDescription}>
+            {t("profileUtility.support.premiumDescription")}
+          </Text>
+          <Pressable
+            style={styles.primaryButton}
+            onPress={() => void handleOpenSupportChat("premium")}
+          >
+            <Text style={styles.primaryButtonText}>
+              {t("profileUtility.support.premiumAction")}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.utilityInfoCard}>
+          <Text style={styles.utilityInfoCardTitle}>
+            {t("profileUtility.support.jammTitle")}
+          </Text>
+          <Text style={styles.utilityInfoCardDescription}>
+            {t("profileUtility.support.jammDescription")}
+          </Text>
+          <Pressable
+            style={styles.secondaryButton}
+            onPress={() => void handleOpenSupportChat("jamm")}
+          >
+            <Text style={styles.secondaryButtonText}>
+              {t("profileUtility.support.jammAction")}
+            </Text>
+          </Pressable>
         </View>
       </View>
     </ScrollView>
@@ -1691,34 +2330,129 @@ export function ProfileScreen({ navigation, route }: Props) {
       contentContainerStyle={styles.genericPaneContent}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Yoqtirilgan gurunglar</Text>
-        <Text style={styles.settingGroupText}>
-          {likedPostsQuery.data?.length || 0} ta yoqtirilgan gurung.
-        </Text>
-        {(likedPostsQuery.data || []).slice(0, 4).map((post) => (
-          <View key={post._id} style={styles.favoriteRow}>
-            <Text style={styles.favoriteTitle} numberOfLines={1}>
-              {post.content || "Rasmlar bilan gurung"}
+      <View style={styles.utilityStack}>
+        <View style={styles.utilityGroup}>
+          <View style={styles.utilityGroupHeader}>
+            <Text style={styles.utilityGroupTitle}>{t("profileUtility.favorites.lessonsTitle")}</Text>
+            <Text style={styles.utilityGroupDescription}>
+              {t("profileUtility.favorites.lessonsDescription")}
             </Text>
-            <Text style={styles.favoriteMeta}>{post.likes} like</Text>
           </View>
-        ))}
-      </View>
+          <View style={styles.utilitySectionBody}>
+            {likedLessonsQuery.isLoading ? (
+              <View style={styles.utilityLoadingPanel}>
+                <Text style={styles.utilityEmptyText}>{t("common.loading")}</Text>
+              </View>
+            ) : (likedLessonsQuery.data || []).length ? (
+              <View style={styles.utilityCardsGrid}>
+                {(likedLessonsQuery.data || []).map((lesson: FavoriteLesson) => (
+                  <Pressable
+                    key={lesson._id}
+                    style={styles.utilityFavoriteCard}
+                    onPress={() =>
+                      navigation.push("CourseDetail", {
+                        courseId: lesson.course?.urlSlug || lesson.course?._id || "",
+                        lessonId: lesson.urlSlug || lesson._id,
+                      } as never)
+                    }
+                  >
+                    <Text style={styles.utilityFavoriteTitle}>{lesson.title}</Text>
+                    <Text style={styles.utilityFavoriteMeta}>
+                      {lesson.course?.name || t("common.course")} {" · "} {lesson.likes || 0}{" "}
+                      {t("common.like")} {" · "} {lesson.views || 0} {t("common.views")}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.utilityLoadingPanel}>
+                <Text style={styles.utilityEmptyText}>
+                  {t("profileUtility.favorites.lessonsEmpty")}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
 
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Yoqtirilgan maqolalar</Text>
-        <Text style={styles.settingGroupText}>
-          {likedArticlesQuery.data?.length || 0} ta yoqtirilgan maqola.
-        </Text>
-        {(likedArticlesQuery.data || []).slice(0, 4).map((article: ProfileArticle) => (
-          <View key={article._id} style={styles.favoriteRow}>
-            <Text style={styles.favoriteTitle} numberOfLines={1}>
-              {article.title}
+        <View style={styles.utilityGroup}>
+          <View style={styles.utilityGroupHeader}>
+            <Text style={styles.utilityGroupTitle}>{t("profileUtility.favorites.postsTitle")}</Text>
+            <Text style={styles.utilityGroupDescription}>
+              {t("profileUtility.favorites.postsDescription")}
             </Text>
-            <Text style={styles.favoriteMeta}>{article.likes || 0} like</Text>
           </View>
-        ))}
+          <View style={styles.utilitySectionBody}>
+            {likedPostsQuery.isLoading ? (
+              <View style={styles.utilityLoadingPanel}>
+                <Text style={styles.utilityEmptyText}>{t("common.loading")}</Text>
+              </View>
+            ) : (likedPostsQuery.data || []).length ? (
+              <View style={styles.utilityCardsGrid}>
+                {(likedPostsQuery.data || []).map((post) => (
+                  <Pressable
+                    key={post._id}
+                    style={styles.utilityFavoriteCard}
+                    onPress={openFeedTab}
+                  >
+                    <Text style={styles.utilityFavoriteTitle}>
+                      {post.author?.nickname || post.author?.username || t("common.author")}
+                    </Text>
+                    <Text style={styles.utilityFavoriteMeta}>
+                      {String(post.content || "").slice(0, 160)}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.utilityLoadingPanel}>
+                <Text style={styles.utilityEmptyText}>
+                  {t("profileUtility.favorites.postsEmpty")}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        <View style={styles.utilityGroup}>
+          <View style={styles.utilityGroupHeader}>
+            <Text style={styles.utilityGroupTitle}>{t("profileUtility.favorites.articlesTitle")}</Text>
+            <Text style={styles.utilityGroupDescription}>
+              {t("profileUtility.favorites.articlesDescription")}
+            </Text>
+          </View>
+          <View style={styles.utilitySectionBody}>
+            {likedArticlesQuery.isLoading ? (
+              <View style={styles.utilityLoadingPanel}>
+                <Text style={styles.utilityEmptyText}>{t("common.loading")}</Text>
+              </View>
+            ) : (likedArticlesQuery.data || []).length ? (
+              <View style={styles.utilityCardsGrid}>
+                {(likedArticlesQuery.data || []).map((article: ProfileArticle) => (
+                  <Pressable
+                    key={article._id}
+                    style={styles.utilityFavoriteCard}
+                    onPress={() =>
+                      navigation.push("ArticleDetail", {
+                        articleId: article.slug || article._id,
+                      } as never)
+                    }
+                  >
+                    <Text style={styles.utilityFavoriteTitle}>{article.title}</Text>
+                    <Text style={styles.utilityFavoriteMeta}>
+                      {t("common.author")} {" · "} {article.likes || 0} {t("common.like")}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.utilityLoadingPanel}>
+                <Text style={styles.utilityEmptyText}>
+                  {t("profileUtility.favorites.articlesEmpty")}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
       </View>
     </ScrollView>
   );
@@ -1729,24 +2463,24 @@ export function ProfileScreen({ navigation, route }: Props) {
       contentContainerStyle={styles.genericPaneContent}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.settingGroup}>
-        <Text style={styles.settingGroupTitle}>Faollik xulosasi</Text>
-        <Text style={styles.settingGroupText}>
-          Profilingizdagi kontentlar va o'rganish ritmi bo'yicha tezkor ko'rinish.
-        </Text>
-        <View style={styles.learnGrid}>
-          <View style={styles.learnCard}>
-            <Text style={styles.learnValue}>{postsQuery.data?.length || 0}</Text>
-            <Text style={styles.learnLabel}>Gurung</Text>
-          </View>
-          <View style={styles.learnCard}>
-            <Text style={styles.learnValue}>{articlesQuery.data?.length || 0}</Text>
-            <Text style={styles.learnLabel}>Maqola</Text>
-          </View>
-          <View style={styles.learnCard}>
-            <Text style={styles.learnValue}>{ownedCourses.length || 0}</Text>
-            <Text style={styles.learnLabel}>Kurs</Text>
-          </View>
+      <View style={styles.utilityCardsGrid}>
+        <View style={styles.utilityInfoCard}>
+          <Text style={styles.utilityInfoCardTitle}>{t("profileUtility.learn.title")}</Text>
+          <Text style={styles.utilityInfoCardDescription}>
+            {t("profileUtility.learn.description")}
+          </Text>
+          <Pressable
+            style={styles.primaryButton}
+            onPress={() => {
+              startGuidedTour("profile-overview");
+              if (forcedTab) {
+                navigation.goBack();
+              }
+            }}
+          >
+            <Sparkles size={14} color="#fff" />
+            <Text style={styles.primaryButtonText}>{t("profileUtility.learn.start")}</Text>
+          </Pressable>
         </View>
       </View>
     </ScrollView>
@@ -1780,9 +2514,13 @@ export function ProfileScreen({ navigation, route }: Props) {
   };
 
   const activeTitle =
-    PRIMARY_TABS.find((item) => item.key === activeTab)?.label ||
-    UTILITY_TABS.find((item) => item.key === activeTab)?.label ||
-    "Profile";
+    (PRIMARY_TABS.find((item) => item.key === activeTab)?.labelKey
+      ? t(PRIMARY_TABS.find((item) => item.key === activeTab)?.labelKey || "")
+      : "") ||
+    (UTILITY_TABS.find((item) => item.key === activeTab)?.labelKey
+      ? t(UTILITY_TABS.find((item) => item.key === activeTab)?.labelKey || "")
+      : "") ||
+    t("navigation.profile");
 
   if (!displayUser && !isViewingOwnProfile && publicProfileQuery.isError) {
     return (
@@ -1810,84 +2548,87 @@ export function ProfileScreen({ navigation, route }: Props) {
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.collapsedHeader,
-            { height: 56 },
-          ]}
-        >
-          <Animated.View
-            style={[
-              styles.collapsedHeaderBackdrop,
-              { opacity: headerBackdropOpacity },
-            ]}
-          />
-          <Animated.View
-            style={[
-              styles.collapsedHeaderContent,
-              {
-                opacity: headerProgress,
-                transform: [{ translateY: headerContentTranslateY }],
-              },
-            ]}
-          >
-            <Avatar
-              label={displayUser?.nickname || displayUser?.username || "User"}
-              uri={displayUser?.avatar}
-              size={34}
-              shape="circle"
+        {forcedTab ? (
+          <View style={styles.paneContainer}>
+            <ProfilePaneHeader
+              title={activeTitle}
+              onBack={closePane}
+              action={
+                activeTab === "groups" && isViewingOwnProfile ? (
+                  <Pressable
+                    style={styles.paneHeaderButton}
+                    onPress={() => {
+                      setEditingPost(null);
+                      setComposerOpen(true);
+                    }}
+                  >
+                    <Plus size={18} color={Colors.text} />
+                  </Pressable>
+                ) : undefined
+              }
             />
-            <View style={styles.collapsedHeaderText}>
-              <UserDisplayName
-                user={displayUser}
-                fallback={displayUser?.nickname || displayUser?.username || "Foydalanuvchi"}
-                size="sm"
-                textStyle={styles.collapsedHeaderName}
+            {renderActivePane()}
+          </View>
+        ) : (
+          <>
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.collapsedHeader,
+                { height: 56 },
+              ]}
+            >
+              <Animated.View
+                style={[
+                  styles.collapsedHeaderBackdrop,
+                  { opacity: headerBackdropOpacity },
+                ]}
               />
-              <Text style={styles.collapsedHeaderHandle}>
-                @{displayUser?.username || "user"}
-              </Text>
-            </View>
-          </Animated.View>
-        </Animated.View>
+              <Animated.View
+                style={[
+                  styles.collapsedHeaderContent,
+                  {
+                    opacity: headerProgress,
+                    transform: [
+                      { translateY: headerContentTranslateY },
+                      { scale: headerContentScale },
+                    ],
+                  },
+                ]}
+              >
+                <Avatar
+                  label={displayUser?.nickname || displayUser?.username || "User"}
+                  uri={displayUser?.avatar}
+                  size={34}
+                  shape="circle"
+                />
+                <Animated.View
+                  style={[
+                    styles.collapsedHeaderText,
+                    { transform: [{ translateX: headerNameTranslateX }] },
+                  ]}
+                >
+                  <UserDisplayName
+                    user={displayUser}
+                    fallback={displayUser?.nickname || displayUser?.username || "Foydalanuvchi"}
+                    size="sm"
+                    textStyle={styles.collapsedHeaderName}
+                  />
+                  <Animated.Text
+                    style={[
+                      styles.collapsedHeaderHandle,
+                      { opacity: headerHandleOpacity },
+                    ]}
+                  >
+                    @{displayUser?.username || "user"}
+                  </Animated.Text>
+                </Animated.View>
+              </Animated.View>
+            </Animated.View>
 
-        {renderOverview()}
-
-        {paneVisible && activeTab ? (
-          <Animated.View
-            style={[
-              styles.paneOverlay,
-              {
-                width: screenWidth,
-                transform: [{ translateX: paneTranslateX }],
-              },
-            ]}
-            {...panePanResponder.panHandlers}
-          >
-            <View style={styles.paneContainer}>
-              <ProfilePaneHeader
-                title={activeTitle}
-                onBack={closePane}
-                action={
-                  activeTab === "groups" && isViewingOwnProfile ? (
-                    <Pressable
-                      style={styles.paneHeaderButton}
-                      onPress={() => {
-                        setEditingPost(null);
-                        setComposerOpen(true);
-                      }}
-                    >
-                      <Plus size={18} color={Colors.text} />
-                    </Pressable>
-                  ) : undefined
-                }
-              />
-              {renderActivePane()}
-            </View>
-          </Animated.View>
-        ) : null}
-
+            {renderOverview()}
+          </>
+        )}
       </View>
 
      
@@ -1901,21 +2642,111 @@ export function ProfileScreen({ navigation, route }: Props) {
 
       <SecurityPinModal
         visible={isViewingOwnProfile && securityModalOpen}
-        enabled={Boolean(appLockQuery.data?.enabled)}
+        mode={securityModalMode}
         loading={appLockMutation.isPending}
         onClose={() => setSecurityModalOpen(false)}
-        onSubmit={async (pin) => {
+        onSubmit={async ({ currentPin, nextPin }) => {
           try {
-            await appLockMutation.mutateAsync(pin);
+            await appLockMutation.mutateAsync({
+              currentPin,
+              nextPin,
+              mode: securityModalMode,
+            });
           } catch (error) {
             Alert.alert(
-              "PIN saqlanmadi",
-              error instanceof Error ? error.message : "Noma'lum xatolik",
+              t("profileUtility.security.statusTitle"),
+              error instanceof Error ? error.message : t("profileUtility.security.saveError"),
             );
           }
         }}
       />
+
+      <Modal
+        visible={utilitySelectionSheet !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setUtilitySelectionSheet(null)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setUtilitySelectionSheet(null)}
+        >
+          <Pressable
+            style={styles.utilitySheetCard}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <View style={styles.utilitySheetHeader}>
+              <Text style={styles.utilitySheetTitle}>{utilitySheetTitle}</Text>
+              <Pressable
+                style={styles.utilitySheetClose}
+                onPress={() => setUtilitySelectionSheet(null)}
+              >
+                <X size={18} color={Colors.text} />
+              </Pressable>
+            </View>
+
+            <View style={styles.utilitySheetList}>
+              {utilitySheetOptions.map((option) => (
+                <Pressable
+                  key={option.value}
+                  style={[
+                    styles.utilitySheetOption,
+                    selectedUtilityValue === option.value && styles.utilitySheetOptionActive,
+                  ]}
+                  onPress={() => {
+                    if (utilitySelectionSheet === "theme") {
+                      void setTheme(option.value as "dark" | "light");
+                    } else {
+                      void setLanguage(option.value as "uz" | "ru" | "en");
+                    }
+                    setUtilitySelectionSheet(null);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.utilitySheetOptionText,
+                      selectedUtilityValue === option.value &&
+                        styles.utilitySheetOptionTextActive,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                  {selectedUtilityValue === option.value ? (
+                    <Check size={16} color={Colors.primary} />
+                  ) : null}
+                </Pressable>
+              ))}
+            </View>
+
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => setUtilitySelectionSheet(null)}
+            >
+              <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+export function ProfileScreen({ navigation, route }: Props) {
+  return (
+    <ProfileScreenContent
+      navigation={navigation}
+      routeParams={route.params}
+    />
+  );
+}
+
+export function ProfilePaneScreen({ navigation, route }: ProfilePaneProps) {
+  return (
+    <ProfileScreenContent
+      navigation={navigation}
+      routeParams={route.params}
+      forcedTab={PROFILE_PANE_SECTIONS_BY_ROUTE[route.name]}
+    />
   );
 }
 
@@ -1934,19 +2765,31 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 3,
+    paddingHorizontal: 12,
+    paddingTop: 6,
   },
   collapsedHeaderBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(16,18,24,0.94)",
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    // backgroundColor: "rgba(10,12,18,0.18)",
   },
   collapsedHeaderContent: {
-    flex: 1,
+    minHeight: 50,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(24, 28, 38, 0.86)",
+    shadowColor: "#000",
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    elevation: 10,
   },
   collapsedHeaderText: {
     flex: 1,
@@ -2144,25 +2987,36 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   footerRow: {
-    minHeight: 54,
+    minHeight: 48,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
+  },
+  footerRowPressed: {
+    backgroundColor: Colors.hover,
+  },
+  footerRowDisabled: {
+    opacity: 0.7,
+  },
+  footerMeta: {
+    flex: 1,
+    gap: 2,
   },
   footerTitle: {
     color: Colors.text,
     fontSize: 13,
     fontWeight: "700",
+    lineHeight: 17,
   },
   footerSubtitle: {
     color: Colors.mutedText,
     fontSize: 12,
-    marginTop: 2,
+    lineHeight: 17,
   },
   versionBadge: {
     paddingHorizontal: 10,
@@ -2177,10 +3031,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "rgba(240,71,71,0.08)",
   },
   logoutBadgeText: {
     color: Colors.danger,
@@ -2276,6 +3126,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
   },
   primaryButtonDisabled: {
     opacity: 0.5,
@@ -2292,6 +3144,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.input,
     alignItems: "center",
     justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
   },
   secondaryButtonText: {
     color: Colors.text,
@@ -2482,6 +3336,206 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
   },
+  utilityGroup: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+  utilityGroupHeader: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 1,
+  },
+  utilityGroupTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  utilityGroupDescription: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  utilitySettingRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    gap: 8,
+  },
+  utilityStack: {
+    gap: 12,
+  },
+  utilitySettingMeta: {
+    gap: 2,
+  },
+  utilitySettingStrong: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 17,
+  },
+  utilitySettingDescription: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  utilitySelect: {
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  utilitySelectText: {
+    color: Colors.text,
+    fontSize: 12,
+    flex: 1,
+  },
+  utilityBadge: {
+    alignSelf: "flex-start",
+    minHeight: 32,
+    minWidth: 96,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(88,101,242,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  utilityBadgeText: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  utilityStatusBadge: {
+    alignSelf: "flex-start",
+    minWidth: 96,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(88,101,242,0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  utilityStatusBadgeActive: {
+    backgroundColor: "rgba(250, 166, 26, 0.12)",
+  },
+  utilityStatusBadgeText: {
+    color: Colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  utilityStatusBadgeTextActive: {
+    color: "#faa61a",
+  },
+  utilityCardsGrid: {
+    gap: 10,
+  },
+  utilityInfoCard: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: 12,
+  },
+  utilityInfoCardTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  utilityInfoCardDescription: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  utilityPromoRow: {
+    gap: 8,
+  },
+  utilityPromoInput: {
+    minHeight: 44,
+  },
+  utilitySectionBody: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+  },
+  utilityPlansGrid: {
+    gap: 10,
+  },
+  utilityPlanCard: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: 8,
+  },
+  utilityPlanCardPremium: {
+    borderColor: "rgba(250, 166, 26, 0.35)",
+    backgroundColor: "rgba(250,166,26,0.08)",
+  },
+  utilityPlanName: {
+    color: "#faa61a",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  utilityPlanPrice: {
+    color: Colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  utilityPlanMeta: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  utilityLoadingRow: {
+    minHeight: 72,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  utilityLoadingPanel: {
+    minHeight: 96,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  utilityEmptyText: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+  },
+  utilityFavoriteCard: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: 6,
+  },
+  utilityFavoriteTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  utilityFavoriteMeta: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   badgePill: {
     alignSelf: "flex-start",
     paddingHorizontal: 12,
@@ -2550,6 +3604,79 @@ const styles = StyleSheet.create({
   },
   languageChipTextActive: {
     color: "#fff",
+  },
+  utilitySheetCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 18,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 16,
+    gap: 14,
+  },
+  utilitySheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  utilitySheetTitle: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  utilitySheetClose: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.input,
+  },
+  utilitySheetList: {
+    gap: 8,
+  },
+  utilitySheetOption: {
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  utilitySheetOptionActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  utilitySheetOptionText: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  utilitySheetOptionTextActive: {
+    color: Colors.primary,
+  },
+  dangerButton: {
+    minHeight: 40,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: "rgba(239, 68, 68, 0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  dangerButtonText: {
+    color: Colors.danger,
+    fontSize: 14,
+    fontWeight: "700",
   },
   settingRow: {
     flexDirection: "row",
@@ -2851,6 +3978,12 @@ const styles = StyleSheet.create({
     color: Colors.mutedText,
     fontSize: 13,
     lineHeight: 19,
+  },
+  securityError: {
+    color: Colors.danger,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: -4,
   },
   securityInput: {
     height: 50,

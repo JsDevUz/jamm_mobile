@@ -29,6 +29,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { ArenaTestEditorSheet } from "./ArenaTestEditorSheet";
 import { ArenaTestResultsSheet } from "./ArenaTestResultsSheet";
 import { ArenaTestShareLinksSheet } from "./ArenaTestShareLinksSheet";
+import { useI18n } from "../../i18n";
 import { arenaApi } from "../../lib/api";
 import type { RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
@@ -72,6 +73,7 @@ function getOwnerName(test: ArenaTestPayload) {
 }
 
 export function ArenaQuizListScreen({ navigation }: Props) {
+  const { t } = useI18n();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const user = useAuthStore((state) => state.user);
   const testLimit = getTierLimit(APP_LIMITS.testsCreated, user?.premiumStatus);
@@ -125,7 +127,7 @@ export function ArenaQuizListScreen({ navigation }: Props) {
 
   const handleOpenTest = (item: ArenaTestPayload) => {
     if (!item._id) {
-      Alert.alert("Test topilmadi", "Bu testni ochib bo'lmadi.");
+      Alert.alert(t("arena.testsList.openFailedTitle"), t("arena.testsList.openFailedDescription"));
       return;
     }
 
@@ -141,15 +143,15 @@ export function ArenaQuizListScreen({ navigation }: Props) {
     }
 
     Alert.alert(
-      "Testni o'chirasizmi?",
-      "Test va unga tegishli natijalar o'chiriladi.",
+      t("arena.testsList.deleteTitle"),
+      t("arena.testsList.deleteDescription"),
       [
         {
-          text: "Bekor qilish",
+          text: t("common.cancel"),
           style: "cancel",
         },
         {
-          text: "O'chirish",
+          text: t("common.delete"),
           style: "destructive",
           onPress: () => {
             void (async () => {
@@ -169,7 +171,7 @@ export function ArenaQuizListScreen({ navigation }: Props) {
                 await testsQuery.refetch();
               } catch (error) {
                 Alert.alert(
-                  "Test o'chirilmadi",
+                  t("arena.testsList.deleteFailed"),
                   error instanceof Error
                     ? error.message
                     : "Noma'lum xatolik yuz berdi.",
@@ -221,8 +223,8 @@ export function ArenaQuizListScreen({ navigation }: Props) {
   const handleOpenCreate = () => {
     if (tests.length >= testLimit) {
       Alert.alert(
-        "Limitga yetildi",
-        `Siz maksimal ${testLimit} ta test yarata olasiz.`,
+        t("arena.testsList.limitTitle"),
+        t("arena.testsList.limitDescription", { count: testLimit }),
       );
       return;
     }
@@ -231,8 +233,8 @@ export function ArenaQuizListScreen({ navigation }: Props) {
   };
 
   const renderCard = ({ item }: { item: ArenaTestPayload }) => {
-    const title = item.title?.trim() || "Nomsiz test";
-    const description = item.description?.trim() || "Tavsif yo'q";
+    const title = item.title?.trim() || t("arena.testsList.untitled");
+    const description = item.description?.trim() || t("arena.testsList.noDescription");
     const owner = getOwnerName(item);
     const questionCount = item.questions?.length || 0;
     const testId = String(item._id || "");
@@ -296,9 +298,6 @@ export function ArenaQuizListScreen({ navigation }: Props) {
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>Testlar</Text>
-            <Text style={styles.headerCount}>
-              ({tests.length}/{testLimit})
-            </Text>
           </View>
 
           <View style={[styles.headerSlot, styles.headerSlotEnd]}>

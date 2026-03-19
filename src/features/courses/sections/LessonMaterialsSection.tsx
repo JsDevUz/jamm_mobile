@@ -1,5 +1,7 @@
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { FolderOpen, Globe2 } from "lucide-react-native";
+import { useI18n } from "../../../i18n";
+import { openJammAwareLink } from "../../../navigation/internalLinks";
 import { Colors } from "../../../theme/colors";
 import type { CourseLessonMaterial } from "../../../types/courses";
 
@@ -10,6 +12,7 @@ type Props = {
 };
 
 export function LessonMaterialsSection({ visible, materials, formatFileSize }: Props) {
+  const { t } = useI18n();
   if (!visible || !materials.length) {
     return null;
   }
@@ -19,11 +22,11 @@ export function LessonMaterialsSection({ visible, materials, formatFileSize }: P
       <View style={styles.header}>
         <View style={styles.titleRow}>
           <FolderOpen size={17} color={Colors.primary} />
-          <Text style={styles.title}>Lesson materials</Text>
+          <Text style={styles.title}>{t("coursePlayer.materials.title")}</Text>
         </View>
-        <Text style={styles.count}>{materials.length} ta</Text>
+        <Text style={styles.count}>{materials.length}</Text>
       </View>
-      <Text style={styles.hint}>Darsga biriktirilgan fayllarni shu yerda ochasiz.</Text>
+      <Text style={styles.hint}>{t("coursePlayer.materials.studentHint")}</Text>
       <View style={styles.list}>
         {materials.map((item) => (
           <View key={item.materialId || item.fileUrl} style={styles.card}>
@@ -36,9 +39,13 @@ export function LessonMaterialsSection({ visible, materials, formatFileSize }: P
             <View style={styles.actions}>
               <Pressable
                 style={styles.iconButton}
-                onPress={() =>
-                  item.fileUrl ? Linking.openURL(item.fileUrl).catch(() => undefined) : undefined
-                }
+                onPress={() => {
+                  if (!item.fileUrl) {
+                    return;
+                  }
+
+                  void openJammAwareLink(item.fileUrl).catch(() => undefined);
+                }}
               >
                 <Globe2 size={15} color={Colors.text} />
               </Pressable>

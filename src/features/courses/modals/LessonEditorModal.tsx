@@ -11,6 +11,7 @@ import {
 import type { DocumentPickerAsset } from "expo-document-picker";
 import { Upload, X } from "lucide-react-native";
 import { TextInput } from "../../../components/TextInput";
+import { useI18n } from "../../../i18n";
 import { coursesApi } from "../../../lib/api";
 import { Colors } from "../../../theme/colors";
 import type { CourseLesson } from "../../../types/courses";
@@ -38,6 +39,7 @@ export function LessonEditorModal({
   formatFileSize,
   styles,
 }: Props) {
+  const { t } = useI18n();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [mode, setMode] = useState<LessonMediaMode>("upload");
@@ -163,7 +165,7 @@ export function LessonEditorModal({
         <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
           <View style={styles.createHeader}>
             <Text style={styles.createTitle}>
-              {lesson ? "Darsni tahrirlash" : "Yangi dars"}
+              {lesson ? t("addLesson.editTitle") : t("addLesson.title")}
             </Text>
             <Pressable style={styles.iconCircle} onPress={onClose}>
               <X size={18} color={Colors.mutedText} />
@@ -174,14 +176,14 @@ export function LessonEditorModal({
             <TextInput
               value={title}
               onChangeText={setTitle}
-              placeholder="Dars sarlavhasi"
+              placeholder={t("addLesson.lessonName")}
               placeholderTextColor={Colors.subtleText}
               style={styles.fieldInput}
             />
             <TextInput
               value={description}
               onChangeText={setDescription}
-              placeholder="Dars tavsifi"
+              placeholder={t("addLesson.description")}
               placeholderTextColor={Colors.subtleText}
               style={[styles.fieldInput, styles.textArea]}
               multiline
@@ -189,7 +191,7 @@ export function LessonEditorModal({
 
             <View style={styles.accessRow}>
               {[
-                { id: "upload", label: "Fayl" },
+                { id: "upload", label: t("addLesson.uploadTab") },
                 { id: "url", label: "URL" },
               ].map((option) => (
                 <Pressable
@@ -221,7 +223,7 @@ export function LessonEditorModal({
               <Pressable style={styles.mediaPicker} onPress={() => void handlePickVideo()}>
                 <Upload size={16} color={Colors.primary} />
                 <Text style={styles.mediaPickerText}>
-                  {selectedFile ? selectedFile.name : "Video tanlash"}
+                  {selectedFile ? selectedFile.name : t("addLesson.fileLabel")}
                 </Text>
               </Pressable>
             )}
@@ -236,7 +238,7 @@ export function LessonEditorModal({
 
           <View style={styles.createFooter}>
             <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
+              <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
             </Pressable>
             <Pressable
               style={[styles.secondaryAccentButton, (!title.trim() || saving) && styles.sendButtonDisabled]}
@@ -244,7 +246,7 @@ export function LessonEditorModal({
               onPress={() => void handleSave(false)}
             >
               <Text style={styles.secondaryAccentButtonText}>
-                {saving && !uploading ? "Saqlanmoqda..." : "Draft"}
+                {saving && !uploading ? t("common.saving") : t("addLesson.saveDraft")}
               </Text>
             </Pressable>
             <Pressable
@@ -258,7 +260,7 @@ export function LessonEditorModal({
               {saving || uploading ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.primaryButtonText}>Publish</Text>
+                <Text style={styles.primaryButtonText}>{t("addLesson.publish")}</Text>
               )}
             </Pressable>
           </View>

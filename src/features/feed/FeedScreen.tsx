@@ -75,6 +75,7 @@ import {
   openJammAwareLink,
   openJammProfileMention,
 } from "../../navigation/internalLinks";
+import { useI18n } from "../../i18n";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -90,8 +91,13 @@ import type {
 import { getEntityId } from "../../utils/chat";
 
 type Props = MainTabScreenProps<"Feed">;
-const POST_PLACEHOLDER =
-  "Fikringizni yozing... markdown qo'llab-quvvatlanadi: **qalin**, _kursiv_, #teg";
+type Translator = (key: string, replacements?: Record<string, string | number>) => string;
+
+const LOCALE_BY_LANGUAGE = {
+  uz: "uz-UZ",
+  en: "en-US",
+  ru: "ru-RU",
+} as const;
 
 type PostComposerSubmitPayload = {
   content: string;
@@ -179,10 +185,12 @@ function FeedMarkdownText({
   content,
   style,
   numberOfLines,
+  t,
 }: {
   content: string;
   style?: object;
   numberOfLines?: number;
+  t: Translator;
 }) {
   const tokens = useMemo(() => parseFeedInline(String(content || "")), [content]);
 
@@ -228,7 +236,7 @@ function FeedMarkdownText({
               style={styles.feedMarkdownLink}
               onPress={() => {
                 void openJammAwareLink(token.href).catch(() => {
-                  Alert.alert("Link ochilmadi", token.href);
+                  Alert.alert(t("feed.linkOpenFailed"), token.href);
                 });
               }}
             >
@@ -244,7 +252,7 @@ function FeedMarkdownText({
               style={styles.feedMarkdownLink}
               onPress={() => {
                 void openJammProfileMention(token.username).catch(() => {
-                  Alert.alert("Profil ochilmadi", token.value);
+                  Alert.alert(t("feed.profileOpenFailed"), token.value);
                 });
               }}
             >
@@ -259,27 +267,32 @@ function FeedMarkdownText({
   );
 }
 
-function timeAgo(iso: string) {
+function timeAgo(
+  iso: string,
+  language: keyof typeof LOCALE_BY_LANGUAGE,
+  t: Translator,
+) {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Hozir";
-  if (mins < 60) return `${mins}d`;
+  if (mins < 1) return t("feed.timeAgo.now");
+  if (mins < 60) return t("feed.timeAgo.minutesShort", { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}s`;
+  if (hrs < 24) return t("feed.timeAgo.hoursShort", { count: hrs });
   const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}k`;
-  return new Date(iso).toLocaleDateString("uz-UZ", {
+  if (days < 7) return t("feed.timeAgo.daysShort", { count: days });
+  return new Date(iso).toLocaleDateString(LOCALE_BY_LANGUAGE[language], {
     day: "numeric",
     month: "short",
   });
 }
 
-function formatTimestamp(iso: string) {
+function formatTimestamp(iso: string, language: keyof typeof LOCALE_BY_LANGUAGE) {
   const date = new Date(iso);
-  return `${date.toLocaleTimeString("uz-UZ", {
+  const locale = LOCALE_BY_LANGUAGE[language];
+  return `${date.toLocaleTimeString(locale, {
     hour: "numeric",
     minute: "2-digit",
-  })} · ${date.toLocaleDateString("uz-UZ", {
+  })} · ${date.toLocaleDateString(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -413,13 +426,14 @@ function PostComposerModal({
   onClose: () => void;
   onSubmit: (payload: PostComposerSubmitPayload) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [text, setText] = useState(initialContent);
   const [saving, setSaving] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const inputRef = useRef<NativeTextInput>(null);
-  const displayName = currentUser?.nickname || currentUser?.username || "Siz";
+  const displayName = currentUser?.nickname || currentUser?.username || t("common.you");
   const usedWords = countWords(text);
   const canUseImages = showImageTool && isPremiumUser(currentUser);
   const hasValidAttachments = attachments.some(
@@ -490,16 +504,13 @@ function PostComposerModal({
   const handleImagePress = () => {
     if (!showImageTool) return;
     if (!canUseImages) {
-      Alert.alert(
-        "Premium kerak",
-        "Feedga rasm qo'shish faqat premium foydalanuvchilar uchun.",
-      );
+      Alert.alert(t("feed.imagePremiumTitle"), t("feed.imagePremiumDescription"));
       return;
     }
 
     const remainingSlots = APP_LIMITS.postImagesPerPost.premium - attachments.length;
     if (remainingSlots <= 0) {
-      Alert.alert("Limit tugadi", "Har bir gurung uchun maksimal 3 ta rasm qo'shish mumkin.");
+      Alert.alert(t("feed.imageLimitTitle"), t("feed.imageLimitDescription"));
       return;
     }
 
@@ -518,14 +529,19 @@ function PostComposerModal({
 
       const assets = result.assets.slice(0, remainingSlots);
       if (assets.length < result.assets.length) {
-        Alert.alert("Cheklov", "Faqat dastlabki 3 ta rasm tanlandi.");
+        Alert.alert(t("feed.selectionLimitTitle"), t("feed.selectionLimitDescription"));
       }
 
       const preparedAttachments: ComposerAttachment[] = [];
 
       for (const asset of assets) {
         if (typeof asset.fileSize === "number" && asset.fileSize > APP_LIMITS.postImageBytes) {
-          Alert.alert("Rasm katta", `${asset.fileName || "Rasm"} maksimal 5MB bo'lishi kerak.`);
+          Alert.alert(
+            t("feed.imageTooLargeTitle"),
+            t("feed.imageTooLargeDescription", {
+              name: asset.fileName || "Image",
+            }),
+          );
           continue;
         }
 
@@ -549,7 +565,12 @@ function PostComposerModal({
             error: null,
           });
         } catch {
-          Alert.alert("Xatolik", `${asset.fileName || "Rasm"} preview tayyorlab bo'lmadi.`);
+          Alert.alert(
+            t("feed.previewErrorTitle"),
+            t("feed.previewErrorDescription", {
+              name: asset.fileName || "Image",
+            }),
+          );
         }
       }
 
@@ -635,7 +656,7 @@ function PostComposerModal({
           setAttachments((prev) =>
             prev.map((item) =>
               item.id === attachment.id
-                ? { ...item, uploading: false, error: "Yuklanmadi" }
+                ? { ...item, uploading: false, error: t("feed.uploadFailed") }
                 : item,
             ),
           );
@@ -657,7 +678,7 @@ function PostComposerModal({
             : attachment,
         ),
       );
-      Alert.alert("Xatolik", "Rasmlarni yuborishda xatolik yuz berdi.");
+      Alert.alert(t("feed.uploadErrorTitle"), t("feed.uploadErrorDescription"));
     } finally {
       setUploading(false);
       setSaving(false);
@@ -702,7 +723,7 @@ function PostComposerModal({
                   onSelectionChange={(event) => setSelection(event.nativeEvent.selection)}
                   selection={selection}
                   multiline
-                  placeholder={POST_PLACEHOLDER}
+                  placeholder={t("feed.fullComposePlaceholder")}
                   placeholderTextColor={Colors.mutedText}
                   style={styles.composerTextarea}
                   textAlignVertical="top"
@@ -714,7 +735,10 @@ function PostComposerModal({
                     usedWords > APP_LIMITS.postWords - 10 && styles.composerCounterWarn,
                   ]}
                 >
-                  {usedWords}/{APP_LIMITS.postWords} so'z
+                  {t("feed.wordCounter", {
+                    used: usedWords,
+                    limit: APP_LIMITS.postWords,
+                  })}
                 </Text>
                 {attachments.length ? (
                   <View style={styles.composerAttachmentsGrid}>
@@ -829,6 +853,7 @@ function CommentsModal({
   onClose: () => void;
   onCountChange: (postId: string, nextCount: number) => void;
 }) {
+  const { t, language } = useI18n();
   const currentUser = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(currentUser);
   const [comments, setComments] = useState<PostComment[]>([]);
@@ -958,10 +983,10 @@ function CommentsModal({
         return;
       }
 
-      Alert.alert("Izohni o'chirish", "Bu amalni ortga qaytarib bo'lmaydi.", [
-        { text: "Bekor qilish", style: "cancel" },
+      Alert.alert(t("comments.deleteTitle"), t("comments.deleteDescription"), [
+        { text: t("common.cancel"), style: "cancel" },
         {
-          text: "O'chirish",
+          text: t("common.delete"),
           style: "destructive",
           onPress: () => {
             void (async () => {
@@ -978,8 +1003,10 @@ function CommentsModal({
                 await loadComments(1);
               } catch (error) {
                 Alert.alert(
-                  "Izoh o'chirilmadi",
-                  error instanceof Error ? error.message : "Qaytadan urinib ko'ring.",
+                  t("comments.deleteFailedTitle"),
+                  error instanceof Error
+                    ? error.message
+                    : t("comments.deleteFailedDescription"),
                 );
               }
             })();
@@ -1020,7 +1047,7 @@ function CommentsModal({
   return (
     <DraggableBottomSheet
       visible={visible}
-      title="Izohlar"
+      title={t("comments.title")}
       onClose={handleCloseComments}
       minHeight={540}
       initialHeightRatio={0.94}
@@ -1029,7 +1056,7 @@ function CommentsModal({
           {editingComment ? (
             <View style={styles.replyingBar}>
               <Text style={styles.replyingText}>
-                Tahrirlash: @{editingComment.nickname}
+                {t("comments.editingLabel", { name: editingComment.nickname })}
               </Text>
               <Pressable
                 onPress={() => {
@@ -1043,7 +1070,9 @@ function CommentsModal({
           ) : null}
           {replyingTo ? (
             <View style={styles.replyingBar}>
-              <Text style={styles.replyingText}>Javob: @{replyingTo.nickname}</Text>
+              <Text style={styles.replyingText}>
+                {t("comments.replyingLabel", { name: replyingTo.nickname })}
+              </Text>
               <Pressable onPress={() => setReplyingTo(null)}>
                 <X size={14} color={Colors.mutedText} />
               </Pressable>
@@ -1056,11 +1085,11 @@ function CommentsModal({
               placeholder={
                 editingComment
                   ? editingComment.kind === "reply"
-                    ? "Javobni tahrirlash..."
-                    : "Izohni tahrirlash..."
+                    ? t("comments.editReplyPlaceholder")
+                    : t("comments.editCommentPlaceholder")
                   : replyingTo
-                    ? `@${replyingTo.nickname} ga javob...`
-                    : "Izoh yozing..."
+                    ? t("comments.replyPlaceholder", { name: replyingTo.nickname })
+                    : t("comments.commentPlaceholder")
               }
               placeholderTextColor={Colors.mutedText}
               style={styles.commentInput}
@@ -1091,12 +1120,15 @@ function CommentsModal({
         showsVerticalScrollIndicator={false}
       >
               {!commentsCacheHydrated || (loading && comments.length === 0) ? (
-                <Text style={styles.commentsEmpty}>Yuklanmoqda...</Text>
+                <Text style={styles.commentsEmpty}>{t("comments.loading")}</Text>
               ) : comments.length === 0 ? (
-                <Text style={styles.commentsEmpty}>Hozircha izoh yo'q</Text>
+                <Text style={styles.commentsEmpty}>{t("comments.empty")}</Text>
               ) : (
                 comments.map((comment) => {
-                  const name = comment.user?.nickname || comment.user?.username || "User";
+                  const name =
+                    comment.user?.nickname ||
+                    comment.user?.username ||
+                    t("common.userFallback");
                   const isOwnComment = getEntityId(comment.user) === currentUserId;
 
                   return (
@@ -1113,7 +1145,9 @@ function CommentsModal({
                           <Text style={styles.commentText}>{comment.content}</Text>
                         </View>
                         <View style={styles.commentMetaRow}>
-                          <Text style={styles.commentTime}>{timeAgo(comment.createdAt)}</Text>
+                          <Text style={styles.commentTime}>
+                            {timeAgo(comment.createdAt, language, t)}
+                          </Text>
                           <Pressable
                             onPress={() =>
                               startReply(
@@ -1123,20 +1157,20 @@ function CommentsModal({
                               )
                             }
                           >
-                            <Text style={styles.replyAction}>Javob</Text>
+                            <Text style={styles.replyAction}>{t("comments.reply")}</Text>
                           </Pressable>
                           {isOwnComment ? (
                             <>
                               <Pressable
                                 onPress={() => startEdit(comment, name, "comment")}
                               >
-                                <Text style={styles.commentAction}>Tahrirlash</Text>
+                                <Text style={styles.commentAction}>{t("common.edit")}</Text>
                               </Pressable>
                               <Pressable onPress={() => handleDeleteComment(comment._id)}>
                                 <Text
                                   style={[styles.commentAction, styles.commentActionDanger]}
                                 >
-                                  O'chirish
+                                  {t("common.delete")}
                                 </Text>
                               </Pressable>
                             </>
@@ -1144,7 +1178,10 @@ function CommentsModal({
                         </View>
 
                         {comment.replies?.map((reply) => {
-                          const replyName = reply.user?.nickname || reply.user?.username || "User";
+                          const replyName =
+                            reply.user?.nickname ||
+                            reply.user?.username ||
+                            t("common.userFallback");
                           const isOwnReply = getEntityId(reply.user) === currentUserId;
 
                           return (
@@ -1168,13 +1205,15 @@ function CommentsModal({
                                 </Text>
                               </View>
                               <View style={styles.replyMetaRow}>
-                                <Text style={styles.commentTime}>{timeAgo(reply.createdAt)}</Text>
+                                <Text style={styles.commentTime}>
+                                  {timeAgo(reply.createdAt, language, t)}
+                                </Text>
                                 {isOwnReply ? (
                                   <>
                                     <Pressable
                                       onPress={() => startEdit(reply, replyName, "reply")}
                                     >
-                                      <Text style={styles.commentAction}>Tahrirlash</Text>
+                                      <Text style={styles.commentAction}>{t("common.edit")}</Text>
                                     </Pressable>
                                     <Pressable onPress={() => handleDeleteComment(reply._id)}>
                                       <Text
@@ -1183,7 +1222,7 @@ function CommentsModal({
                                           styles.commentActionDanger,
                                         ]}
                                       >
-                                        O'chirish
+                                        {t("common.delete")}
                                       </Text>
                                     </Pressable>
                                   </>
@@ -1203,7 +1242,7 @@ function CommentsModal({
                   onPress={() => void loadComments(page + 1)}
                   style={styles.moreCommentsButton}
                 >
-                  <Text style={styles.moreCommentsText}>Yana yuklash</Text>
+                  <Text style={styles.moreCommentsText}>{t("comments.loadMore")}</Text>
                 </Pressable>
               ) : null}
       </ScrollView>
@@ -1232,10 +1271,11 @@ function FeedPostCard({
   onDelete: (post: FeedPost) => void;
   onOpenAuthorProfile: (post: FeedPost) => void;
 }) {
+  const { t, language } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const authorName =
-    post.author?.nickname || post.author?.username || "User";
+    post.author?.nickname || post.author?.username || t("common.userFallback");
   const isOwner = String(post.author?._id || post.author?.id || "") === currentUserId;
   const hasImages = Array.isArray(post.images) && post.images.length > 0;
   const shouldClamp =
@@ -1279,7 +1319,7 @@ function FeedPostCard({
                       }}
                     >
                       <Pencil size={16} color={Colors.text} />
-                      <Text style={styles.postMenuItemText}>Tahrirlash</Text>
+                      <Text style={styles.postMenuItemText}>{t("feed.editPost")}</Text>
                     </Pressable>
                     <Pressable
                       style={styles.postMenuItem}
@@ -1290,7 +1330,7 @@ function FeedPostCard({
                     >
                       <Trash2 size={16} color={Colors.danger} />
                       <Text style={[styles.postMenuItemText, { color: Colors.danger }]}>
-                        O'chirish
+                        {t("feed.deletePost")}
                       </Text>
                     </Pressable>
                   </View>
@@ -1313,13 +1353,14 @@ function FeedPostCard({
         <FeedMarkdownText
           style={[styles.postText, hasImages && styles.postTextCompact]}
           content={post.content}
+          t={t}
           numberOfLines={expanded ? undefined : hasImages ? 3 : 8}
         />
       ) : null}
 
       {shouldClamp && !expanded ? (
         <Pressable onPress={() => setExpanded(true)}>
-          <Text style={styles.readMore}>Ko'proq</Text>
+          <Text style={styles.readMore}>{t("feed.readMore")}</Text>
         </Pressable>
       ) : null}
 
@@ -1352,13 +1393,14 @@ function FeedPostCard({
           </View>
         </View>
 
-        <Text style={styles.postTime}>{formatTimestamp(post.createdAt)}</Text>
+        <Text style={styles.postTime}>{formatTimestamp(post.createdAt, language)}</Text>
       </View>
     </View>
   );
 }
 
 export function FeedScreen({ navigation }: Props) {
+  const { t } = useI18n();
   const { width: screenWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const currentUser = useAuthStore((state) => state.user);
@@ -1688,10 +1730,10 @@ export function FeedScreen({ navigation }: Props) {
   };
 
   const handleDeletePost = (post: FeedPost) => {
-    Alert.alert("Postni o'chirish", "Haqiqatan ham o'chirmoqchimisiz?", [
-      { text: "Bekor qilish", style: "cancel" },
+    Alert.alert(t("feed.deleteTitle"), t("feed.deleteDescription"), [
+      { text: t("common.cancel"), style: "cancel" },
       {
-        text: "O'chirish",
+        text: t("common.delete"),
         style: "destructive",
         onPress: async () => {
           await postsApi.deletePost(post._id);
@@ -1735,7 +1777,7 @@ export function FeedScreen({ navigation }: Props) {
   };
 
   const displayName =
-    currentUser?.nickname || currentUser?.username || "You";
+    currentUser?.nickname || currentUser?.username || t("common.you");
 
   const handleImageInteractionChange = useCallback((active: boolean) => {
     setPagerScrollEnabled(!active);
@@ -1859,24 +1901,24 @@ export function FeedScreen({ navigation }: Props) {
       ListHeaderComponent={
         <Pressable onPress={() => setComposeOpen(true)} style={styles.composeBar}>
           <Avatar label={displayName} uri={currentUser?.avatar} size={42} />
-          <Text style={styles.composePlaceholder}>Nima gap?</Text>
+          <Text style={styles.composePlaceholder}>{t("feed.composePlaceholder")}</Text>
         </Pressable>
       }
       ListEmptyComponent={
         !feedCacheHydrated || query.isLoading ? (
           <View style={styles.emptyState}>
             <ActivityIndicator color={Colors.primary} />
-            <Text style={styles.emptyText}>Yuklanmoqda...</Text>
+            <Text style={styles.emptyText}>{t("common.loading")}</Text>
           </View>
         ) : query.isError ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIcon}>
-              <Text style={styles.emptyText}>Offline</Text>
+              <Text style={styles.emptyText}>{t("feed.offline")}</Text>
             </View>
             <Text style={styles.emptyText}>
               {query.error instanceof Error
                 ? query.error.message
-                : "Feedni yuklab bo'lmadi"}
+                : t("feed.loadFailed")}
             </Text>
           </View>
         ) : (
@@ -1890,17 +1932,17 @@ export function FeedScreen({ navigation }: Props) {
             </View>
             <Text style={styles.emptyText}>
               {tab === "following"
-                ? "Kuzatayotganlaringizdan post topilmadi"
-                : "Hozircha feed bo'sh"}
+                ? t("feed.emptyFollowing")
+                : t("feed.emptyForYou")}
             </Text>
           </View>
         )
       }
       ListFooterComponent={
         query.isFetchingNextPage ? (
-          <Text style={styles.footerStatus}>Yuklanmoqda...</Text>
+          <Text style={styles.footerStatus}>{t("common.loading")}</Text>
         ) : posts.length > 0 ? (
-          <Text style={styles.footerStatus}>Hammasi ko'rsatildi</Text>
+          <Text style={styles.footerStatus}>{t("feed.allShown")}</Text>
         ) : null
       }
       renderItem={({ item }) => (
@@ -1925,7 +1967,7 @@ export function FeedScreen({ navigation }: Props) {
         <View style={styles.feedHeader}>
           <View style={styles.feedHeaderInner}>
             <View style={styles.feedTitleRow}>
-              <Text style={styles.feedTitle}>Feed</Text>
+              <Text style={styles.feedTitle}>{t("feed.title")}</Text>
               <Pressable
                 onPress={() => setComposeOpen(true)}
                 style={styles.plusButton}
@@ -1955,7 +1997,7 @@ export function FeedScreen({ navigation }: Props) {
                 onPress={() => animateToTab("foryou", true)}
               >
                 <Text style={[styles.tabText, activeTab === "foryou" && styles.tabTextActive]}>
-                  For you
+                  {t("feed.tabs.forYou")}
                 </Text>
               </Pressable>
               <Pressable
@@ -1968,7 +2010,7 @@ export function FeedScreen({ navigation }: Props) {
                     activeTab === "following" && styles.tabTextActive,
                   ]}
                 >
-                  Following
+                  {t("feed.tabs.following")}
                 </Text>
               </Pressable>
             </View>
@@ -2015,8 +2057,8 @@ export function FeedScreen({ navigation }: Props) {
         initialContent=""
         initialImages={[]}
         currentUser={currentUser}
-        title="Yangi Gurung"
-        submitLabel="Yuborish"
+        title={t("feed.createTitle")}
+        submitLabel={t("feed.createSubmit")}
         showImageTool
         onClose={() => setComposeOpen(false)}
         onSubmit={handleCreatePost}
@@ -2027,8 +2069,8 @@ export function FeedScreen({ navigation }: Props) {
         initialContent={editingPost?.content || ""}
         initialImages={editingPost?.images || []}
         currentUser={currentUser}
-        title="Gurungni tahrirlash"
-        submitLabel="Saqlash"
+        title={t("feed.editTitle")}
+        submitLabel={t("feed.editSubmit")}
         showImageTool={false}
         onClose={() => setEditingPost(null)}
         onSubmit={handleEditPost}

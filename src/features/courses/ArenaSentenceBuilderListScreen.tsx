@@ -1104,9 +1104,6 @@ export function ArenaSentenceBuilderListScreen({ navigation, route }: Props) {
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>Gap tuzish</Text>
-            <Text style={styles.headerCount}>
-              ({myDeckCount}/{deckLimit})
-            </Text>
           </View>
 
           <View style={[styles.headerSlot, styles.headerSlotEnd]}>

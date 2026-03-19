@@ -1,5 +1,6 @@
 import { Modal, ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { Copy, Video, X } from "lucide-react-native";
+import { useI18n } from "../../i18n";
 import { Colors } from "../../theme/colors";
 import type { MeetSummary } from "../../types/entities";
 
@@ -28,6 +29,7 @@ export function CreateMeetDialog({
   onCopy,
   onStart,
 }: Props) {
+  const { t } = useI18n();
   return (
     <Modal
       visible={visible}
@@ -45,9 +47,9 @@ export function CreateMeetDialog({
                 <Video size={20} color="#fff" />
               </View>
               <View style={styles.headerTextWrap}>
-                <Text style={styles.title}>Meet yaratish</Text>
+                <Text style={styles.title}>{t("chatsSidebar.meetDialog.title")}</Text>
                 <Text style={styles.subtitle}>
-                  Havolani ulashing yoki to'g'ridan-to'g'ri boshlang.
+                  {t("chatsSidebar.meetDialog.subtitle")}
                 </Text>
               </View>
             </View>
@@ -60,7 +62,7 @@ export function CreateMeetDialog({
             {loading ? (
               <View style={styles.centerBox}>
                 <ActivityIndicator color={Colors.primary} />
-                <Text style={styles.helperText}>Meet tayyorlanmoqda...</Text>
+                <Text style={styles.helperText}>{t("chatsSidebar.meetDialog.preparing")}</Text>
               </View>
             ) : error ? (
               <View style={styles.errorCard}>
@@ -80,7 +82,9 @@ export function CreateMeetDialog({
                   </Pressable>
                 </View>
                 <Text style={styles.helperText}>
-                  {copied ? "Meet havolasi nusxalandi" : "Sizda bitta faol meet saqlanadi."}
+                  {copied
+                    ? t("chatsSidebar.meetDialog.copied")
+                    : t("chatsSidebar.meetDialog.singleActive")}
                 </Text>
               </View>
             )}
@@ -95,7 +99,7 @@ export function CreateMeetDialog({
               disabled={loading || !meet?.roomId || Boolean(error)}
               onPress={onStart}
             >
-              <Text style={styles.startButtonText}>Boshlash</Text>
+              <Text style={styles.startButtonText}>{t("chatsSidebar.meetDialog.start")}</Text>
             </Pressable>
           </View>
         </View>

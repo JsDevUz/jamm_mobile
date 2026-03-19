@@ -723,6 +723,11 @@ export function ChatScreen({ navigation, route }: Props) {
     remoteUser: User;
     chatId: string;
   } | null>(null);
+  const outgoingCallRef = useRef<{
+    roomId: string;
+    remoteUser: User;
+    chatId: string;
+  } | null>(null);
   const listRef = useRef<FlashListRef<MessageListItem>>(null);
   const composerInputRef = useRef<NativeTextInput>(null);
   const composerFocusedRef = useRef(false);
@@ -757,7 +762,9 @@ export function ChatScreen({ navigation, route }: Props) {
     () =>
       (chatsQuery.data || []).find(
         (chat) =>
-          getEntityId(chat) === route.params.chatId || chat.urlSlug === route.params.chatId,
+          getEntityId(chat) === route.params.chatId ||
+          chat.privateurl === route.params.chatId ||
+          chat.urlSlug === route.params.chatId,
       ) || null,
     [chatsQuery.data, route.params.chatId],
   );
@@ -1304,6 +1311,10 @@ export function ChatScreen({ navigation, route }: Props) {
   };
 
   useEffect(() => {
+    outgoingCallRef.current = outgoingCall;
+  }, [outgoingCall]);
+
+  useEffect(() => {
     if (!outgoingCall) {
       return;
     }
@@ -1315,6 +1326,7 @@ export function ChatScreen({ navigation, route }: Props) {
         }
 
         const remoteUser = outgoingCall.remoteUser;
+        outgoingCallRef.current = null;
         setOutgoingCall(null);
         navigation.navigate("PrivateMeet", {
           chatId: outgoingCall.chatId,
@@ -1330,6 +1342,7 @@ export function ChatScreen({ navigation, route }: Props) {
           return;
         }
 
+        outgoingCallRef.current = null;
         setOutgoingCall(null);
         Alert.alert("Private meet", "Qo'ng'iroq rad etildi");
       }),
@@ -1338,6 +1351,7 @@ export function ChatScreen({ navigation, route }: Props) {
           return;
         }
 
+        outgoingCallRef.current = null;
         setOutgoingCall(null);
       }),
     ];
@@ -1349,16 +1363,17 @@ export function ChatScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     return () => {
-      if (!outgoingCall) {
+      const activeOutgoingCall = outgoingCallRef.current;
+      if (!activeOutgoingCall) {
         return;
       }
 
-      const remoteUserId = getEntityId(outgoingCall.remoteUser);
+      const remoteUserId = getEntityId(activeOutgoingCall.remoteUser);
       if (remoteUserId) {
-        realtime.emitCallCancel(remoteUserId, outgoingCall.roomId);
+        realtime.emitCallCancel(remoteUserId, activeOutgoingCall.roomId);
       }
     };
-  }, [outgoingCall]);
+  }, []);
 
   const infoPagePanResponder = useMemo(
     () =>
@@ -1460,11 +1475,13 @@ export function ChatScreen({ navigation, route }: Props) {
         : await chatsApi.startVideoCall(chatId);
 
       realtime.emitCallRequest(getEntityId(otherMember), result.roomId, "video");
-      setOutgoingCall({
+      const nextOutgoingCall = {
         roomId: result.roomId,
         remoteUser: otherMember,
         chatId,
-      });
+      };
+      outgoingCallRef.current = nextOutgoingCall;
+      setOutgoingCall(nextOutgoingCall);
     } catch (error) {
       Alert.alert(
         "Private meet ochilmadi",
@@ -1487,6 +1504,7 @@ export function ChatScreen({ navigation, route }: Props) {
     } catch {
       // noop
     }
+    outgoingCallRef.current = null;
     setOutgoingCall(null);
   }, [outgoingCall]);
 

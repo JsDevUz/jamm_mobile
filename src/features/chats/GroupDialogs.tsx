@@ -32,6 +32,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Avatar } from "../../components/Avatar";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
+import { useI18n } from "../../i18n";
 import { usersApi } from "../../lib/api";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -43,12 +44,15 @@ const GROUP_DESCRIPTION_LIMIT = 240;
 const GROUP_MEMBER_LIMIT = 40;
 
 const ADMIN_PERMISSION_OPTIONS = [
-  { id: "edit_group_info", label: "Guruh ma'lumotlarini tahrirlash" },
-  { id: "add_members", label: "A'zo qo'shish" },
-  { id: "remove_members", label: "A'zoni o'chirish" },
-  { id: "delete_others_messages", label: "Xabarlarni o'chirish" },
-  { id: "add_admins", label: "Admin qo'shish" },
-  { id: "pin_messages", label: "Xabarlarni biriktirish" },
+  { id: "edit_group_info", labelKey: "chatsSidebar.groupDialog.permissions.edit_group_info" },
+  { id: "add_members", labelKey: "chatsSidebar.groupDialog.permissions.add_members" },
+  { id: "remove_members", labelKey: "chatsSidebar.groupDialog.permissions.remove_members" },
+  {
+    id: "delete_others_messages",
+    labelKey: "chatsSidebar.groupDialog.permissions.delete_others_messages",
+  },
+  { id: "add_admins", labelKey: "chatsSidebar.groupDialog.permissions.add_admins" },
+  { id: "pin_messages", labelKey: "chatsSidebar.groupDialog.permissions.pin_messages" },
 ] as const;
 
 type GroupDraft = {
@@ -122,6 +126,7 @@ function MemberPickerDialog({
   onSelect,
   embedded = false,
 }: MemberPickerProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
@@ -215,7 +220,10 @@ function MemberPickerDialog({
         <View>
           <Text style={styles.dialogTitle}>{title}</Text>
           <Text style={styles.dialogSubtitle}>
-            {selectedUserIds.length}/{GROUP_MEMBER_LIMIT} tanlangan
+            {t("chatsSidebar.groupDialog.selectedCount", {
+              count: selectedUserIds.length,
+              limit: GROUP_MEMBER_LIMIT,
+            })}
           </Text>
         </View>
         <Pressable onPress={onClose} style={styles.closeButton}>
@@ -228,7 +236,7 @@ function MemberPickerDialog({
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="Ism yoki @username orqali qidirish"
+          placeholder={t("chatsSidebar.groupDialog.searchPlaceholder")}
           placeholderTextColor={Colors.subtleText}
           style={styles.searchInput}
           autoCapitalize="none"
@@ -240,11 +248,11 @@ function MemberPickerDialog({
 
       <ScrollView style={styles.searchResults}>
         {!query.trim() ? (
-          <Text style={styles.emptyInfo}>Qidirishni boshlang...</Text>
+          <Text style={styles.emptyInfo}>{t("chatsSidebar.groupDialog.searchStart")}</Text>
         ) : query.trim().length < 3 ? (
-          <Text style={styles.emptyInfo}>Kamida 3 ta belgi kiriting</Text>
+          <Text style={styles.emptyInfo}>{t("chatsSidebar.groupDialog.searchMin")}</Text>
         ) : filteredUsers.length === 0 ? (
-          <Text style={styles.emptyInfo}>Hech kim topilmadi</Text>
+          <Text style={styles.emptyInfo}>{t("chatsSidebar.groupDialog.searchEmpty")}</Text>
         ) : (
           filteredUsers.map((user) => {
             const userId = getEntityId(user);
@@ -304,14 +312,19 @@ function AdminRightsDialog({
   onDismissAdmin,
   onTogglePermission,
 }: AdminRightsDialogProps) {
+  const { t } = useI18n();
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.overlay} onPress={onClose}>
         <Pressable style={styles.subDialog} onPress={(event) => event.stopPropagation()}>
           <View style={styles.dialogHeader}>
             <View>
-              <Text style={styles.dialogTitle}>Admin huquqlari</Text>
-              <Text style={styles.dialogSubtitle}>A'zoga beriladigan ruxsatlar</Text>
+              <Text style={styles.dialogTitle}>
+                {t("chatsSidebar.groupDialog.adminRightsTitle")}
+              </Text>
+              <Text style={styles.dialogSubtitle}>
+                {t("chatsSidebar.groupDialog.adminRightsSubtitle")}
+              </Text>
             </View>
             <Pressable onPress={onClose} style={styles.closeButton}>
               <X size={18} color={Colors.mutedText} />
@@ -341,7 +354,7 @@ function AdminRightsDialog({
                   onPress={() => onTogglePermission(option.id)}
                   style={styles.permissionRow}
                 >
-                  <Text style={styles.permissionLabel}>{option.label}</Text>
+                  <Text style={styles.permissionLabel}>{t(option.labelKey)}</Text>
                   <View
                     style={[
                       styles.switchTrack,
@@ -362,10 +375,12 @@ function AdminRightsDialog({
 
           <View style={styles.footerActions}>
             <Pressable style={styles.footerGhostButton} onPress={onDismissAdmin}>
-              <Text style={styles.footerDangerText}>Adminlikni bekor qilish</Text>
+              <Text style={styles.footerDangerText}>
+                {t("chatsSidebar.groupDialog.dismissAdmin")}
+              </Text>
             </Pressable>
             <Pressable style={styles.footerPrimaryButton} onPress={onClose}>
-              <Text style={styles.footerPrimaryText}>Saqlash</Text>
+              <Text style={styles.footerPrimaryText}>{t("common.save")}</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -413,6 +428,7 @@ function GroupDialogLayout({
   onClose: () => void;
   onSubmit: (draft: GroupDraft) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState(initialName);
   const [description, setDescription] = useState(initialDescription);
   const [avatarUri, setAvatarUri] = useState<string | null | undefined>(currentAvatar);
@@ -550,7 +566,7 @@ function GroupDialogLayout({
       });
     } catch (error) {
       setSubmitError(
-        error instanceof Error ? error.message : "Guruhni saqlashda xatolik yuz berdi.",
+        error instanceof Error ? error.message : t("chatsSidebar.groupDialog.saveError"),
       );
     } finally {
       setSubmitting(false);
@@ -588,7 +604,7 @@ function GroupDialogLayout({
                 ) : (
                   <>
                     <Upload size={24} color={Colors.mutedText} />
-                    <Text style={styles.uploadText}>UPLOAD</Text>
+                    <Text style={styles.uploadText}>{t("chatsSidebar.groupDialog.upload")}</Text>
                   </>
                 )}
                 {canEditInfo ? (
@@ -599,11 +615,11 @@ function GroupDialogLayout({
               </Pressable>
 
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Guruh nomi</Text>
+                <Text style={styles.label}>{t("chatsSidebar.groupDialog.groupName")}</Text>
                 <TextInput
                   value={name}
                   onChangeText={(value) => setName(value.slice(0, GROUP_NAME_LIMIT))}
-                  placeholder="Yangi guruh"
+                  placeholder={t("chatsSidebar.groupDialog.groupNamePlaceholder")}
                   placeholderTextColor={Colors.subtleText}
                   editable={canEditInfo}
                   style={[styles.input, !canEditInfo && styles.inputDisabled]}
@@ -611,13 +627,13 @@ function GroupDialogLayout({
               </View>
 
               <View style={styles.inputGroup}>
-                <Text style={styles.label}>Guruh haqida</Text>
+                <Text style={styles.label}>{t("chatsSidebar.groupDialog.groupDescription")}</Text>
                 <TextInput
                   value={description}
                   onChangeText={(value) =>
                     setDescription(value.slice(0, GROUP_DESCRIPTION_LIMIT))
                   }
-                  placeholder="Guruh maqsadini yozing..."
+                  placeholder={t("chatsSidebar.groupDialog.groupDescriptionPlaceholder")}
                   placeholderTextColor={Colors.subtleText}
                   editable={canEditInfo}
                   multiline
@@ -628,7 +644,10 @@ function GroupDialogLayout({
               <View style={styles.membersSection}>
                 <View style={styles.membersHeader}>
                   <Text style={styles.label}>
-                    Ishtirokchilar ({memberIds.length}/{GROUP_MEMBER_LIMIT})
+                    {t("chatsSidebar.groupDialog.members", {
+                      count: memberIds.length,
+                      limit: GROUP_MEMBER_LIMIT,
+                    })}
                   </Text>
                   {canAddMembers ? (
                     <Pressable
@@ -643,7 +662,7 @@ function GroupDialogLayout({
                 {currentMembers.length === 0 ? (
                   <View style={styles.emptyMembers}>
                     <Text style={styles.emptyMembersText}>
-                      Kamida 1 ta odam qo'shing. A'zo tanlash alohida oynada ochiladi.
+                      {t("chatsSidebar.groupDialog.membersHint")}
                     </Text>
                   </View>
                 ) : (
@@ -686,7 +705,9 @@ function GroupDialogLayout({
                                     isAdmin && styles.memberActionTextActive,
                                   ]}
                                 >
-                                  {isAdmin ? "Admin" : "Unsigned"}
+                                  {isAdmin
+                                    ? t("chatsSidebar.groupDialog.roleAdmin")
+                                    : t("chatsSidebar.groupDialog.roleMember")}
                                 </Text>
                                 <ChevronRight size={14} color={Colors.mutedText} />
                               </Pressable>
@@ -713,12 +734,14 @@ function GroupDialogLayout({
 
             <View style={styles.footerActions}>
               <Pressable style={styles.footerGhostButton} onPress={onClose}>
-                <Text style={styles.footerGhostText}>Bekor qilish</Text>
+                <Text style={styles.footerGhostText}>{t("common.cancel")}</Text>
               </Pressable>
               <View style={styles.footerPrimaryWrap}>
                 {showSubmitHint && needsMembers ? (
                   <View style={styles.footerTooltip}>
-                    <Text style={styles.footerTooltipText}>Kamida 1 ta a'zo qo'shing</Text>
+                    <Text style={styles.footerTooltipText}>
+                      {t("chatsSidebar.groupDialog.submitHint")}
+                    </Text>
                   </View>
                 ) : null}
                 <Pressable
@@ -744,7 +767,7 @@ function GroupDialogLayout({
 
       <MemberPickerDialog
         visible={pickerOpen}
-        title="A'zo qo'shish"
+        title={t("chatsSidebar.groupDialog.addMember")}
         users={users}
         selectedUserIds={memberIds}
         onClose={() => setPickerOpen(false)}
@@ -780,6 +803,7 @@ export function CreateGroupDialog({
   onClose,
   onCreate,
 }: CreateGroupDialogProps) {
+  const { t } = useI18n();
   const { width: screenWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const translateX = useRef(new Animated.Value(screenWidth)).current;
@@ -943,7 +967,7 @@ export function CreateGroupDialog({
       });
     } catch (error) {
       setSubmitError(
-        error instanceof Error ? error.message : "Guruhni saqlashda xatolik yuz berdi.",
+        error instanceof Error ? error.message : t("chatsSidebar.groupDialog.saveError"),
       );
     } finally {
       setSubmitting(false);
@@ -1020,7 +1044,7 @@ export function CreateGroupDialog({
               <ArrowLeft size={18} color={Colors.text} />
             </Pressable>
             <View style={styles.createScreenHeaderCopy}>
-              <Text style={styles.createScreenTitle}>Guruh yaratish</Text>
+              <Text style={styles.createScreenTitle}>{t("chatsSidebar.groupDialog.title")}</Text>
               <Text style={styles.createScreenSubtitle}>
                 Do'stlaringiz bilan muloqot qiling
               </Text>
@@ -1039,33 +1063,33 @@ export function CreateGroupDialog({
               {avatarUri ? (
                 <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
               ) : (
-                <>
-                  <Upload size={24} color={Colors.mutedText} />
-                  <Text style={styles.uploadText}>UPLOAD</Text>
-                </>
-              )}
+                  <>
+                    <Upload size={24} color={Colors.mutedText} />
+                    <Text style={styles.uploadText}>{t("chatsSidebar.groupDialog.upload")}</Text>
+                  </>
+                )}
               <View style={styles.cameraBadge}>
                 <Camera size={12} color="#fff" />
               </View>
             </Pressable>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Guruh nomi</Text>
+              <Text style={styles.label}>{t("chatsSidebar.groupDialog.groupName")}</Text>
               <TextInput
                 value={name}
                 onChangeText={(value) => setName(value.slice(0, GROUP_NAME_LIMIT))}
-                placeholder="Yangi guruh"
+                placeholder={t("chatsSidebar.groupDialog.groupNamePlaceholder")}
                 placeholderTextColor={Colors.subtleText}
                 style={styles.input}
               />
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Guruh haqida</Text>
+              <Text style={styles.label}>{t("chatsSidebar.groupDialog.groupDescription")}</Text>
               <TextInput
                 value={description}
                 onChangeText={(value) => setDescription(value.slice(0, GROUP_DESCRIPTION_LIMIT))}
-                placeholder="Guruh maqsadini yozing..."
+                placeholder={t("chatsSidebar.groupDialog.groupDescriptionPlaceholder")}
                 placeholderTextColor={Colors.subtleText}
                 multiline
                 style={styles.textarea}
@@ -1075,7 +1099,10 @@ export function CreateGroupDialog({
             <View style={styles.membersSection}>
               <View style={styles.membersHeader}>
                 <Text style={styles.label}>
-                  Ishtirokchilar ({memberIds.length}/{GROUP_MEMBER_LIMIT})
+                  {t("chatsSidebar.groupDialog.members", {
+                    count: memberIds.length,
+                    limit: GROUP_MEMBER_LIMIT,
+                  })}
                 </Text>
                 <Pressable
                   onPress={() => setPickerOpen(true)}
@@ -1088,7 +1115,7 @@ export function CreateGroupDialog({
               {currentMembers.length === 0 ? (
                 <View style={styles.emptyMembers}>
                   <Text style={styles.emptyMembersText}>
-                    Kamida 1 ta odam qo'shing. A'zo tanlash shu screen ichida ochiladi.
+                    {t("chatsSidebar.groupDialog.membersHint")}
                   </Text>
                 </View>
               ) : (
@@ -1130,14 +1157,16 @@ export function CreateGroupDialog({
 
           <View style={[styles.createScreenFooter, { paddingBottom: 12 + insets.bottom }]}>
             <Pressable style={styles.footerGhostButton} onPress={onClose}>
-              <Text style={styles.footerGhostText}>Bekor qilish</Text>
-            </Pressable>
-            <View style={styles.footerPrimaryWrap}>
-              {showSubmitHint && needsMembers ? (
-                <View style={styles.footerTooltip}>
-                  <Text style={styles.footerTooltipText}>Kamida 1 ta a'zo qo'shing</Text>
-                </View>
-              ) : null}
+                <Text style={styles.footerGhostText}>{t("common.cancel")}</Text>
+              </Pressable>
+              <View style={styles.footerPrimaryWrap}>
+                {showSubmitHint && needsMembers ? (
+                  <View style={styles.footerTooltip}>
+                    <Text style={styles.footerTooltipText}>
+                      {t("chatsSidebar.groupDialog.submitHint")}
+                    </Text>
+                  </View>
+                ) : null}
               <Pressable
                 style={[
                   styles.footerPrimaryButton,
@@ -1150,7 +1179,9 @@ export function CreateGroupDialog({
                 {isBusy ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={styles.footerPrimaryText}>Guruh yaratish</Text>
+                  <Text style={styles.footerPrimaryText}>
+                    {t("chatsSidebar.groupDialog.createSubmit")}
+                  </Text>
                 )}
               </Pressable>
             </View>
@@ -1159,7 +1190,7 @@ export function CreateGroupDialog({
           <MemberPickerDialog
             visible={pickerOpen}
             embedded
-            title="A'zo qo'shish"
+            title={t("chatsSidebar.groupDialog.addMember")}
             users={users}
             selectedUserIds={memberIds}
             onClose={() => setPickerOpen(false)}
@@ -1180,6 +1211,7 @@ export function EditGroupDialog({
   onClose,
   onSave,
 }: EditGroupDialogProps) {
+  const { t } = useI18n();
   const currentUser = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(currentUser);
   const ownerId = String(group?.createdBy || "");
@@ -1193,8 +1225,8 @@ export function EditGroupDialog({
   return (
     <GroupDialogLayout
       visible={visible}
-      title="Guruhni tahrirlash"
-      subtitle="Guruh ma'lumotlarini o'zgartirish"
+      title={t("chatsSidebar.groupDialog.editTitle")}
+      subtitle={t("chatsSidebar.groupDialog.editSubtitle")}
       users={users}
       saving={false}
       currentAvatar={group?.avatar || null}
@@ -1207,7 +1239,7 @@ export function EditGroupDialog({
       canRemoveMembers={hasPermission("remove_members")}
       canAddAdmins={hasPermission("add_admins")}
       ownerId={ownerId}
-      submitLabel="Saqlash"
+      submitLabel={t("common.save")}
       onClose={onClose}
       onSubmit={onSave}
     />

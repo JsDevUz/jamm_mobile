@@ -20,6 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   ArrowLeft,
   BookOpenText,
+  FolderOpen,
   Eye,
   Globe,
   Layers3,
@@ -36,6 +37,7 @@ import {
 } from "lucide-react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
+import { TextInput } from "../../components/TextInput";
 import { APP_LIMITS, getTierLimit } from "../../constants/appLimits";
 import { APP_BASE_URL } from "../../config/env";
 import { arenaApi } from "../../lib/api";
@@ -51,7 +53,9 @@ import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import type {
   ArenaFlashcardDeck,
+  ArenaFlashcardFolder,
   ArenaFlashcardMember,
+  ArenaFlashcardFolderMember,
   ArenaFlashcardPromptSide,
   ArenaFlashcardStudyMode,
   ArenaFlashcardUserRef,
@@ -90,9 +94,34 @@ type TrainingSheetProps = {
   onStart: (mode: ArenaFlashcardStudyMode) => void;
 };
 
+type FolderPreviewSheetProps = {
+  visible: boolean;
+  folder: ArenaFlashcardFolder | null;
+  loading: boolean;
+  currentUserId: string;
+  joining: boolean;
+  leaving: boolean;
+  onClose: () => void;
+  onJoin: () => void;
+  onLeave: () => void;
+  onCopyLink: () => void;
+  onOpenDeck: (deck: ArenaFlashcardDeck) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+};
+
+type FolderEditorSheetProps = {
+  visible: boolean;
+  folder: ArenaFlashcardFolder | null;
+  saving: boolean;
+  onClose: () => void;
+  onSave: (title: string) => void;
+};
+
 const FLOATING_MENU_WIDTH = 190;
 const FLOATING_MENU_HEIGHT = 176;
 const PROMPT_SIDE_STORAGE_KEY = "jamm-flashcard-prompt-side-v1";
+const NO_FOLDER_FILTER_ID = "__no-folder__";
 
 function getUserRefId(value?: ArenaFlashcardUserRef | null) {
   if (!value) {
@@ -120,6 +149,22 @@ function getUserRefName(value?: ArenaFlashcardUserRef | null) {
 
 function getDeckIdentifier(deck?: ArenaFlashcardDeck | null) {
   return String(deck?.urlSlug || deck?._id || "");
+}
+
+function getFolderIdentifier(folder?: ArenaFlashcardFolder | null) {
+  return String(folder?.urlSlug || folder?._id || "");
+}
+
+function getDeckFolderIdentifier(deck?: ArenaFlashcardDeck | null) {
+  if (!deck?.folderId) {
+    return "";
+  }
+
+  if (typeof deck.folderId === "string") {
+    return String(deck.folderId);
+  }
+
+  return String(deck.folderId.urlSlug || deck.folderId._id || deck.folderId.id || "");
 }
 
 function getDeckCardCount(deck?: ArenaFlashcardDeck | null) {
@@ -151,6 +196,60 @@ function isDeckJoined(deck: ArenaFlashcardDeck | null, currentUserId: string) {
   }
 
   return deck.members.some((member) => getUserRefId(member.userId) === currentUserId);
+}
+
+function isFolderOwner(folder: ArenaFlashcardFolder | null, currentUserId: string) {
+  return Boolean(currentUserId && getUserRefId(folder?.createdBy) === currentUserId);
+}
+
+function isFolderJoined(folder: ArenaFlashcardFolder | null, currentUserId: string) {
+  if (!folder || !currentUserId || !Array.isArray(folder.members)) {
+    return false;
+  }
+
+  return folder.members.some((member) => getUserRefId(member.userId) === currentUserId);
+}
+
+function getFolderMembers(folder?: ArenaFlashcardFolder | null) {
+  const list: Array<{
+    id: string;
+    label: string;
+    avatar?: string | null;
+    secondary: string;
+  }> = [];
+  const ownerId = getUserRefId(folder?.createdBy);
+
+  if (folder?.createdBy) {
+    const owner =
+      typeof folder.createdBy === "string" ? null : folder.createdBy;
+    list.push({
+      id: ownerId || "owner",
+      label: getUserRefName(folder.createdBy),
+      avatar: owner?.avatar || null,
+      secondary: "Tuzuvchi",
+    });
+  }
+
+  if (Array.isArray(folder?.members)) {
+    folder.members.forEach((member: ArenaFlashcardFolderMember, index) => {
+      const memberId = getUserRefId(member.userId) || `folder-member-${index}`;
+      if (memberId === ownerId) {
+        return;
+      }
+
+      const user = member.userId && typeof member.userId !== "string" ? member.userId : null;
+      list.push({
+        id: memberId,
+        label: getUserRefName(member.userId),
+        avatar: user?.avatar || null,
+        secondary: member.joinedAt
+          ? `${new Date(member.joinedAt).toLocaleDateString("uz-UZ")} qo'shilgan`
+          : "A'zo",
+      });
+    });
+  }
+
+  return list;
 }
 
 function getDeckMembers(deck?: ArenaFlashcardDeck | null) {
@@ -512,6 +611,199 @@ function FlashcardTrainingSheet({
   );
 }
 
+function FlashcardFolderPreviewSheet({
+  visible,
+  folder,
+  loading,
+  currentUserId,
+  joining,
+  leaving,
+  onClose,
+  onJoin,
+  onLeave,
+  onCopyLink,
+  onOpenDeck,
+  onEdit,
+  onDelete,
+}: FolderPreviewSheetProps) {
+  const ownFolder = isFolderOwner(folder, currentUserId);
+  const joined = isFolderJoined(folder, currentUserId);
+  const members = useMemo(() => getFolderMembers(folder), [folder]);
+  const decks = Array.isArray(folder?.decks) ? folder.decks : [];
+
+  const footer = (
+    <View style={styles.sheetFooterRow}>
+      {!ownFolder ? (
+        joined ? (
+          <Pressable
+            style={[styles.footerSecondaryButton, leaving && styles.footerButtonDisabled]}
+            disabled={leaving}
+            onPress={onLeave}
+          >
+            {leaving ? (
+              <ActivityIndicator size="small" color={Colors.text} />
+            ) : (
+              <Text style={styles.footerSecondaryButtonText}>Folderdan chiqish</Text>
+            )}
+          </Pressable>
+        ) : (
+          <Pressable
+            style={[styles.footerSecondaryButton, joining && styles.footerButtonDisabled]}
+            disabled={joining}
+            onPress={onJoin}
+          >
+            {joining ? (
+              <ActivityIndicator size="small" color={Colors.text} />
+            ) : (
+              <Text style={styles.footerSecondaryButtonText}>Folderga qo'shilish</Text>
+            )}
+          </Pressable>
+        )
+      ) : (
+        <Pressable style={styles.footerSecondaryButton} onPress={onEdit}>
+          <Text style={styles.footerSecondaryButtonText}>Tahrirlash</Text>
+        </Pressable>
+      )}
+      <Pressable style={styles.footerPrimaryButton} onPress={onCopyLink}>
+        <Text style={styles.footerPrimaryButtonText}>Havolani nusxalash</Text>
+      </Pressable>
+    </View>
+  );
+
+  return (
+    <DraggableBottomSheet
+      visible={visible}
+      title={folder?.title?.trim() || "Flashcard folder"}
+      onClose={onClose}
+      footer={footer}
+    >
+      <ScrollView
+        contentContainerStyle={styles.sheetContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {loading ? (
+          <View style={styles.sheetLoading}>
+            <ActivityIndicator color={Colors.primary} />
+          </View>
+        ) : (
+          <>
+            <View style={styles.previewStatsRow}>
+              <View style={styles.previewStatCard}>
+                <FolderOpen size={16} color={Colors.primary} />
+                <Text style={styles.previewStatValue}>{decks.length}</Text>
+                <Text style={styles.previewStatLabel}>To'plam</Text>
+              </View>
+              <View style={styles.previewStatCard}>
+                <Users size={16} color={Colors.primary} />
+                <Text style={styles.previewStatValue}>{members.length}</Text>
+                <Text style={styles.previewStatLabel}>A'zo</Text>
+              </View>
+            </View>
+
+            {ownFolder ? (
+              <Pressable style={styles.dangerOutlineButton} onPress={onDelete}>
+                <Trash2 size={16} color={Colors.danger} />
+                <Text style={styles.dangerOutlineButtonText}>Folderni o'chirish</Text>
+              </Pressable>
+            ) : null}
+
+            <View style={styles.sheetSection}>
+              <Text style={styles.sectionTitle}>Ichidagi lug'atlar</Text>
+              {decks.length ? (
+                decks.map((deck, index) => {
+                  const deckId = String(deck._id || deck.urlSlug || index);
+                  return (
+                    <Pressable
+                      key={deckId}
+                      style={styles.resourceRow}
+                      onPress={() => onOpenDeck(deck)}
+                    >
+                      <View style={styles.resourceIcon}>
+                        <Layers3 size={15} color={Colors.primary} />
+                      </View>
+                      <View style={styles.resourceMeta}>
+                        <Text style={styles.resourceTitle}>
+                          {deck.title?.trim() || "Nomsiz to'plam"}
+                        </Text>
+                        <Text style={styles.resourceSubtitle}>
+                          {getDeckCardCount(deck)} ta karta
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })
+              ) : (
+                <Text style={styles.sheetEmptyText}>Bu folderga hali lug'at qo'shilmagan.</Text>
+              )}
+            </View>
+          </>
+        )}
+      </ScrollView>
+    </DraggableBottomSheet>
+  );
+}
+
+function FlashcardFolderEditorSheet({
+  visible,
+  folder,
+  saving,
+  onClose,
+  onSave,
+}: FolderEditorSheetProps) {
+  const [title, setTitle] = useState("");
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setTitle(String(folder?.title || "").trim());
+  }, [folder?.title, visible]);
+
+  return (
+    <DraggableBottomSheet
+      visible={visible}
+      title={folder?._id ? "Folderni tahrirlash" : "Yangi folder"}
+      onClose={onClose}
+      footer={
+        <View style={styles.sheetFooterRow}>
+          <Pressable style={styles.footerSecondaryButton} onPress={onClose}>
+            <Text style={styles.footerSecondaryButtonText}>Bekor qilish</Text>
+          </Pressable>
+          <Pressable
+            style={[
+              styles.footerPrimaryButton,
+              (!title.trim() || saving) && styles.footerButtonDisabled,
+            ]}
+            disabled={!title.trim() || saving}
+            onPress={() => onSave(title.trim())}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.footerPrimaryButtonText}>Saqlash</Text>
+            )}
+          </Pressable>
+        </View>
+      }
+      minHeight={340}
+      initialHeightRatio={0.52}
+      maxHeightRatio={0.68}
+    >
+      <View style={styles.folderEditorContent}>
+        <Text style={styles.label}>Folder nomi</Text>
+        <TextInput
+          placeholder="Masalan: IELTS so'zlari"
+          placeholderTextColor={Colors.subtleText}
+          value={title}
+          onChangeText={setTitle}
+          style={styles.folderEditorInput}
+        />
+      </View>
+    </DraggableBottomSheet>
+  );
+}
+
 export function ArenaFlashcardListScreen({ navigation, route }: Props) {
   const user = useAuthStore((state) => state.user);
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -519,6 +811,7 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
   const deckLimit = getTierLimit(APP_LIMITS.flashcardsCreated, user?.premiumStatus);
   const menuButtonRefs = useRef<Record<string, View | null>>({});
   const [decks, setDecks] = useState<ArenaFlashcardDeck[]>([]);
+  const [folders, setFolders] = useState<ArenaFlashcardFolder[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
@@ -527,17 +820,52 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
   const [menuState, setMenuState] = useState<DeckMenuState | null>(null);
   const [editorVisible, setEditorVisible] = useState(false);
   const [editingDeck, setEditingDeck] = useState<ArenaFlashcardDeck | null>(null);
+  const [folderEditorVisible, setFolderEditorVisible] = useState(false);
+  const [editingFolder, setEditingFolder] = useState<ArenaFlashcardFolder | null>(null);
   const [detailDeck, setDetailDeck] = useState<ArenaFlashcardDeck | null>(null);
   const [detailMode, setDetailMode] = useState<"preview" | "training" | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailActionDeckId, setDetailActionDeckId] = useState<string | null>(null);
+  const [folderDetail, setFolderDetail] = useState<ArenaFlashcardFolder | null>(null);
+  const [folderDetailLoading, setFolderDetailLoading] = useState(false);
+  const [folderActionId, setFolderActionId] = useState<string | null>(null);
+  const [savingFolder, setSavingFolder] = useState(false);
   const [deletingDeckId, setDeletingDeckId] = useState<string | null>(null);
   const [promptSide, setPromptSide] = useState<ArenaFlashcardPromptSide>("front");
+  const [selectedFolderFilter, setSelectedFolderFilter] = useState<string>(NO_FOLDER_FILTER_ID);
 
   const myDeckCount = useMemo(
     () => decks.filter((deck) => isDeckOwner(deck, currentUserId)).length,
     [currentUserId, decks],
   );
+  const ownedFolders = useMemo(
+    () => folders.filter((folder) => isFolderOwner(folder, currentUserId)),
+    [currentUserId, folders],
+  );
+  const selectedFolder = useMemo(() => {
+    if (selectedFolderFilter === NO_FOLDER_FILTER_ID) {
+      return null;
+    }
+
+    return (
+      folders.find((folder) => getFolderIdentifier(folder) === selectedFolderFilter) ||
+      (getFolderIdentifier(folderDetail) === selectedFolderFilter ? folderDetail : null)
+    );
+  }, [folderDetail, folders, selectedFolderFilter]);
+  const visibleFolderChips = useMemo(() => {
+    if (!selectedFolder || ownedFolders.some((folder) => getFolderIdentifier(folder) === selectedFolderFilter)) {
+      return ownedFolders;
+    }
+
+    return [...ownedFolders, selectedFolder];
+  }, [ownedFolders, selectedFolder, selectedFolderFilter]);
+  const filteredDecks = useMemo(() => {
+    if (selectedFolderFilter === NO_FOLDER_FILTER_ID) {
+      return decks.filter((deck) => !getDeckFolderIdentifier(deck));
+    }
+
+    return decks.filter((deck) => getDeckFolderIdentifier(deck) === selectedFolderFilter);
+  }, [decks, selectedFolderFilter]);
 
   useEffect(() => {
     let active = true;
@@ -590,6 +918,53 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
       nextMap.set(key, deck);
     });
     return Array.from(nextMap.values());
+  };
+
+  const loadFolders = async (silent = false) => {
+    try {
+      const payload = await arenaApi.fetchFlashcardFolders();
+      setFolders(Array.isArray(payload.data) ? payload.data : []);
+    } catch (error) {
+      if (!silent) {
+        Alert.alert(
+          "Folderlar yuklanmadi",
+          error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+        );
+      }
+    }
+  };
+
+  const loadFolderDetail = async (
+    folderId: string,
+    options?: {
+      joinIfNeeded?: boolean;
+    },
+  ) => {
+    setFolderDetailLoading(true);
+    try {
+      let payload = await arenaApi.fetchFlashcardFolder(folderId);
+
+      if (
+        options?.joinIfNeeded &&
+        currentUserId &&
+        !isFolderOwner(payload, currentUserId) &&
+        !isFolderJoined(payload, currentUserId)
+      ) {
+        payload = await arenaApi.joinFlashcardFolder(folderId);
+        await loadDecks(1, { replace: true, silent: true });
+        await loadFolders(true);
+      }
+
+      setFolderDetail(payload);
+    } catch (error) {
+      setFolderDetail(null);
+      Alert.alert(
+        "Folder ochilmadi",
+        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+      );
+    } finally {
+      setFolderDetailLoading(false);
+    }
   };
 
   const loadDecks = async (
@@ -678,9 +1053,11 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     void loadDecks(1, { replace: true });
+    void loadFolders(true);
 
     const unsubscribe = navigation.addListener("focus", () => {
       void loadDecks(1, { replace: true, silent: false });
+      void loadFolders(true);
     });
 
     return unsubscribe;
@@ -694,6 +1071,16 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
 
     void loadDeckDetail(deckId, "preview");
   }, [route.params?.deckId]);
+
+  useEffect(() => {
+    const folderId = String(route.params?.folderId || "");
+    if (!folderId) {
+      return;
+    }
+
+    setSelectedFolderFilter(folderId);
+    void loadFolderDetail(folderId, { joinIfNeeded: true });
+  }, [currentUserId, route.params?.folderId]);
 
   const handleBack = () => {
     navigation.navigate("MainTabs", {
@@ -714,6 +1101,26 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     Alert.alert("Nusxalandi", "Lugat havolasi clipboard'ga saqlandi.");
   };
 
+  const handleCopyFolderLink = async (folder: ArenaFlashcardFolder) => {
+    const identifier = getFolderIdentifier(folder);
+    if (!identifier) {
+      Alert.alert("Havola tayyor emas", "Bu folder uchun havola hali mavjud emas.");
+      return;
+    }
+
+    await Clipboard.setStringAsync(`${APP_BASE_URL}/arena/flashcard-folders/${identifier}`);
+    Alert.alert("Nusxalandi", "Folder havolasi clipboard'ga saqlandi.");
+  };
+
+  const handleOpenSelectedFolderPreview = () => {
+    const folderId = getFolderIdentifier(selectedFolder);
+    if (!folderId) {
+      return;
+    }
+
+    void loadFolderDetail(folderId);
+  };
+
   const handleOpenCreate = () => {
     if (myDeckCount >= deckLimit) {
       Alert.alert(
@@ -725,6 +1132,11 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
 
     setEditingDeck(null);
     setEditorVisible(true);
+  };
+
+  const handleOpenCreateFolder = () => {
+    setEditingFolder(null);
+    setFolderEditorVisible(true);
   };
 
   const handleOpenTraining = async (deck: ArenaFlashcardDeck) => {
@@ -745,6 +1157,16 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
 
     setMenuState(null);
     void loadDeckDetail(String(deck._id), "preview");
+  };
+
+  const handleOpenFolderPreview = async (folder: ArenaFlashcardFolder) => {
+    const folderId = String(folder._id || folder.urlSlug || "");
+    if (!folderId) {
+      Alert.alert("Folder topilmadi", "Bu folderni ochib bo'lmadi.");
+      return;
+    }
+
+    void loadFolderDetail(folderId);
   };
 
   const openMenu = (deck: ArenaFlashcardDeck) => {
@@ -847,6 +1269,28 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     }
   };
 
+  const handleJoinFolder = async () => {
+    const folderId = String(folderDetail?._id || folderDetail?.urlSlug || "");
+    if (!folderId || folderActionId) {
+      return;
+    }
+
+    setFolderActionId(folderId);
+    try {
+      const updatedFolder = await arenaApi.joinFlashcardFolder(folderId);
+      setFolderDetail(updatedFolder);
+      await loadDecks(1, { replace: true, silent: true });
+      await loadFolders(true);
+    } catch (error) {
+      Alert.alert(
+        "Folderga qo'shilmadi",
+        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+      );
+    } finally {
+      setFolderActionId(null);
+    }
+  };
+
   const handleLeaveDeck = async () => {
     const deckId = String(detailDeck?._id || "");
     if (!deckId || detailActionDeckId) {
@@ -888,6 +1332,77 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     );
   };
 
+  const handleLeaveFolder = async () => {
+    const folderId = String(folderDetail?._id || folderDetail?.urlSlug || "");
+    if (!folderId || folderActionId) {
+      return;
+    }
+
+    Alert.alert(
+      "Folderdan chiqasizmi?",
+      "Ichidagi lug'atlardan ham chiqib ketasiz va progress o'chadi.",
+      [
+        { text: "Bekor qilish", style: "cancel" },
+        {
+          text: "Chiqish",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setFolderActionId(folderId);
+              try {
+                const updatedFolder = await arenaApi.leaveFlashcardFolder(folderId);
+                setFolderDetail(updatedFolder);
+                await loadDecks(1, { replace: true, silent: true });
+                await loadFolders(true);
+              } catch (error) {
+                Alert.alert(
+                  "Chiqib bo'lmadi",
+                  error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+                );
+              } finally {
+                setFolderActionId(null);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleDeleteFolder = () => {
+    const folderId = String(folderDetail?._id || folderDetail?.urlSlug || "");
+    if (!folderId) {
+      return;
+    }
+
+    Alert.alert(
+      "Folderni o'chirasizmi?",
+      "Ichidagi lug'atlar saqlanadi, faqat folderdan ajraladi.",
+      [
+        { text: "Bekor qilish", style: "cancel" },
+        {
+          text: "O'chirish",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              try {
+                await arenaApi.deleteFlashcardFolder(folderId);
+                setFolderDetail(null);
+                await loadDecks(1, { replace: true, silent: true });
+                await loadFolders(true);
+              } catch (error) {
+                Alert.alert(
+                  "Folder o'chirilmadi",
+                  error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+                );
+              }
+            })();
+          },
+        },
+      ],
+    );
+  };
+
   const handleStartFromPreview = () => {
     if (!detailDeck) {
       return;
@@ -915,6 +1430,32 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
       mode,
       promptSide,
     });
+  };
+
+  const handleSaveFolder = async (title: string) => {
+    setSavingFolder(true);
+    try {
+      const nextFolder =
+        editingFolder?._id || editingFolder?.urlSlug
+          ? await arenaApi.updateFlashcardFolder(
+              String(editingFolder._id || editingFolder.urlSlug || ""),
+              { title },
+            )
+          : await arenaApi.createFlashcardFolder({ title });
+
+      setFolderEditorVisible(false);
+      setEditingFolder(null);
+      setFolderDetail(nextFolder);
+      setSelectedFolderFilter(getFolderIdentifier(nextFolder) || NO_FOLDER_FILTER_ID);
+      await loadFolders(true);
+    } catch (error) {
+      Alert.alert(
+        editingFolder ? "Folder yangilanmadi" : "Folder yaratilmadi",
+        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+      );
+    } finally {
+      setSavingFolder(false);
+    }
   };
 
   const handleLoadMore = () => {
@@ -1024,6 +1565,30 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     );
   };
 
+  const listHeader = (
+    <View style={styles.listHeader}>
+      <View style={styles.decksSectionHeader}>
+        <Text style={styles.decksSectionTitle}>Lug'atlar</Text>
+        {selectedFolder ? (
+          <View style={styles.decksHeaderActions}>
+            <Pressable
+              style={styles.decksHeaderAction}
+              onPress={handleOpenSelectedFolderPreview}
+            >
+              <Eye size={15} color={Colors.primary} />
+            </Pressable>
+            <Pressable
+              style={styles.decksHeaderAction}
+              onPress={() => void handleCopyFolderLink(selectedFolder)}
+            >
+              <Link2 size={15} color={Colors.primary} />
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.root}>
@@ -1036,9 +1601,6 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>Flashcards</Text>
-            <Text style={styles.headerCount}>
-              ({myDeckCount}/{deckLimit})
-            </Text>
           </View>
 
           <View style={[styles.headerSlot, styles.headerSlotEnd]}>
@@ -1048,18 +1610,68 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
           </View>
         </View>
 
+        <View style={styles.folderChipsBar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.folderChipList}
+          >
+            <Pressable
+              style={[
+                styles.folderChip,
+                selectedFolderFilter === NO_FOLDER_FILTER_ID && styles.folderChipActive,
+              ]}
+              onPress={() => setSelectedFolderFilter(NO_FOLDER_FILTER_ID)}
+            >
+              <Text
+                style={[
+                  styles.folderChipText,
+                  selectedFolderFilter === NO_FOLDER_FILTER_ID && styles.folderChipTextActive,
+                ]}
+              >
+                Foldersiz
+              </Text>
+            </Pressable>
+
+            {visibleFolderChips.map((folder) => {
+              const folderId = getFolderIdentifier(folder);
+              const isActive = selectedFolderFilter === folderId;
+              return (
+                <Pressable
+                  key={folderId}
+                  style={[styles.folderChip, isActive && styles.folderChipActive]}
+                  onPress={() => setSelectedFolderFilter(folderId)}
+                >
+                  <FolderOpen size={14} color={isActive ? "#fff" : Colors.primary} />
+                  <Text
+                    style={[styles.folderChipText, isActive && styles.folderChipTextActive]}
+                    numberOfLines={1}
+                  >
+                    {folder.title?.trim() || "Nomsiz folder"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <Pressable style={styles.folderAddButton} onPress={handleOpenCreateFolder}>
+            <Plus size={16} color={Colors.text} />
+          </Pressable>
+        </View>
+
         {initialLoading ? (
           <View style={styles.centerState}>
             <ActivityIndicator color={Colors.primary} />
           </View>
         ) : (
           <FlatList
-            data={decks}
+            data={filteredDecks}
             keyExtractor={(item, index) => String(item._id || item.urlSlug || `deck-${index}`)}
             renderItem={renderDeckCard}
+            ListHeaderComponent={listHeader}
             contentContainerStyle={[
               styles.listContent,
-              decks.length === 0 && styles.listContentEmpty,
+              filteredDecks.length === 0 && styles.listContentEmpty,
             ]}
             refreshControl={
               <RefreshControl
@@ -1075,14 +1687,16 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
                 <View style={styles.emptyOrb}>
                   <Layers3 size={28} color={Colors.primary} />
                 </View>
-                <Text style={styles.emptyTitle}>Flashcard to'plamlari yo'q</Text>
-                <Text style={styles.emptyDescription}>
-                  Yangi to'plam yarating va mobil ichida barcha mashqlarni ishlang.
+                <Text style={styles.emptyTitle}>
+                  {selectedFolderFilter === NO_FOLDER_FILTER_ID
+                    ? "Foldersiz flashcardlar yo'q"
+                    : "Bu folderda flashcard yo'q"}
                 </Text>
-                <Pressable style={styles.emptyAction} onPress={handleOpenCreate}>
-                  <Plus size={16} color="#fff" />
-                  <Text style={styles.emptyActionText}>To'plam yaratish</Text>
-                </Pressable>
+                <Text style={styles.emptyDescription}>
+                  {selectedFolderFilter === NO_FOLDER_FILTER_ID
+                    ? "Yangi to'plam yarating yoki mavjud deckni folderga biriktirmasdan saqlang."
+                    : "Boshqa folderni tanlang yoki shu folder uchun yangi flashcard yarating."}
+                </Text>
               </View>
             }
             ListFooterComponent={
@@ -1198,12 +1812,60 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
         <ArenaFlashcardEditorSheet
           visible={editorVisible}
           deck={editingDeck}
+          folders={folders.filter((folder) => isFolderOwner(folder, currentUserId))}
           onClose={() => {
             setEditorVisible(false);
             setEditingDeck(null);
           }}
           onSaved={async () => {
             await loadDecks(1, { replace: true, silent: true });
+            await loadFolders(true);
+          }}
+        />
+
+        <FlashcardFolderPreviewSheet
+          visible={Boolean(folderDetail || folderDetailLoading)}
+          folder={folderDetail}
+          loading={folderDetailLoading}
+          currentUserId={currentUserId}
+          joining={Boolean(
+            folderActionId && folderActionId === String(folderDetail?._id || folderDetail?.urlSlug || ""),
+          )}
+          leaving={Boolean(
+            folderActionId && folderActionId === String(folderDetail?._id || folderDetail?.urlSlug || ""),
+          )}
+          onClose={() => {
+            setFolderDetail(null);
+            setFolderDetailLoading(false);
+          }}
+          onJoin={() => void handleJoinFolder()}
+          onLeave={() => void handleLeaveFolder()}
+          onCopyLink={() => void (folderDetail ? handleCopyFolderLink(folderDetail) : undefined)}
+          onOpenDeck={(deck) => {
+            setFolderDetail(null);
+            void handleOpenPreview(deck);
+          }}
+          onEdit={() => {
+            if (!folderDetail) {
+              return;
+            }
+            setFolderDetail(null);
+            setEditingFolder(folderDetail);
+            setFolderEditorVisible(true);
+          }}
+          onDelete={handleDeleteFolder}
+        />
+
+        <FlashcardFolderEditorSheet
+          visible={folderEditorVisible}
+          folder={editingFolder}
+          saving={savingFolder}
+          onClose={() => {
+            setFolderEditorVisible(false);
+            setEditingFolder(null);
+          }}
+          onSave={(title) => {
+            void handleSaveFolder(title);
           }}
         />
       </View>
@@ -1278,6 +1940,154 @@ const styles = StyleSheet.create({
   },
   listContentEmpty: {
     flexGrow: 1,
+    justifyContent: "flex-start",
+  },
+  listHeader: {
+    gap: 8,
+    paddingBottom: 6,
+  },
+  folderChipsBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+  },
+  folderChipList: {
+    gap: 10,
+    paddingRight: 4,
+  },
+  folderChip: {
+    minHeight: 38,
+    maxWidth: 180,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  folderChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primary,
+  },
+  folderChipText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  folderChipTextActive: {
+    color: "#fff",
+  },
+  folderRowHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  folderSectionTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  folderSectionSubtitle: {
+    marginTop: 4,
+    color: Colors.mutedText,
+    fontSize: 12,
+  },
+  folderAddButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 2,
+  },
+  folderRow: {
+    gap: 12,
+    paddingRight: 8,
+  },
+  folderCard: {
+    width: 180,
+    minHeight: 120,
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: 10,
+  },
+  folderCardTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  folderOwnedBadge: {
+    color: Colors.primary,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  folderCardTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+    lineHeight: 20,
+  },
+  folderCardMeta: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  folderEmptyCard: {
+    minHeight: 92,
+    minWidth: 220,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderStyle: "dashed",
+    backgroundColor: Colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  folderEmptyText: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  decksSectionHeader: {
+    paddingTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  decksHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  decksSectionTitle: {
+    color: Colors.text,
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  decksHeaderAction: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
   },
   card: {
     borderRadius: 24,
@@ -1480,6 +2290,53 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 18,
   },
+  sheetLoading: {
+    minHeight: 180,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetEmptyText: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  dangerOutlineButton: {
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  dangerOutlineButtonText: {
+    color: Colors.danger,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  folderEditorContent: {
+    paddingHorizontal: 18,
+    paddingBottom: 8,
+    gap: 10,
+  },
+  label: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  folderEditorInput: {
+    width: "100%",
+    minHeight: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: Colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    color: Colors.text,
+    fontSize: 16,
+  },
   previewHero: {
     flexDirection: "row",
     gap: 14,
@@ -1518,6 +2375,14 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 10,
   },
+  previewStatCard: {
+    flex: 1,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceMuted,
+    padding: 12,
+    gap: 6,
+    alignItems: "flex-start",
+  },
   previewStat: {
     flex: 1,
     borderRadius: 18,
@@ -1538,7 +2403,15 @@ const styles = StyleSheet.create({
   previewSection: {
     gap: 12,
   },
+  sheetSection: {
+    gap: 12,
+  },
   previewSectionTitle: {
+    color: Colors.text,
+    fontSize: 17,
+    fontWeight: "800",
+  },
+  sectionTitle: {
     color: Colors.text,
     fontSize: 17,
     fontWeight: "800",
@@ -1609,6 +2482,35 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 16,
     backgroundColor: Colors.surface,
+  },
+  resourceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceMuted,
+    padding: 12,
+  },
+  resourceIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: Colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  resourceMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  resourceTitle: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  resourceSubtitle: {
+    color: Colors.subtleText,
+    fontSize: 12,
   },
   sectionEmptyText: {
     color: Colors.subtleText,

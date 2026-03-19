@@ -18,12 +18,14 @@ import { Colors } from "../../theme/colors";
 import type {
   ArenaFlashcardCardInput,
   ArenaFlashcardDeck,
+  ArenaFlashcardFolder,
   ArenaFlashcardMutationPayload,
 } from "../../types/arena";
 
 type Props = {
   visible: boolean;
   deck: ArenaFlashcardDeck | null;
+  folders?: ArenaFlashcardFolder[];
   onClose: () => void;
   onSaved: () => Promise<void> | void;
 };
@@ -47,6 +49,7 @@ function createEmptyCard(): ArenaFlashcardCardInput {
 export function ArenaFlashcardEditorSheet({
   visible,
   deck,
+  folders = [],
   onClose,
   onSaved,
 }: Props) {
@@ -54,6 +57,7 @@ export function ArenaFlashcardEditorSheet({
   const [title, setTitle] = useState("");
   const [inputMode, setInputMode] = useState<InputMode>("manual");
   const [cards, setCards] = useState<ArenaFlashcardCardInput[]>([createEmptyCard()]);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [templateText, setTemplateText] = useState("");
   const [saving, setSaving] = useState(false);
   const [imgModal, setImgModal] = useState<ImageModalState>({
@@ -85,11 +89,17 @@ export function ArenaFlashcardEditorSheet({
           : [createEmptyCard()],
       );
       setTemplateText("");
+      setSelectedFolderId(
+        typeof deck?.folderId === "string"
+          ? deck.folderId
+          : String(deck?.folderId?._id || deck?.folderId?.id || "").trim() || null,
+      );
     } else {
       setTitle("");
       setInputMode("manual");
       setCards([createEmptyCard()]);
       setTemplateText("");
+      setSelectedFolderId(null);
     }
 
     setSaving(false);
@@ -285,6 +295,7 @@ export function ArenaFlashcardEditorSheet({
     const payload: ArenaFlashcardMutationPayload = {
       title: title.trim(),
       cards: finalCards,
+      folderId: selectedFolderId || null,
     };
 
     setSaving(true);
@@ -422,6 +433,57 @@ export function ArenaFlashcardEditorSheet({
             onChangeText={(value) => setTitle(value.slice(0, APP_LIMITS.flashcardTitleChars))}
             style={styles.input}
           />
+        </View>
+
+        <View style={styles.formGroup}>
+          <Text style={styles.label}>Folder</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.folderPickerRow}
+          >
+            <Pressable
+              style={[
+                styles.folderChip,
+                !selectedFolderId && styles.folderChipActive,
+              ]}
+              onPress={() => setSelectedFolderId(null)}
+            >
+              <Text
+                style={[
+                  styles.folderChipText,
+                  !selectedFolderId && styles.folderChipTextActive,
+                ]}
+              >
+                Foldersiz
+              </Text>
+            </Pressable>
+            {folders.map((folder) => {
+              const folderId = String(folder._id || folder.urlSlug || "").trim();
+              if (!folderId) {
+                return null;
+              }
+
+              const isActive = selectedFolderId === folderId;
+              return (
+                <Pressable
+                  key={folderId}
+                  style={[styles.folderChip, isActive && styles.folderChipActive]}
+                  onPress={() => setSelectedFolderId(folderId)}
+                >
+                  <Text
+                    style={[
+                      styles.folderChipText,
+                      isActive && styles.folderChipTextActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {folder.title?.trim() || "Folder"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
 
         <View style={styles.tabs}>
@@ -579,6 +641,33 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     color: Colors.text,
     fontSize: 16,
+  },
+  folderPickerRow: {
+    gap: 8,
+    paddingRight: 8,
+  },
+  folderChip: {
+    minHeight: 38,
+    maxWidth: 180,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  folderChipActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  folderChipText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  folderChipTextActive: {
+    color: "#fff",
   },
   tabs: {
     flexDirection: "row",

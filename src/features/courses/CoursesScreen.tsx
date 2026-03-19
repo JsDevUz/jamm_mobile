@@ -66,10 +66,12 @@ import {
 } from "react-native-gesture-handler";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
+import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { API_BASE_URL, APP_BASE_URL } from "../../config/env";
 import { APP_LIMITS } from "../../constants/appLimits";
+import { useI18n } from "../../i18n";
 import { arenaApi, coursesApi } from "../../lib/api";
 import {
   getCourseDetailCache,
@@ -132,54 +134,31 @@ type ArenaItem = {
   icon: typeof BookOpen;
 };
 
-const ARENA_ITEMS: ArenaItem[] = [
-  {
-    key: "tests",
-    title: "Tests",
-    description: "Practice open tests",
-    icon: BookOpen,
-  },
-  {
-    key: "flashcards",
-    title: "Flashcards",
-    description: "Memorize vocabulary",
-    icon: Layers,
-  },
-  {
-    key: "sentenceBuilders",
-    title: "Sentence builder",
-    description: "Build sentences from pieces",
-    icon: TypeIcon,
-  },
-  {
-    key: "mnemonics",
-    title: "Mnemonics",
-    description: "Memorize number sequences",
-    icon: Brain,
-  },
-  {
-    key: "battles",
-    title: "Knowledge battles",
-    description: "Real-time competition",
-    icon: Swords,
-  },
-];
+const LOCALE_BY_LANGUAGE = {
+  uz: "uz-UZ",
+  en: "en-US",
+  ru: "ru-RU",
+} as const;
 
 const COURSE_CATEGORIES = ["IT", "Design", "Language", "Business", "Science"];
 const DEFAULT_COURSE_GRADIENT = ["#667eea", "#764ba2"] as const;
 const VIDEO_PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
 
-function timeAgo(value?: string | null) {
+function timeAgo(
+  value: string | null | undefined,
+  t: (key: string, replacements?: Record<string, string | number>) => string,
+  language: keyof typeof LOCALE_BY_LANGUAGE,
+) {
   if (!value) return "";
   const diff = Date.now() - new Date(value).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Hozir";
-  if (mins < 60) return `${mins}d`;
+  if (mins < 1) return t("feed.timeAgo.now");
+  if (mins < 60) return t("feed.timeAgo.minutesShort", { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}s`;
+  if (hrs < 24) return t("feed.timeAgo.hoursShort", { count: hrs });
   const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}k`;
-  return new Date(value).toLocaleDateString("uz-UZ", {
+  if (days < 7) return t("feed.timeAgo.daysShort", { count: days });
+  return new Date(value).toLocaleDateString(LOCALE_BY_LANGUAGE[language], {
     day: "numeric",
     month: "short",
   });
@@ -223,19 +202,6 @@ function formatFileSize(bytes?: number | null) {
   if (!value) return "0 KB";
   if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatAccessType(value?: string | null) {
-  if (value === "free_open") return "Open";
-  if (value === "paid") return "Paid";
-  return "Request";
-}
-
-function formatCourseStatus(status?: string | null) {
-  if (status === "approved") return "A'zo";
-  if (status === "pending") return "Kutilmoqda";
-  if (status === "admin") return "Admin";
-  return "";
 }
 
 function getCourseLessonCount(course?: Course | null) {
@@ -369,6 +335,7 @@ function CommentsModal({
   lesson: CourseLesson | null;
   onClose: () => void;
 }) {
+  const { t, language } = useI18n();
   const [comments, setComments] = useState<CourseComment[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
@@ -437,7 +404,7 @@ function CommentsModal({
   return (
     <DraggableBottomSheet
       visible={visible}
-      title="Dars izohlari"
+      title={t("coursePlayer.comments.title")}
       onClose={onClose}
       minHeight={520}
       initialHeightRatio={0.8}
@@ -445,7 +412,7 @@ function CommentsModal({
         <View style={styles.commentComposerWrap}>
           {replyingTo ? (
             <View style={styles.replyingBar}>
-              <Text style={styles.replyingText}>Reply mode</Text>
+              <Text style={styles.replyingText}>{t("coursePlayer.comments.replyMode")}</Text>
               <Pressable onPress={() => setReplyingTo(null)}>
                 <X size={14} color={Colors.mutedText} />
               </Pressable>
@@ -455,7 +422,7 @@ function CommentsModal({
             <TextInput
               value={text}
               onChangeText={setText}
-              placeholder="Izoh yozing..."
+              placeholder={t("coursePlayer.comments.placeholder")}
               placeholderTextColor={Colors.subtleText}
               style={styles.commentInput}
             />
@@ -482,15 +449,15 @@ function CommentsModal({
       >
             {comments.length === 0 && !loading ? (
               <View style={styles.commentsEmpty}>
-                <Text style={styles.emptyText}>Hali izoh yo'q</Text>
+                <Text style={styles.emptyText}>{t("coursePlayer.comments.empty")}</Text>
               </View>
             ) : (
               comments.map((comment) => (
                 <View key={comment._id} style={styles.commentBlock}>
                   <View style={styles.commentBubble}>
                     <View style={styles.commentHeader}>
-                      <Text style={styles.commentAuthor}>{comment.userName || "User"}</Text>
-                      <Text style={styles.commentTime}>{timeAgo(comment.createdAt)}</Text>
+                          <Text style={styles.commentAuthor}>{comment.userName || "User"}</Text>
+                      <Text style={styles.commentTime}>{timeAgo(comment.createdAt, t, language)}</Text>
                     </View>
                     <Text style={styles.commentText}>{comment.text}</Text>
                   </View>
@@ -498,7 +465,7 @@ function CommentsModal({
                     style={styles.replyAction}
                     onPress={() => setReplyingTo(comment._id || null)}
                   >
-                    <Text style={styles.replyActionText}>Javob yozish</Text>
+                    <Text style={styles.replyActionText}>{t("coursePlayer.comments.replyAction")}</Text>
                   </Pressable>
 
                   {comment.replies?.length ? (
@@ -507,7 +474,7 @@ function CommentsModal({
                         <View key={reply._id} style={styles.replyBubble}>
                           <View style={styles.commentHeader}>
                             <Text style={styles.commentAuthor}>{reply.userName || "User"}</Text>
-                            <Text style={styles.commentTime}>{timeAgo(reply.createdAt)}</Text>
+                            <Text style={styles.commentTime}>{timeAgo(reply.createdAt, t, language)}</Text>
                           </View>
                           <Text style={styles.commentText}>{reply.text}</Text>
                         </View>
@@ -521,7 +488,7 @@ function CommentsModal({
             {hasMore ? (
               <Pressable style={styles.loadMoreButton} onPress={() => void handleLoadMore()}>
                 <Text style={styles.loadMoreText}>
-                  {loading ? "Yuklanmoqda..." : "Ko'proq izohlar"}
+                  {loading ? t("common.loading") : t("coursePlayer.comments.loadMore")}
                 </Text>
               </Pressable>
             ) : null}
@@ -546,6 +513,7 @@ function CreateCourseModal({
     price?: number;
   }) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("IT");
@@ -580,7 +548,7 @@ function CreateCourseModal({
       setImage(uploaded.url || uploaded.fileUrl || "");
     } catch (error) {
       Alert.alert(
-        "Rasm yuklanmadi",
+        t("articles.imageUploadFailed"),
         error instanceof Error ? error.message : "Noma'lum xatolik",
       );
     } finally {
@@ -611,7 +579,7 @@ function CreateCourseModal({
       <Pressable style={styles.modalOverlay} onPress={onClose}>
         <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
           <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>Yangi kurs</Text>
+            <Text style={styles.createTitle}>{t("createCourse.title")}</Text>
             <Pressable style={styles.iconCircle} onPress={onClose}>
               <X size={18} color={Colors.mutedText} />
             </Pressable>
@@ -621,14 +589,14 @@ function CreateCourseModal({
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="Kurs nomi"
+              placeholder={t("createCourse.name")}
               placeholderTextColor={Colors.subtleText}
               style={styles.fieldInput}
             />
             <TextInput
               value={description}
               onChangeText={setDescription}
-              placeholder="Qisqacha tavsif"
+              placeholder={t("createCourse.description")}
               placeholderTextColor={Colors.subtleText}
               style={[styles.fieldInput, styles.textArea]}
               multiline
@@ -636,14 +604,14 @@ function CreateCourseModal({
             <TextInput
               value={category}
               onChangeText={setCategory}
-              placeholder="Kategoriya"
+              placeholder={t("createCourse.category")}
               placeholderTextColor={Colors.subtleText}
               style={styles.fieldInput}
             />
             <TextInput
               value={price}
               onChangeText={setPrice}
-              placeholder="Narx"
+              placeholder={t("createCourse.price")}
               placeholderTextColor={Colors.subtleText}
               keyboardType="number-pad"
               style={styles.fieldInput}
@@ -651,9 +619,9 @@ function CreateCourseModal({
 
             <View style={styles.accessRow}>
               {[
-                { id: "free_request", label: "Request" },
-                { id: "free_open", label: "Open" },
-                { id: "paid", label: "Paid" },
+                { id: "free_request", label: t("createCourse.access.freeRequest") },
+                { id: "free_open", label: t("createCourse.access.freeOpen") },
+                { id: "paid", label: t("createCourse.access.paid") },
               ].map((option) => (
                 <Pressable
                   key={option.id}
@@ -679,7 +647,7 @@ function CreateCourseModal({
 
             <Pressable style={styles.mediaPicker} onPress={() => void handlePickImage()}>
               <Text style={styles.mediaPickerText}>
-                {uploading ? "Yuklanmoqda..." : image ? "Cover tayyor" : "Cover tanlash"}
+                {uploading ? t("common.loading") : image ? t("articles.editor.coverReady") : t("createCourse.imageChange")}
               </Text>
             </Pressable>
 
@@ -694,7 +662,7 @@ function CreateCourseModal({
 
           <View style={styles.createFooter}>
             <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
+              <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
             </Pressable>
             <Pressable
               style={[styles.primaryButton, (!name.trim() || saving) && styles.sendButtonDisabled]}
@@ -704,7 +672,7 @@ function CreateCourseModal({
               {saving ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.primaryButtonText}>Yaratish</Text>
+                <Text style={styles.primaryButtonText}>{t("common.create")}</Text>
               )}
             </Pressable>
           </View>
@@ -744,6 +712,11 @@ function CoursesScreenContent({
   detailOnly = false,
 }: SharedCoursesProps) {
   const insets = useSafeAreaInsets();
+  const { t, language } = useI18n();
+  const formatRelativeTime = useCallback(
+    (value?: string | null) => timeAgo(value, t, language),
+    [language, t],
+  );
   const { width: screenWidth } = useWindowDimensions();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
@@ -1091,14 +1064,50 @@ function CoursesScreenContent({
     );
   }, [allCourses, enrolledCourses, query]);
 
+  const arenaItems = useMemo<ArenaItem[]>(
+    () => [
+      {
+        key: "tests",
+        title: t("courseSidebar.arena.testsTitle"),
+        description: t("courseSidebar.arena.testsDescription"),
+        icon: BookOpen,
+      },
+      {
+        key: "flashcards",
+        title: t("courseSidebar.arena.flashcardsTitle"),
+        description: t("courseSidebar.arena.flashcardsDescription"),
+        icon: Layers,
+      },
+      {
+        key: "sentenceBuilders",
+        title: t("courseSidebar.arena.sentencesTitle"),
+        description: t("courseSidebar.arena.sentencesDescription"),
+        icon: TypeIcon,
+      },
+      {
+        key: "mnemonics",
+        title: t("courseSidebar.arena.mnemonicsTitle"),
+        description: t("courseSidebar.arena.mnemonicsDescription"),
+        icon: Brain,
+      },
+      {
+        key: "battles",
+        title: t("courseSidebar.arena.battlesTitle"),
+        description: t("courseSidebar.arena.battlesDescription"),
+        icon: Swords,
+      },
+    ],
+    [t],
+  );
+
   const filteredArenaItems = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return ARENA_ITEMS;
+    if (!needle) return arenaItems;
 
-    return ARENA_ITEMS.filter((item) =>
+    return arenaItems.filter((item) =>
       `${item.title} ${item.description}`.toLowerCase().includes(needle),
     );
-  }, [query]);
+  }, [arenaItems, query]);
 
   const selectedCourseListEntry = useMemo(
     () =>
@@ -2518,7 +2527,7 @@ function CoursesScreenContent({
       setActiveSentenceDeck(null);
     } catch (error) {
       Alert.alert(
-        "Maydon ochilmadi",
+        t("coursePlayer.lessonTests.openError"),
         error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
       );
     } finally {
@@ -2587,12 +2596,12 @@ function CoursesScreenContent({
   const renderCurrentLessonStage = () => {
     const offlineBusy = offlineDownloading || offlineRemoving;
     const offlineButtonLabel = offlineDownloading
-      ? "Yuklanmoqda"
+      ? t("coursePlayer.offline.downloading")
       : offlineRemoving
-        ? "O'chirilmoqda"
+        ? t("coursePlayer.offline.removing")
         : isLessonFullyOffline
-          ? "Offline saqlangan"
-          : "Offline yuklash";
+          ? t("coursePlayer.offline.ready")
+          : t("coursePlayer.offline.download");
 
     if (canRenderLessonPlayer) {
       return (
@@ -3227,7 +3236,7 @@ function CoursesScreenContent({
       assignments={homeworkAssignments}
       onAdd={() => openAdminChildModal("homework")}
       onDelete={handleDeleteHomeworkAssignment}
-      timeAgo={timeAgo}
+      timeAgo={formatRelativeTime}
     />
   );
 
@@ -3345,21 +3354,21 @@ function CoursesScreenContent({
           >
             <Shield size={15} color={Colors.primary} />
             <Text style={[styles.roundedActionButtonText, styles.roundedActionButtonTextAdmin]}>
-              Boshqarish
+              {t("coursePlayer.actions.manage")}
             </Text>
           </Pressable>
         ) : isPendingMember ? (
           <View style={[styles.roundedActionButton, styles.roundedActionButtonPending]}>
             <Clock3 size={15} color={Colors.warning} />
             <Text style={[styles.roundedActionButtonText, styles.roundedActionButtonTextPending]}>
-              Kutilmoqda
+              {t("coursePlayer.actions.pending")}
             </Text>
           </View>
         ) : isApprovedMember ? (
           <View style={[styles.roundedActionButton, styles.roundedActionButtonSuccess]}>
             <CheckCircle2 size={15} color={Colors.accent} />
             <Text style={[styles.roundedActionButtonText, styles.roundedActionButtonTextSuccess]}>
-              Obuna bo'lingan
+              {t("coursePlayer.actions.enrolled")}
             </Text>
           </View>
         ) : (
@@ -3377,8 +3386,8 @@ function CoursesScreenContent({
                 <UserPlus size={15} color="#fff" />
                 <Text style={styles.roundedActionButtonText}>
                   {currentCourse?.accessType === "paid"
-                    ? `Sotib olish: ${currentCourse?.price || 0} so'm`
-                    : "Obuna bo'lish"}
+                    ? t("coursePlayer.actions.buy", { price: currentCourse?.price || 0 })
+                    : t("coursePlayer.actions.enroll")}
                 </Text>
               </>
             )}
@@ -3410,11 +3419,11 @@ function CoursesScreenContent({
       return (
         <View style={styles.emptyState}>
           <BookOpen size={28} color={Colors.mutedText} />
-          <Text style={styles.emptyTitle}>Kurs topilmadi</Text>
+          <Text style={styles.emptyTitle}>{t("courseSidebar.searchEmptyTitle")}</Text>
           <Text style={styles.emptyText}>
             {query.trim()
-              ? "Qidiruvni o'zgartiring yoki yangi kurs yarating."
-              : "Qo'shilgan yoki yaratilgan kurslar shu yerda ko'rinadi."}
+              ? t("courseSidebar.searchEmptyDescription")
+              : t("courseSidebar.emptyDescription")}
           </Text>
         </View>
       );
@@ -3424,7 +3433,9 @@ function CoursesScreenContent({
       const memberStatus = getCourseMemberStatus(course, currentUserId);
       const lessonCount = getCourseLessonCount(course);
       const memberCount = getCourseMemberCount(course);
-      const statusLabel = formatCourseStatus(memberStatus);
+      const statusLabel = memberStatus
+        ? t(`courseSidebar.status.${memberStatus}`)
+        : "";
       const isAdminCourse = memberStatus === "admin";
       const isDeletingCourse = deletingCourseId === String(course._id || "");
       const isActiveCourse =
@@ -3472,7 +3483,9 @@ function CoursesScreenContent({
             </Text>
             <View style={styles.courseDescriptionRow}>
               <Text style={styles.courseItemDescription} numberOfLines={1}>
-                {lessonCount > 0 ? `${lessonCount} ta dars` : "Hali dars yo'q"}
+                {lessonCount > 0
+                  ? t("courseSidebar.lessonCount", { count: lessonCount })
+                  : t("courseSidebar.noLessons")}
               </Text>
               {statusLabel ? (
                 <View
@@ -3536,8 +3549,8 @@ function CoursesScreenContent({
     filteredArenaItems.length === 0 ? (
       <View style={styles.emptyState}>
         <Swords size={28} color={Colors.mutedText} />
-        <Text style={styles.emptyTitle}>Maydon topilmadi</Text>
-        <Text style={styles.emptyText}>Qidiruvni o'zgartirib, arena bo'limini yana tekshirib ko'ring.</Text>
+        <Text style={styles.emptyTitle}>{t("courseSidebar.arenaEmptyTitle")}</Text>
+        <Text style={styles.emptyText}>{t("courseSidebar.arenaEmptyDescription")}</Text>
       </View>
     ) : (
       <>
@@ -3566,20 +3579,29 @@ function CoursesScreenContent({
 
   const mainContent = (
     <View style={styles.container}>
-      <SearchHeaderBar
-        value={query}
-        onChangeText={setQuery}
-        placeholder={viewMode === "arena" ? "Arena qidirish..." : "Kurs qidirish..."}
-        rightSlot={
-          viewMode === "courses" ? (
-            <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
-              <Plus size={18} color={Colors.text} />
-            </Pressable>
-          ) : null
-        }
-      />
+      <GuidedTourTarget targetKey="courses-search">
+        <SearchHeaderBar
+          value={query}
+          onChangeText={setQuery}
+          placeholder={
+            viewMode === "arena"
+              ? t("courseSidebar.arenaSearchPlaceholder")
+              : t("courseSidebar.searchPlaceholder")
+          }
+          rightSlot={
+            viewMode === "courses" ? (
+              <GuidedTourTarget targetKey="courses-create">
+                <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
+                  <Plus size={18} color={Colors.text} />
+                </Pressable>
+              </GuidedTourTarget>
+            ) : null
+          }
+        />
+      </GuidedTourTarget>
 
-      <View style={styles.coursesTabsRow}>
+      <GuidedTourTarget targetKey="courses-tabs">
+        <View style={styles.coursesTabsRow}>
         <View
           style={styles.coursesTabsTrack}
           onLayout={(event) => setTabsWidth(event.nativeEvent.layout.width)}
@@ -3606,7 +3628,7 @@ function CoursesScreenContent({
             color={viewMode === "courses" ? Colors.text : Colors.mutedText}
           />
           <Text style={[styles.coursesTabText, viewMode === "courses" && styles.coursesTabTextActive]}>
-            Kurslar
+            {t("courseSidebar.tabs.courses")}
           </Text>
         </Pressable>
         <Pressable
@@ -3618,10 +3640,11 @@ function CoursesScreenContent({
             color={viewMode === "arena" ? Colors.text : Colors.mutedText}
           />
           <Text style={[styles.coursesTabText, viewMode === "arena" && styles.coursesTabTextActive]}>
-            Maydon
+            {t("courseSidebar.tabs.arena")}
           </Text>
         </Pressable>
-      </View>
+        </View>
+      </GuidedTourTarget>
 
       <Animated.ScrollView
         ref={pagerRef}
@@ -3645,21 +3668,25 @@ function CoursesScreenContent({
         style={styles.listPagerTrack}
       >
         <View style={[styles.listPage, { width: screenWidth }]}>
-          <ScrollView
-            style={styles.listScroll}
-            contentContainerStyle={styles.listContent}
-            refreshControl={
-              <RefreshControl
-                refreshing={listRefreshing}
-                onRefresh={() => void handleRefreshCourses()}
-                tintColor={Colors.primary}
-              />
-            }
-            nestedScrollEnabled
-            showsVerticalScrollIndicator={false}
-          >
-            {renderCoursesListPage()}
-          </ScrollView>
+          <GuidedTourTarget targetKey="courses-list" style={styles.flexTarget}>
+            <GuidedTourTarget targetKey="courses-content" style={styles.flexTarget}>
+              <ScrollView
+                style={styles.listScroll}
+                contentContainerStyle={styles.listContent}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={listRefreshing}
+                    onRefresh={() => void handleRefreshCourses()}
+                    tintColor={Colors.primary}
+                  />
+                }
+                nestedScrollEnabled
+                showsVerticalScrollIndicator={false}
+              >
+                {renderCoursesListPage()}
+              </ScrollView>
+            </GuidedTourTarget>
+          </GuidedTourTarget>
         </View>
         <View style={[styles.listPage, { width: screenWidth }]}>
           <ScrollView
@@ -3732,7 +3759,7 @@ function CoursesScreenContent({
                 homeworkAssignments={homeworkAssignments}
                 onOpenLinkedTest={handleOpenLinkedTest}
                 onOpenHomeworkSubmit={handleOpenHomeworkSubmit}
-                timeAgo={timeAgo}
+                timeAgo={formatRelativeTime}
               />
 
               <View style={styles.playlistPanel}>
@@ -3918,7 +3945,7 @@ function CoursesScreenContent({
 
       <DraggableBottomSheet
         visible={lessonDescriptionSheetOpen && Boolean(currentLesson?.description)}
-        title="Dars haqida"
+        title={t("coursePlayer.description.title")}
         onClose={() => setLessonDescriptionSheetOpen(false)}
         minHeight={420}
         initialHeightRatio={0.72}
@@ -4137,6 +4164,9 @@ const styles = StyleSheet.create<Record<string, any>>({
   screenStack: {
     flex: 1,
   },
+  flexTarget: {
+    flex: 1,
+  },
   container: {
     flex: 1,
     backgroundColor: Colors.background,
@@ -4175,6 +4205,8 @@ const styles = StyleSheet.create<Record<string, any>>({
   },
   coursesTabsTrack: {
     ...StyleSheet.absoluteFillObject,
+    justifyContent:'space-around',
+    minHeight:50,
   },
   coursesTabIndicator: {
     position: "absolute",
@@ -4186,7 +4218,7 @@ const styles = StyleSheet.create<Record<string, any>>({
   },
   coursesTab: {
     flex: 1,
-    minHeight: 44,
+    minHeight: 50,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

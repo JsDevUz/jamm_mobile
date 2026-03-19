@@ -77,6 +77,16 @@ export type ChatSummary = {
   members?: ChatMember[];
 };
 
+export type GroupLinkPreview = {
+  id: string;
+  privateurl?: string;
+  name?: string;
+  avatar?: string | null;
+  description?: string | null;
+  memberCount?: number;
+  isGroup?: boolean;
+};
+
 export type Message = {
   _id?: string;
   id?: string;
