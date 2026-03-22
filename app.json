@@ -1,11 +1,11 @@
 {
   "expo": {
     "name": "Jamm",
-    "slug": "jamm",
+    "slug": "jamm-mobile",
     "scheme": "jamm",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/logo-icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -13,7 +13,13 @@
       "backgroundColor": "#0B1020"
     },
     "plugins": [
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/android-icon-monochrome.png",
+          "color": "#5865F2"
+        }
+      ],
       "expo-video",
       "@react-native-community/datetimepicker"
     ],
@@ -41,7 +47,7 @@
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0B1020",
-        "foregroundImage": "./assets/icon.png"
+        "foregroundImage": "./assets/logo-icon.png"
       },
       "predictiveBackGestureEnabled": false,
       "intentFilters": [

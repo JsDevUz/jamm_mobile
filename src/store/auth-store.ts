@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { ApiError, authApi } from "../lib/api";
-import { unregisterPushNotifications } from "../lib/notifications";
+import {
+  bootstrapPushNotifications,
+  unregisterPushNotifications,
+} from "../lib/notifications";
 import {
   clearSessionStorage,
   getAppUnlockToken,
@@ -109,6 +112,9 @@ const useAuthStore = create<AuthState>((set) => ({
           initialized: true,
           bootstrapping: false,
         });
+        await bootstrapPushNotifications().catch((error) => {
+          console.warn("Failed to register push notifications after restore", error);
+        });
         return normalizedUser;
       })
       .catch(async (error) => {
@@ -153,6 +159,9 @@ const useAuthStore = create<AuthState>((set) => ({
       user: normalizedUser,
       initialized: true,
       bootstrapping: false,
+    });
+    await bootstrapPushNotifications().catch((error) => {
+      console.warn("Failed to register push notifications after login", error);
     });
     return normalizedUser as User;
   },

@@ -1,4 +1,4 @@
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -15,10 +15,11 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
-import { LinearGradient } from "expo-linear-gradient";
 import { TextInput } from "../../components/TextInput";
 import { API_BASE_URL } from "../../config/env";
 import { authApi } from "../../lib/api";
+import { bootstrapPushNotifications } from "../../lib/notifications";
+import { setAuthToken } from "../../lib/session";
 import type { RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -31,6 +32,7 @@ const allowedEmailPattern = /^[^\s@]+@(gmail\.com|jamm\.uz)$/i;
 export function AuthScreen(_: Props) {
   const login = useAuthStore((state) => state.login);
   const signup = useAuthStore((state) => state.signup);
+  const setUser = useAuthStore((state) => state.setUser);
   const [mode, setMode] = useState<AuthMode>("login");
   const [nickname, setNickname] = useState("");
   const [email, setEmail] = useState("");
@@ -131,11 +133,91 @@ export function AuthScreen(_: Props) {
 
   const handleGoogleAuth = async () => {
     try {
-      await Linking.openURL(`${API_BASE_URL}/auth/google/start`);
+      const returnUrl = "jamm://auth/google/callback";
+      await Linking.openURL(
+        `${API_BASE_URL}/auth/google/start?return_url=${encodeURIComponent(returnUrl)}`,
+      );
     } catch {
       Alert.alert("Google auth", "Google orqali kirish ochilmadi.");
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const handleGoogleCallbackUrl = async (url?: string | null) => {
+      const normalizedUrl = String(url || "").trim();
+      if (!normalizedUrl.startsWith("jamm://auth/google/callback")) {
+        return;
+      }
+
+      try {
+        const parsed = new URL(normalizedUrl);
+        const googleError = String(
+          parsed.searchParams.get("google_error") || "",
+        ).trim();
+        const accessToken = String(
+          parsed.searchParams.get("access_token") || "",
+        ).trim();
+
+        if (googleError) {
+          if (!cancelled) {
+            setError(googleError);
+          }
+          return;
+        }
+
+        if (!accessToken) {
+          if (!cancelled) {
+            setError("Google orqali kirish yakunlanmadi.");
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setLoading(true);
+          resetFeedback();
+        }
+
+        await setAuthToken(accessToken);
+        const user = await authApi.me();
+
+        if (cancelled) {
+          return;
+        }
+
+        setUser(user);
+        await bootstrapPushNotifications().catch((error) => {
+          console.warn("Failed to register push notifications after Google auth", error);
+        });
+      } catch (callbackError) {
+        if (!cancelled) {
+          setError(
+            callbackError instanceof Error
+              ? callbackError.message
+              : "Google orqali kirishda xatolik yuz berdi.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void Linking.getInitialURL()
+      .then(handleGoogleCallbackUrl)
+      .catch(() => undefined);
+
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      void handleGoogleCallbackUrl(url);
+    });
+
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, [setUser]);
 
   const title =
     mode === "login"
@@ -152,14 +234,7 @@ export function AuthScreen(_: Props) {
         : "Email manzilingizni kiriting, sizga tiklash havolasini yuboramiz";
 
   return (
-    <LinearGradient
-      colors={["#1A1B2E", "#16171D", "#0D0E14"]}
-      style={styles.background}
-    >
-      <View style={[styles.orb, styles.orbPrimary]} />
-      <View style={[styles.orb, styles.orbSecondary]} />
-      <View style={[styles.orb, styles.orbTertiary]} />
-
+    <View style={styles.background}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -167,19 +242,21 @@ export function AuthScreen(_: Props) {
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
+          bounces={false}
         >
-          <View style={styles.authCard}>
-            <View style={styles.logoRow}>
-              <Image
-                source={require("../../../assets/icon.png")}
-                style={styles.logoImage}
-                contentFit="cover"
-              />
+          <View style={styles.shell}>
+            <View style={styles.heroSection}>
+              <View style={styles.logoBadge}>
+                <Image
+                  source={require("../../../assets/icon.png")}
+                  style={styles.logoImage}
+                  contentFit="cover"
+                />
+              </View>
               <Text style={styles.logoText}>Jamm</Text>
+              <Text style={styles.title}>{title}</Text>
+              <Text style={styles.subtitle}>{subtitle}</Text>
             </View>
-
-            <Text style={styles.title}>{title}</Text>
-            <Text style={styles.subtitle}>{subtitle}</Text>
 
             {(mode === "login" || mode === "signup") && (
               <View style={styles.tabRow}>
@@ -206,153 +283,162 @@ export function AuthScreen(_: Props) {
               </View>
             )}
 
-            <View style={styles.form}>
-              {mode === "signup" ? (
+            <View style={styles.authCard}>
+              <View style={styles.form}>
+                {mode === "signup" ? (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Ism (Nikname)</Text>
+                    <View style={styles.inputShell}>
+                      <Ionicons name="person-outline" size={16} color="#72767d" />
+                      <TextInput
+                        style={styles.input}
+                        value={nickname}
+                        onChangeText={setNickname}
+                        autoCapitalize="words"
+                        placeholder="Nikingiz"
+                        placeholderTextColor="#4f545c"
+                      />
+                    </View>
+                  </View>
+                ) : null}
+
                 <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Ism (Nikname)</Text>
+                  <Text style={styles.label}>Email</Text>
                   <View style={styles.inputShell}>
-                    <Ionicons name="person-outline" size={16} color="#72767d" />
+                    <Ionicons name="mail-outline" size={16} color="#72767d" />
                     <TextInput
                       style={styles.input}
-                      value={nickname}
-                      onChangeText={setNickname}
-                      autoCapitalize="words"
-                      placeholder="Nikingiz"
+                      value={email}
+                      onChangeText={setEmail}
+                      autoCapitalize="none"
+                      keyboardType="email-address"
+                      placeholder="username@gmail.com yoki username@jamm.uz"
                       placeholderTextColor="#4f545c"
                     />
                   </View>
                 </View>
-              ) : null}
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.label}>Email</Text>
-                <View style={styles.inputShell}>
-                  <Ionicons name="mail-outline" size={16} color="#72767d" />
-                  <TextInput
-                    style={styles.input}
-                    value={email}
-                    onChangeText={setEmail}
-                    autoCapitalize="none"
-                    keyboardType="email-address"
-                    placeholder="username@gmail.com yoki username@jamm.uz"
-                    placeholderTextColor="#4f545c"
-                  />
-                </View>
-              </View>
-
-              {mode !== "forgot" ? (
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Parol</Text>
-                  <View style={styles.inputShell}>
-                    <Ionicons name="lock-closed-outline" size={16} color="#72767d" />
-                    <TextInput
-                      style={styles.input}
-                      value={password}
-                      onChangeText={setPassword}
-                      secureTextEntry={!showPassword}
-                      placeholder="••••••••"
-                      placeholderTextColor="#4f545c"
-                    />
-                    <Pressable
-                      onPress={() => setShowPassword((current) => !current)}
-                      hitSlop={10}
-                      style={styles.passwordToggle}
-                    >
+                {mode !== "forgot" ? (
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Parol</Text>
+                    <View style={styles.inputShell}>
                       <Ionicons
-                        name={showPassword ? "eye-off-outline" : "eye-outline"}
+                        name="lock-closed-outline"
                         size={16}
                         color="#72767d"
                       />
+                      <TextInput
+                        style={styles.input}
+                        value={password}
+                        onChangeText={setPassword}
+                        secureTextEntry={!showPassword}
+                        placeholder="••••••••"
+                        placeholderTextColor="#4f545c"
+                      />
+                      <Pressable
+                        onPress={() => setShowPassword((current) => !current)}
+                        hitSlop={10}
+                        style={styles.passwordToggle}
+                      >
+                        <Ionicons
+                          name={showPassword ? "eye-off-outline" : "eye-outline"}
+                          size={16}
+                          color="#72767d"
+                        />
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
+
+                {mode === "login" ? (
+                  <View style={styles.inlineActionRow}>
+                    <Pressable onPress={() => switchMode("forgot")}>
+                      <Text style={styles.ghostLink}>Parolni unutdingizmi?</Text>
                     </Pressable>
                   </View>
-                </View>
-              ) : null}
+                ) : null}
 
-              {mode === "login" ? (
-                <View style={styles.inlineActionRow}>
-                  <Pressable onPress={() => switchMode("forgot")}>
-                    <Text style={styles.ghostLink}>Parolni unutdingizmi?</Text>
-                  </Pressable>
-                </View>
-              ) : null}
+                {success ? (
+                  <View style={styles.successBox}>
+                    <Text style={styles.successText}>{success}</Text>
+                  </View>
+                ) : null}
 
-              {success ? (
-                <View style={styles.successBox}>
-                  <Text style={styles.successText}>{success}</Text>
-                </View>
-              ) : null}
+                {error ? (
+                  <View style={styles.errorBox}>
+                    <Text style={styles.errorText}>{error}</Text>
+                  </View>
+                ) : null}
 
-              {error ? (
-                <View style={styles.errorBox}>
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.submitButton,
+                    pressed && styles.submitButtonPressed,
+                    (loading || isSwitching) && styles.submitButtonDisabled,
+                  ]}
+                  disabled={loading || isSwitching}
+                  onPress={handleSubmit}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <>
+                      <Text style={styles.submitText}>
+                        {mode === "login"
+                          ? "Kirish"
+                          : mode === "signup"
+                            ? "Ro'yxatdan o'tish"
+                            : "Havolani yuborish"}
+                      </Text>
+                      <Ionicons name="arrow-forward" size={18} color="#fff" />
+                    </>
+                  )}
+                </Pressable>
+              </View>
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.submitButton,
-                  pressed && styles.submitButtonPressed,
-                  (loading || isSwitching) && styles.submitButtonDisabled,
-                ]}
-                disabled={loading || isSwitching}
-                onPress={handleSubmit}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <>
-                    <Text style={styles.submitText}>
-                      {mode === "login"
-                        ? "Kirish"
-                        : mode === "signup"
-                          ? "Ro'yxatdan o'tish"
-                          : "Havolani yuborish"}
+              {(mode === "login" || mode === "signup") && (
+                <>
+                  <View style={styles.dividerRow}>
+                    <View style={styles.dividerLine} />
+                    <Text style={styles.dividerText}>yoki</Text>
+                    <View style={styles.dividerLine} />
+                  </View>
+
+                  <Pressable
+                    style={styles.googleButton}
+                    onPress={() => void handleGoogleAuth()}
+                  >
+                    <Ionicons name="logo-google" size={18} color={Colors.text} />
+                    <Text style={styles.googleButtonText}>
+                      Google orqali {mode === "login" ? "kirish" : "ro'yxatdan o'tish"}
                     </Text>
-                    <Ionicons name="arrow-forward" size={18} color="#fff" />
-                  </>
-                )}
-              </Pressable>
-            </View>
+                  </Pressable>
+                </>
+              )}
 
-            {(mode === "login" || mode === "signup") && (
-              <>
-                <View style={styles.dividerRow}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>yoki</Text>
-                  <View style={styles.dividerLine} />
-                </View>
-
-                <Pressable style={styles.googleButton} onPress={() => void handleGoogleAuth()}>
-                  <Ionicons name="logo-google" size={18} color={Colors.text} />
-                  <Text style={styles.googleButtonText}>
-                    Google orqali {mode === "login" ? "kirish" : "ro'yxatdan o'tish"}
+              <View style={styles.footerBlock}>
+                <Text style={styles.footerText}>
+                  {mode === "login"
+                    ? "Hisobingiz yo'qmi?"
+                    : mode === "signup"
+                      ? "Hisobingiz bormi?"
+                      : "Login sahifasiga qaytish"}
+                </Text>
+                <Pressable
+                  onPress={() =>
+                    switchMode(
+                      mode === "login" ? "signup" : "login",
+                      mode === "forgot",
+                    )
+                  }
+                  hitSlop={12}
+                >
+                  <Text style={styles.footerLink}>
+                    {mode === "login" ? "Ro'yxatdan o'ting" : "Kirish"}
                   </Text>
                 </Pressable>
-              </>
-            )}
-
-            <Text style={styles.footerText}>
-              {mode === "login"
-                ? "Hisobingiz yo'qmi?"
-                : mode === "signup"
-                  ? "Hisobingiz bormi?"
-                  : "Login sahifasiga qaytish"}
-            </Text>
-            <Pressable
-              onPress={() =>
-                switchMode(
-                  mode === "login" ? "signup" : "login",
-                  mode === "forgot",
-                )
-              }
-              hitSlop={12}
-            >
-              <Text style={styles.footerLink}>
-                {mode === "login"
-                  ? "Ro'yxatdan o'ting"
-                  : "Kirish"}
-              </Text>
-            </Pressable>
+              </View>
+            </View>
 
             <View style={styles.policyRow}>
               <Pressable
@@ -379,7 +465,7 @@ export function AuthScreen(_: Props) {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </LinearGradient>
+    </View>
   );
 }
 
@@ -389,120 +475,104 @@ const styles = StyleSheet.create({
   },
   background: {
     flex: 1,
-  },
-  orb: {
-    position: "absolute",
-    borderRadius: 999,
-    opacity: 0.16,
-  },
-  orbPrimary: {
-    width: 280,
-    height: 280,
-    backgroundColor: "#5865f2",
-    top: -70,
-    right: -80,
-  },
-  orbSecondary: {
-    width: 220,
-    height: 220,
-    backgroundColor: "#eb459e",
-    bottom: -40,
-    left: -50,
-  },
-  orbTertiary: {
-    width: 160,
-    height: 160,
-    backgroundColor: "#57f287",
-    top: "46%",
-    left: "56%",
+    backgroundColor: "#0b0f14",
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: "center",
     paddingHorizontal: 20,
-    paddingVertical: 20,
+    paddingVertical: 28,
   },
-  authCard: {
-    alignSelf: "center",
+  shell: {
     width: "100%",
     maxWidth: 420,
-    backgroundColor: "rgba(47, 49, 54, 0.88)",
-    borderWidth: 1,
-    borderColor: "rgba(88, 101, 242, 0.15)",
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 28,
-    shadowColor: "#000",
-    shadowOpacity: 0.35,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 16 },
-    elevation: 18,
+    alignSelf: "center",
+    gap: 18,
   },
-  logoRow: {
-    flexDirection: "row",
+  heroSection: {
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 8,
+  },
+  logoBadge: {
+    width: 76,
+    height: 76,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    gap: 10,
-    marginBottom: 26,
+    backgroundColor: "rgba(88, 101, 242, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(88, 101, 242, 0.22)",
+  },
+  authCard: {
+    width: "100%",
+    backgroundColor: "#11161d",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    borderRadius: 28,
+    paddingHorizontal: 18,
+    paddingVertical: 18,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
   },
   logoImage: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 16,
   },
   logoText: {
-    color: "#fff",
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: -0.5,
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 13,
+    fontWeight: "700",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
   },
   title: {
-    fontSize: 22,
-    fontWeight: "700",
+    fontSize: 28,
+    fontWeight: "800",
     color: "#fff",
     textAlign: "center",
-    marginBottom: 4,
+    letterSpacing: -0.8,
   },
   subtitle: {
     fontSize: 14,
-    color: "#b9bbbe",
+    color: "rgba(255,255,255,0.62)",
     textAlign: "center",
-    marginBottom: 24,
     lineHeight: 21,
+    maxWidth: 320,
   },
   tabRow: {
     flexDirection: "row",
-    backgroundColor: "rgba(32, 34, 37, 0.7)",
-    borderRadius: 12,
+    backgroundColor: "#0f141b",
+    borderRadius: 18,
     padding: 4,
     gap: 4,
-    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.05)",
   },
   tabButton: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
-    borderRadius: 10,
+    minHeight: 42,
+    borderRadius: 14,
   },
   activeTab: {
-    backgroundColor: "#5865f2",
-    shadowColor: "#5865f2",
-    shadowOpacity: 0.28,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    backgroundColor: "#1a2230",
   },
   tabText: {
-    color: "#b9bbbe",
-    fontSize: 14,
+    color: "rgba(255,255,255,0.5)",
+    fontSize: 13,
     fontWeight: "600",
   },
   activeTabText: {
     color: "#fff",
   },
   form: {
-    gap: 16,
+    gap: 14,
   },
   inputGroup: {
     gap: 6,
@@ -512,14 +582,14 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textTransform: "uppercase",
     letterSpacing: 0.6,
-    color: "#b9bbbe",
+    color: "rgba(255,255,255,0.42)",
   },
   inputShell: {
-    minHeight: 48,
-    borderRadius: 10,
-    backgroundColor: "rgba(32, 34, 37, 0.8)",
-    borderWidth: 1.5,
-    borderColor: "rgba(64, 68, 75, 0.6)",
+    minHeight: 54,
+    borderRadius: 18,
+    backgroundColor: "#0b1016",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.07)",
     paddingLeft: 14,
     paddingRight: 10,
     flexDirection: "row",
@@ -530,7 +600,7 @@ const styles = StyleSheet.create({
     flex: 1,
     color: "#dcddde",
     fontSize: 15,
-    paddingVertical: 12,
+    paddingVertical: 14,
   },
   passwordToggle: {
     padding: 4,
@@ -540,7 +610,7 @@ const styles = StyleSheet.create({
     marginTop: -4,
   },
   ghostLink: {
-    color: "#5865f2",
+    color: "#8ea7ff",
     fontSize: 13,
     fontWeight: "600",
   },
@@ -571,14 +641,14 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   submitButton: {
-    minHeight: 50,
-    borderRadius: 10,
+    minHeight: 56,
+    borderRadius: 20,
     backgroundColor: "#5865f2",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    marginTop: 4,
+    marginTop: 6,
     shadowColor: "#5865f2",
     shadowOpacity: 0.3,
     shadowRadius: 16,
@@ -606,21 +676,21 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: "rgba(64, 68, 75, 0.6)",
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   dividerText: {
     fontSize: 12,
-    color: "#72767d",
+    color: "rgba(255,255,255,0.34)",
     fontWeight: "600",
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   googleButton: {
-    minHeight: 48,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: "rgba(64, 68, 75, 0.6)",
-    backgroundColor: "rgba(32, 34, 37, 0.8)",
+    minHeight: 52,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#0b1016",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -631,17 +701,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
   },
+  footerBlock: {
+    alignItems: "center",
+    gap: 2,
+    marginTop: 18,
+  },
   footerText: {
-    marginTop: 20,
     textAlign: "center",
     fontSize: 13,
-    color: "#72767d",
+    color: "rgba(255,255,255,0.38)",
   },
   footerLink: {
-    marginTop: 2,
-    color: "#5865f2",
+    color: "#8ea7ff",
     textAlign: "center",
-    fontWeight: "600",
+    fontWeight: "700",
     fontSize: 13,
   },
   policyRow: {
@@ -652,7 +725,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   policyLink: {
-    color: "#72767d",
+    color: "rgba(255,255,255,0.3)",
     fontSize: 12,
   },
 });

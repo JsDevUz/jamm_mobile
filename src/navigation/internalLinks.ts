@@ -1,6 +1,7 @@
 import { Linking } from "react-native";
 import { APP_BASE_URL } from "../config/env";
 import { usersApi } from "../lib/api";
+import type { User } from "../types/entities";
 import {
   parseJammDeepLink,
   type JammDeepLinkTarget,
@@ -85,9 +86,27 @@ export async function openJammProfileMention(username: string) {
     throw new Error("Username topilmadi.");
   }
 
-  const profile = await usersApi.getPublicProfile(normalizedUsername);
+  const normalizedNeedle = normalizedUsername.toLowerCase();
+  let profile: User | null = null;
+
+  try {
+    const searchResults = await usersApi.searchGlobal(normalizedUsername);
+    profile =
+      searchResults.find(
+        (item) => String(item.username || "").trim().toLowerCase() === normalizedNeedle,
+      ) || null;
+  } catch {
+    profile = null;
+  }
+
+  if (!profile) {
+    profile = await usersApi.getPublicProfile(normalizedUsername);
+  }
+
   const identifier =
-    String(profile?.jammId || "").trim() || String(profile?._id || profile?.id || "").trim();
+    String(profile?.jammId || "").trim() ||
+    String(profile?._id || profile?.id || "").trim() ||
+    normalizedUsername;
 
   if (!identifier) {
     throw new Error("Profile identifikatori topilmadi.");

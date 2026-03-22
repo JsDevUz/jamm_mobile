@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,6 +23,8 @@ import {
   Maximize2,
   Mic,
   MicOff,
+  Monitor,
+  MonitorOff,
   PhoneOff,
   RefreshCcw,
   Shield,
@@ -145,6 +148,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     currentUser?.nickname || currentUser?.username || currentUser?.email || "User";
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remotePeers, setRemotePeers] = useState<RemotePeer[]>([]);
   const [remoteScreenShares, setRemoteScreenShares] = useState<RemoteScreenShare[]>([]);
   const [joinStatus, setJoinStatus] = useState<JoinStatus>("connecting");
@@ -161,6 +165,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const [copied, setCopied] = useState(false);
   const [loadingMedia, setLoadingMedia] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [qualityProfile, setQualityProfile] = useState<QualityProfile>(
     CALL_QUALITY_PROFILES.balanced,
   );
@@ -169,6 +174,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const socketRef = useRef<Socket | null>(null);
   const socketIdRef = useRef<string | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
   const peerConnectionsRef = useRef<Record<string, RTCPeerConnection>>({});
   const screenPeerConnectionsRef = useRef<Record<string, RTCPeerConnection>>({});
   const candidateQueuesRef = useRef<Record<string, RTCIceCandidate[]>>({});
@@ -187,6 +193,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   useEffect(() => {
     localStreamRef.current = localStream;
   }, [localStream]);
+
+  useEffect(() => {
+    screenStreamRef.current = screenStream;
+  }, [screenStream]);
 
   useEffect(() => {
     roomTitleRef.current = roomTitle;
@@ -352,6 +362,25 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     delete screenPeerConnectionsRef.current[peerId];
   }, []);
 
+  const ensureScreenTracksAttached = useCallback((connection: RTCPeerConnection) => {
+    const activeScreenStream = screenStreamRef.current;
+    if (!activeScreenStream) {
+      return;
+    }
+
+    const existingTrackIds = new Set(
+      (connection.getSenders?.() || [])
+        .map((sender) => sender.track?.id)
+        .filter((trackId): trackId is string => Boolean(trackId)),
+    );
+
+    activeScreenStream.getTracks().forEach((track) => {
+      if (!existingTrackIds.has(track.id)) {
+        connection.addTrack(track, activeScreenStream);
+      }
+    });
+  }, []);
+
   const flushQueuedCandidates = useCallback(async (peerId: string) => {
     const connection = peerConnectionsRef.current[peerId];
     const queuedCandidates = candidateQueuesRef.current[peerId];
@@ -514,9 +543,12 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   );
 
   const createScreenPeerConnection = useCallback(
-    (peerId: string, peerDisplayName?: string) => {
+    (peerId: string, peerDisplayName?: string, initiator = false) => {
       const existingConnection = screenPeerConnectionsRef.current[peerId];
       if (existingConnection) {
+        if (initiator) {
+          ensureScreenTracksAttached(existingConnection);
+        }
         return existingConnection;
       }
 
@@ -525,6 +557,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         ontrack?: ((event: any) => void) | null;
         onconnectionstatechange?: (() => void) | null;
       };
+
+      if (initiator) {
+        ensureScreenTracksAttached(connection);
+      }
 
       connection.onicecandidate = (event: any) => {
         const currentSocket = socketRef.current;
@@ -576,7 +612,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       screenPeerConnectionsRef.current[peerId] = connection;
       return connection;
     },
-    [removeRemoteScreenShare, upsertRemoteScreenShare],
+    [ensureScreenTracksAttached, removeRemoteScreenShare, upsertRemoteScreenShare],
   );
 
   const applyMediaOptimization = useCallback(
@@ -660,6 +696,103 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     [createPeerConnection],
   );
 
+  const createScreenOfferForPeer = useCallback(
+    async (peerId: string, peerDisplayName?: string) => {
+      try {
+        if (!peerId || peerId === socketRef.current?.id || !screenStreamRef.current) {
+          return;
+        }
+
+        const connection = createScreenPeerConnection(peerId, peerDisplayName, true);
+        const offer = await connection.createOffer({
+          offerToReceiveAudio: false,
+          offerToReceiveVideo: true,
+        });
+        await connection.setLocalDescription(offer);
+        socketRef.current?.emit("screen-offer", {
+          targetId: peerId,
+          sdp: offer,
+        });
+      } catch (nextError) {
+        setError(
+          nextError instanceof Error ? nextError.message : "Screen share offer yuborilmadi",
+        );
+      }
+    },
+    [createScreenPeerConnection],
+  );
+
+  const stopScreenShare = useCallback(
+    (shouldNotifyRemote = true) => {
+      const activeScreenStream = screenStreamRef.current;
+      if (!activeScreenStream && !isScreenSharing) {
+        return;
+      }
+
+      screenStreamRef.current = null;
+      setScreenStream(null);
+      setIsScreenSharing(false);
+      activeScreenStream?.getTracks().forEach((track) => {
+        ((track as unknown) as { onended?: (() => void) | null }).onended = null;
+        track.stop();
+      });
+
+      Object.values(screenPeerConnectionsRef.current).forEach((connection) => connection.close());
+      screenPeerConnectionsRef.current = {};
+      screenCandidateQueuesRef.current = {};
+
+      if (shouldNotifyRemote) {
+        socketRef.current?.emit("screen-share-stopped", { roomId });
+      }
+    },
+    [isScreenSharing, roomId],
+  );
+
+  const canScreenShare =
+    Platform.OS === "android" && typeof mediaDevices.getDisplayMedia === "function";
+
+  const handleToggleScreenShare = useCallback(async () => {
+    if (!canScreenShare) {
+      Alert.alert("Screen share", "Hozircha screen share faqat Android real device'da yoqilgan.");
+      return;
+    }
+
+    if (isScreenSharing) {
+      stopScreenShare();
+      return;
+    }
+
+    try {
+      const stream = await mediaDevices.getDisplayMedia();
+      const videoTrack = stream.getVideoTracks?.()[0];
+      if (!videoTrack) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error("Screen stream topilmadi");
+      }
+
+      screenStreamRef.current = stream;
+      setScreenStream(stream);
+      setIsScreenSharing(true);
+      ((videoTrack as unknown) as { onended?: (() => void) | null }).onended = () => {
+        stopScreenShare();
+      };
+
+      await Promise.all(
+        Object.keys(peerConnectionsRef.current).map((peerId) =>
+          createScreenOfferForPeer(peerId, knownPeerNamesRef.current[peerId]),
+        ),
+      );
+    } catch (nextError) {
+      stopScreenShare(false);
+      Alert.alert(
+        "Screen share yoqilmadi",
+        nextError instanceof Error
+          ? nextError.message
+          : "Ekran ulashishni boshlashda xatolik yuz berdi.",
+      );
+    }
+  }, [canScreenShare, createScreenOfferForPeer, isScreenSharing, stopScreenShare]);
+
   const cleanupCall = useCallback(async () => {
     if (hangupStartedRef.current) {
       return;
@@ -675,10 +808,11 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     setLocalStream(null);
+    stopScreenShare(false);
     setKnockRequests([]);
     setElapsedSeconds(0);
     connectedAtRef.current = null;
-  }, [cleanupAllPeerConnections, roomId]);
+  }, [cleanupAllPeerConnections, roomId, stopScreenShare]);
 
   useEffect(() => {
     return () => {
@@ -848,6 +982,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           connectionState: "connecting",
         });
         void createOfferForPeer(normalizedPeerId, normalizedName);
+        if (screenStreamRef.current) {
+          void createScreenOfferForPeer(normalizedPeerId, normalizedName);
+        }
       });
 
       socket.on("offer", async ({ senderId, sdp }) => {
@@ -909,6 +1046,25 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         } catch (nextError) {
           setError(
             nextError instanceof Error ? nextError.message : "Screen share offer qabul qilinmadi",
+          );
+        }
+      });
+
+      socket.on("screen-answer", async ({ senderId, sdp }) => {
+        const normalizedPeerId = String(senderId || "");
+        if (!normalizedPeerId || normalizedPeerId === socket.id) return;
+
+        try {
+          const connection = screenPeerConnectionsRef.current[normalizedPeerId];
+          if (!connection) return;
+
+          await connection.setRemoteDescription(new RTCSessionDescription(sdp));
+          await flushQueuedScreenCandidates(normalizedPeerId);
+        } catch (nextError) {
+          setError(
+            nextError instanceof Error
+              ? nextError.message
+              : "Screen share answer qabul qilinmadi",
           );
         }
       });
@@ -1083,6 +1239,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   }, [
     createOfferForPeer,
     createPeerConnection,
+    createScreenOfferForPeer,
     cleanupAllPeerConnections,
     cleanupCall,
     displayName,
@@ -1265,6 +1422,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     ],
     [remotePeers, remoteScreenShares],
   );
+  const localPreviewStream = isScreenSharing ? screenStream || localStream : localStream;
 
   const spotlightTile = useMemo(() => {
     if (!selectedTileId || selectedTileId === "local") {
@@ -1274,12 +1432,19 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     return remoteTiles.find((tile) => tile.tileId === selectedTileId) || null;
   }, [remoteTiles, selectedTileId]);
 
-  const spotlightStream = selectedTileId === "local" ? localStream : spotlightTile?.stream || null;
+  const spotlightStream =
+    selectedTileId === "local" ? localPreviewStream : spotlightTile?.stream || null;
   const spotlightLabel =
     selectedTileId === "local"
       ? `${displayName} (Sen)`
       : spotlightTile?.label || "";
   const spotlightIsLocal = selectedTileId === "local";
+  const canRenderSpotlightStream = spotlightIsLocal
+    ? isScreenSharing
+      ? Boolean(spotlightStream)
+      : Boolean(spotlightStream) && isCamOn
+    : Boolean(spotlightStream);
+  const spotlightStreamUrl = spotlightStream?.toURL() || null;
   const hasSpotlight = Boolean(selectedTileId && (selectedTileId === "local" || spotlightTile));
   const spotlightPeerIds = new Set(selectedTileId ? [selectedTileId] : []);
 
@@ -1291,15 +1456,22 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   ) => {
     const initial = label.slice(0, 1).toUpperCase();
     const isScreenTile = key.endsWith(":screen");
+    const shouldContain = isScreenTile || (isLocalTile && isScreenSharing);
+    const canRenderStream = isLocalTile
+      ? isScreenSharing
+        ? Boolean(stream)
+        : Boolean(stream) && isCamOn
+      : Boolean(stream);
+    const streamUrl = stream?.toURL() || null;
 
     return (
       <View key={key} style={[styles.tile, { width: tileWidth }]}>
-        {stream && (!isLocalTile || isCamOn) ? (
+        {canRenderStream && streamUrl ? (
           <RTCView
-            streamURL={stream.toURL()}
+            streamURL={streamUrl}
             style={styles.tileVideo}
-            objectFit={isScreenTile ? "contain" : "cover"}
-            mirror={isLocalTile}
+            objectFit={shouldContain ? "contain" : "cover"}
+            mirror={isLocalTile && !isScreenSharing}
           />
         ) : (
           <View style={styles.tileFallback}>
@@ -1439,12 +1611,12 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                     </Pressable>
                   </View>
                   <View style={styles.spotlightTile}>
-                    {spotlightStream && (!spotlightIsLocal || isCamOn) ? (
+                    {canRenderSpotlightStream && spotlightStreamUrl ? (
                       <RTCView
-                        streamURL={spotlightStream.toURL()}
+                        streamURL={spotlightStreamUrl}
                         style={styles.spotlightVideo}
                         objectFit={selectedTileId?.endsWith(":screen") ? "contain" : "cover"}
-                        mirror={spotlightIsLocal}
+                        mirror={spotlightIsLocal && !isScreenSharing}
                       />
                     ) : (
                       <View style={styles.tileFallback}>
@@ -1464,7 +1636,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                     bounces={false}
                   >
                     {!spotlightPeerIds.has("local")
-                      ? [renderSelectableTile("local", displayName, localStream, true)]
+                      ? [renderSelectableTile("local", displayName, localPreviewStream, true)]
                       : []}
                     {remoteTiles
                       .filter((peer) => !spotlightPeerIds.has(peer.tileId))
@@ -1484,7 +1656,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                   showsVerticalScrollIndicator={false}
                   bounces={false}
                 >
-                  {renderSelectableTile("local", displayName, localStream, true)}
+                  {renderSelectableTile("local", displayName, localPreviewStream, true)}
                   {remoteTiles.map((peer) =>
                     renderSelectableTile(peer.tileId, peer.label, peer.stream, false),
                   )}
@@ -1525,6 +1697,18 @@ export function GroupMeetScreen({ navigation, route }: Props) {
             )}
             {camLocked ? <Lock size={10} color="#fff" style={styles.controlLock} /> : null}
           </Pressable>
+          {canScreenShare ? (
+            <Pressable
+              style={[styles.controlButton, isScreenSharing && styles.controlButtonActive]}
+              onPress={() => void handleToggleScreenShare()}
+            >
+              {isScreenSharing ? (
+                <Monitor size={20} color="#fff" />
+              ) : (
+                <MonitorOff size={20} color="#fff" />
+              )}
+            </Pressable>
+          ) : null}
           <Pressable style={styles.controlButton} onPress={handleSwitchCamera}>
             <RefreshCcw size={20} color="#fff" />
           </Pressable>
@@ -1997,6 +2181,9 @@ const styles = StyleSheet.create({
   },
   controlButtonMuted: {
     backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  controlButtonActive: {
+    backgroundColor: "rgba(82, 196, 26, 0.28)",
   },
   controlButtonDanger: {
     backgroundColor: Colors.danger,

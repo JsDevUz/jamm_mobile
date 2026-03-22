@@ -1196,6 +1196,7 @@ export function CreateGroupDialog({
             onClose={() => setPickerOpen(false)}
             onSelect={(userId) => {
               toggleMember(userId);
+              setPickerOpen(false);
             }}
           />
         </SafeAreaView>

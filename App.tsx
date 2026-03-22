@@ -19,6 +19,7 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import * as Notifications from "expo-notifications";
 import {
   NavigationContainer,
   DarkTheme,
@@ -123,6 +124,28 @@ function findChatByIdentifier(chats: ChatSummary[], identifier: string) {
       return candidates.includes(needle);
     }) || null
   );
+}
+
+function getNotificationChatPayload(
+  response?: Notifications.NotificationResponse | null,
+): { chatId: string; isGroup: boolean } | null {
+  const data = response?.notification?.request?.content?.data as
+    | { type?: string; chatId?: string; isGroup?: boolean }
+    | undefined;
+
+  if (String(data?.type || "") !== "chat_message") {
+    return null;
+  }
+
+  const chatId = String(data?.chatId || "").trim();
+  if (!chatId) {
+    return null;
+  }
+
+  return {
+    chatId,
+    isGroup: data?.isGroup === true,
+  };
 }
 
 function upsertChatSummary(chats: ChatSummary[], chat: ChatSummary) {
@@ -1333,6 +1356,8 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
   const queryClient = useQueryClient();
   const currentUserId = getEntityId(user);
   const pendingUrlRef = useRef<string | null>(null);
+  const pendingNotificationResponseRef = useRef<Notifications.NotificationResponse | null>(null);
+  const handledNotificationIdsRef = useRef(new Set<string>());
   const handlingRef = useRef(false);
 
   const syncChatsCache = useCallback(async () => {
@@ -1455,6 +1480,25 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
       return resolvePrivateChat(identifier);
     },
     [queryClient, resolveExistingGroupChat, resolvePrivateChat],
+  );
+
+  const openNotificationChat = useCallback(
+    async (chatId: string, isGroup = false) => {
+      try {
+        const chat = await resolveGenericChat(chatId);
+        openChatRoom(chat, isGroup ? "Guruh" : "Chat", isGroup);
+        return;
+      } catch (error) {
+        console.warn("Failed to resolve chat from notification payload", error);
+      }
+
+      navigationRef.navigate("ChatRoom", {
+        chatId,
+        title: isGroup ? "Guruh" : "Chat",
+        isGroup,
+      });
+    },
+    [openChatRoom, resolveGenericChat],
   );
 
   const openDeepLinkTarget = useCallback(
@@ -1623,6 +1667,36 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
     [processPendingDeepLink],
   );
 
+  const processPendingNotificationResponse = useCallback(async () => {
+    const response = pendingNotificationResponseRef.current;
+    if (!response || !navigationReady || !initialized || !currentUserId) {
+      return;
+    }
+
+    const payload = getNotificationChatPayload(response);
+    pendingNotificationResponseRef.current = null;
+
+    if (!payload) {
+      return;
+    }
+
+    const responseId =
+      String(response.notification.request.identifier || "").trim() ||
+      `${payload.chatId}:${response.actionIdentifier || "default"}`;
+
+    if (handledNotificationIdsRef.current.has(responseId)) {
+      return;
+    }
+
+    handledNotificationIdsRef.current.add(responseId);
+
+    try {
+      await openNotificationChat(payload.chatId, payload.isGroup);
+    } catch (error) {
+      console.warn("Failed to process notification tap", error);
+    }
+  }, [currentUserId, initialized, navigationReady, openNotificationChat]);
+
   useEffect(() => {
     setJammInternalLinkOpener((target) => internalLinkOpenerRef.current(target));
     return () => {
@@ -1651,6 +1725,36 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
   useEffect(() => {
     void processPendingDeepLink();
   }, [processPendingDeepLink]);
+
+  useEffect(() => {
+    void Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (!response) {
+          return;
+        }
+
+        pendingNotificationResponseRef.current = response;
+        void processPendingNotificationResponse();
+      })
+      .catch((error) => {
+        console.warn("Failed to load initial notification response", error);
+      });
+  }, [processPendingNotificationResponse]);
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      pendingNotificationResponseRef.current = response;
+      void processPendingNotificationResponse();
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [processPendingNotificationResponse]);
+
+  useEffect(() => {
+    void processPendingNotificationResponse();
+  }, [processPendingNotificationResponse]);
 
   return null;
 }

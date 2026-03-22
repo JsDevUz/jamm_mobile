@@ -98,11 +98,6 @@ export async function bootstrapPushNotifications() {
     return null;
   }
 
-  const previousToken = await getPushToken();
-  if (previousToken === token) {
-    return token;
-  }
-
   await usersApi.registerPushToken({
     token,
     platform: Platform.OS,

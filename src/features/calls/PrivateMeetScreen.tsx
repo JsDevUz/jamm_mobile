@@ -18,6 +18,8 @@ import {
   Camera as CameraIcon,
   Mic,
   MicOff,
+  Monitor,
+  MonitorOff,
   PhoneOff,
   RefreshCcw,
   Shield,
@@ -65,6 +67,13 @@ const ICE_CONFIG = {
   ],
 };
 
+const MAX_ROOM_JOIN_RETRIES = 6;
+const PRIVATE_CALL_QUALITY = {
+  videoBitrate: 380_000,
+  audioBitrate: 32_000,
+  scaleResolutionDownBy: 1,
+} as const;
+
 const formatDuration = (elapsedSeconds: number) => {
   const hours = Math.floor(elapsedSeconds / 3600);
   const minutes = Math.floor((elapsedSeconds % 3600) / 60);
@@ -88,10 +97,12 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     remoteUser.nickname || remoteUser.username || remoteUser.email || title || "User";
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isCamOn, setIsCamOn] = useState(true);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [callStatus, setCallStatus] = useState("Ulanmoqda...");
   const [loadingMedia, setLoadingMedia] = useState(true);
   const [roomTitle, setRoomTitle] = useState(title || "Private meet");
@@ -102,11 +113,12 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const screenPeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
   const remotePeerIdRef = useRef<string | null>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([]);
   const pendingScreenIceCandidatesRef = useRef<RTCIceCandidate[]>([]);
   const pendingKnockPeerIdRef = useRef<string | null>(null);
-  const remoteAcceptedRef = useRef(!isCaller);
+  const remoteAcceptedRef = useRef(!isCaller || Boolean(requestAlreadySent));
   const hangupStartedRef = useRef(false);
   const callRequestSentRef = useRef(Boolean(requestAlreadySent));
   const callConnectedAtRef = useRef<number | null>(null);
@@ -114,6 +126,10 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   useEffect(() => {
     localStreamRef.current = localStream;
   }, [localStream]);
+
+  useEffect(() => {
+    screenStreamRef.current = screenStream;
+  }, [screenStream]);
 
   useEffect(() => {
     if (callStatus !== "Ulandi") {
@@ -188,6 +204,103 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     }
   }, []);
 
+  const restoreCameraTrack = useCallback(async () => {
+    const activeLocalStream = localStreamRef.current;
+    if (!activeLocalStream) {
+      return;
+    }
+
+    const currentVideoTrack = activeLocalStream.getVideoTracks?.()[0];
+    const videoSender = peerConnectionRef.current
+      ?.getSenders?.()
+      .find((sender) => sender.track?.kind === "video");
+    const streamTrackReadyState = (currentVideoTrack as { readyState?: string } | undefined)
+      ?.readyState;
+    const senderTrackReadyState = (videoSender?.track as { readyState?: string } | undefined)
+      ?.readyState;
+    const hasLiveStreamTrack =
+      Boolean(currentVideoTrack) && (!streamTrackReadyState || streamTrackReadyState === "live");
+    const senderNeedsRestore =
+      !videoSender ||
+      !videoSender.track ||
+      senderTrackReadyState === "ended" ||
+      videoSender.track.id !== currentVideoTrack?.id;
+
+    if (hasLiveStreamTrack && currentVideoTrack) {
+      currentVideoTrack.enabled = isCamOn;
+      if (senderNeedsRestore && videoSender?.replaceTrack) {
+        try {
+          await videoSender.replaceTrack(currentVideoTrack);
+        } catch {
+          return;
+        }
+      }
+      return;
+    }
+
+    try {
+      const recoveryStream = await mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: "user",
+          width: 1280,
+          height: 720,
+        },
+      });
+      const replacementTrack = recoveryStream.getVideoTracks?.()[0];
+
+      if (!replacementTrack) {
+        recoveryStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      replacementTrack.enabled = isCamOn;
+      activeLocalStream.getVideoTracks?.().forEach((track) => {
+        activeLocalStream.removeTrack?.(track);
+        track.stop();
+      });
+      activeLocalStream.addTrack?.(replacementTrack);
+
+      if (videoSender?.replaceTrack) {
+        await videoSender.replaceTrack(replacementTrack);
+      } else if (peerConnectionRef.current) {
+        peerConnectionRef.current.addTrack(replacementTrack, activeLocalStream);
+      }
+
+      localStreamRef.current = activeLocalStream;
+      setLocalStream(activeLocalStream);
+    } catch {
+      return;
+    }
+  }, [isCamOn]);
+
+  const stopScreenShare = useCallback(
+    (shouldNotifyRemote = true) => {
+      const activeScreenStream = screenStreamRef.current;
+      if (!activeScreenStream && !isScreenSharing) {
+        return;
+      }
+
+      screenStreamRef.current = null;
+      setScreenStream(null);
+      setIsScreenSharing(false);
+      activeScreenStream?.getTracks().forEach((track) => {
+        ((track as unknown) as { onended?: (() => void) | null }).onended = null;
+        track.stop();
+      });
+
+      screenPeerConnectionRef.current?.close();
+      screenPeerConnectionRef.current = null;
+      pendingScreenIceCandidatesRef.current = [];
+      void restoreCameraTrack();
+
+      if (shouldNotifyRemote) {
+        socketRef.current?.emit("screen-share-stopped", { roomId });
+      }
+    },
+    [isScreenSharing, restoreCameraTrack, roomId],
+  );
+
   const cleanupCall = useCallback(
     async (shouldNotifyRemote: boolean) => {
       if (hangupStartedRef.current) {
@@ -207,6 +320,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
       setLocalStream(null);
+      stopScreenShare(false);
       setRemoteStream(null);
       setElapsedSeconds(0);
       callConnectedAtRef.current = null;
@@ -215,7 +329,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         void chatsApi.endVideoCall(chatId).catch(() => undefined);
       }
     },
-    [chatId, cleanupPeerConnection, isCaller, remoteUserId, roomId],
+    [chatId, cleanupPeerConnection, isCaller, remoteUserId, roomId, stopScreenShare],
   );
 
   useEffect(() => {
@@ -322,9 +436,31 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     [],
   );
 
+  const ensureScreenTracksAttached = useCallback((connection: RTCPeerConnection) => {
+    const activeScreenStream = screenStreamRef.current;
+    if (!activeScreenStream) {
+      return;
+    }
+
+    const existingTrackIds = new Set(
+      (connection.getSenders?.() || [])
+        .map((sender) => sender.track?.id)
+        .filter((trackId): trackId is string => Boolean(trackId)),
+    );
+
+    activeScreenStream.getTracks().forEach((track) => {
+      if (!existingTrackIds.has(track.id)) {
+        connection.addTrack(track, activeScreenStream);
+      }
+    });
+  }, []);
+
   const createScreenPeerConnection = useCallback(
-    (targetPeerId: string) => {
+    (targetPeerId: string, initiator = false) => {
       if (screenPeerConnectionRef.current) {
+        if (initiator) {
+          ensureScreenTracksAttached(screenPeerConnectionRef.current);
+        }
         return screenPeerConnectionRef.current;
       }
 
@@ -334,6 +470,10 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         ontrack?: ((event: any) => void) | null;
         onconnectionstatechange?: (() => void) | null;
       };
+
+      if (initiator) {
+        ensureScreenTracksAttached(connection);
+      }
 
       connection.onicecandidate = (event: any) => {
         if (!event.candidate || !remotePeerIdRef.current) {
@@ -363,8 +503,56 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       screenPeerConnectionRef.current = connection;
       return connection;
     },
-    [],
+    [ensureScreenTracksAttached],
   );
+
+  const applyMediaOptimization = useCallback(async () => {
+    const localVideoTrack = localStreamRef.current?.getVideoTracks?.()[0];
+    const localAudioTrack = localStreamRef.current?.getAudioTracks?.()[0];
+    const connection = peerConnectionRef.current;
+
+    if (!connection) {
+      return;
+    }
+
+    const senders = connection.getSenders?.() || [];
+    await Promise.all(
+      senders.map(async (sender) => {
+        try {
+          const params = sender.getParameters?.() || {};
+          const encodings = params.encodings?.length
+            ? [...params.encodings]
+            : ([{}] as any[]);
+
+          if (sender.track && localVideoTrack && sender.track.id === localVideoTrack.id) {
+            encodings[0] = {
+              ...encodings[0],
+              maxBitrate: PRIVATE_CALL_QUALITY.videoBitrate,
+              scaleResolutionDownBy: PRIVATE_CALL_QUALITY.scaleResolutionDownBy,
+            };
+            await sender.setParameters?.({
+              ...params,
+              encodings,
+            } as any);
+            return;
+          }
+
+          if (sender.track && localAudioTrack && sender.track.id === localAudioTrack.id) {
+            encodings[0] = {
+              ...encodings[0],
+              maxBitrate: PRIVATE_CALL_QUALITY.audioBitrate,
+            };
+            await sender.setParameters?.({
+              ...params,
+              encodings,
+            } as any);
+          }
+        } catch {
+          return;
+        }
+      }),
+    );
+  }, []);
 
   const createOfferForPeer = useCallback(
     async (targetPeerId: string) => {
@@ -375,6 +563,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           offerToReceiveVideo: true,
         });
         await connection.setLocalDescription(offer);
+        await applyMediaOptimization();
         socketRef.current?.emit("offer", {
           targetId: targetPeerId,
           sdp: offer,
@@ -386,8 +575,79 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         );
       }
     },
-    [createPeerConnection],
+    [applyMediaOptimization, createPeerConnection],
   );
+
+  const createScreenOfferForPeer = useCallback(
+    async (targetPeerId: string) => {
+      try {
+        if (!screenStreamRef.current) {
+          return;
+        }
+
+        const connection = createScreenPeerConnection(targetPeerId, true);
+        const offer = await connection.createOffer({
+          offerToReceiveAudio: false,
+          offerToReceiveVideo: true,
+        });
+        await connection.setLocalDescription(offer);
+        socketRef.current?.emit("screen-offer", {
+          targetId: targetPeerId,
+          sdp: offer,
+        });
+      } catch (error) {
+        Alert.alert(
+          "Screen share xatosi",
+          error instanceof Error ? error.message : "Screen share offer yaratib bo'lmadi.",
+        );
+      }
+    },
+    [createScreenPeerConnection],
+  );
+
+  const canScreenShare =
+    Platform.OS === "android" && typeof mediaDevices.getDisplayMedia === "function";
+
+  const handleToggleScreenShare = useCallback(async () => {
+    if (!canScreenShare) {
+      Alert.alert("Screen share", "Hozircha screen share faqat Android real device'da yoqilgan.");
+      return;
+    }
+
+    if (isScreenSharing) {
+      stopScreenShare();
+      return;
+    }
+
+    try {
+      const stream = await mediaDevices.getDisplayMedia();
+      const videoTrack = stream.getVideoTracks?.()[0];
+      if (!videoTrack) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error("Screen stream topilmadi");
+      }
+
+      screenStreamRef.current = stream;
+      setScreenStream(stream);
+      setIsScreenSharing(true);
+      ((videoTrack as unknown) as { onended?: (() => void) | null }).onended = () => {
+        stopScreenShare();
+      };
+
+      const targetPeerId = remotePeerIdRef.current;
+      if (targetPeerId) {
+        await createScreenOfferForPeer(targetPeerId);
+      }
+    } catch (error) {
+      stopScreenShare(false);
+      Alert.alert(
+        "Screen share yoqilmadi",
+        error instanceof Error
+          ? error.message
+          : "Ekran ulashishni boshlashda xatolik yuz berdi.",
+      );
+    }
+  }, [canScreenShare, createScreenOfferForPeer, isScreenSharing, stopScreenShare]);
 
   useEffect(() => {
     if (!localStream) {
@@ -395,6 +655,8 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     }
 
     let cancelled = false;
+    let joinRetryCount = 0;
+    let joinRetryTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const connectVideoSocket = async () => {
       const authToken = await getAuthToken();
@@ -413,6 +675,41 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
       socketRef.current = socket;
 
+      const clearJoinRetryTimeout = () => {
+        if (joinRetryTimeout) {
+          clearTimeout(joinRetryTimeout);
+          joinRetryTimeout = null;
+        }
+      };
+
+      const joinRoom = () => {
+        if (cancelled) {
+          return;
+        }
+
+        socket.emit("join-room", {
+          roomId,
+          displayName,
+        });
+      };
+
+      const retryJoinRoom = () => {
+        if (cancelled) {
+          return;
+        }
+
+        if (joinRetryCount >= MAX_ROOM_JOIN_RETRIES) {
+          Alert.alert("Private meet xatosi", "Xona topilmadi yoki hali tayyor bo'lmadi.");
+          return;
+        }
+
+        joinRetryCount += 1;
+        clearJoinRetryTimeout();
+        joinRetryTimeout = setTimeout(() => {
+          joinRoom();
+        }, 1500);
+      };
+
       socket.on("connect", () => {
         if (isCaller) {
           socket.emit("create-room", {
@@ -422,10 +719,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
             title: title || "Private meet",
           });
         } else {
-          socket.emit("join-room", {
-            roomId,
-            displayName,
-          });
+          joinRoom();
         }
       });
 
@@ -465,14 +759,17 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       });
 
       socket.on("waiting-for-approval", () => {
+        clearJoinRetryTimeout();
         setCallStatus("Qabul tasdiqlanmoqda...");
       });
 
       socket.on("knock-approved", () => {
+        clearJoinRetryTimeout();
         setCallStatus("Ulanmoqda...");
       });
 
       socket.on("existing-peers", ({ peers }) => {
+        clearJoinRetryTimeout();
         const nextPeer = Array.isArray(peers)
           ? peers.find((peer) => String(peer?.peerId || "") && String(peer.peerId) !== socket.id)
           : null;
@@ -485,15 +782,22 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         setCallStatus("Ulanmoqda...");
         if (isCaller && remoteAcceptedRef.current) {
           void createOfferForPeer(String(nextPeer.peerId));
+          if (screenStreamRef.current) {
+            void createScreenOfferForPeer(String(nextPeer.peerId));
+          }
         }
       });
 
       socket.on("peer-joined", ({ peerId }) => {
+        clearJoinRetryTimeout();
         if (peerId) {
           remotePeerIdRef.current = String(peerId);
           setCallStatus("Ulanmoqda...");
           if (isCaller && remoteAcceptedRef.current) {
             void createOfferForPeer(String(peerId));
+            if (screenStreamRef.current) {
+              void createScreenOfferForPeer(String(peerId));
+            }
           }
         }
       });
@@ -515,6 +819,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           await flushPendingIceCandidates();
           const answer = await connection.createAnswer();
           await connection.setLocalDescription(answer);
+          await applyMediaOptimization();
           socket.emit("answer", { targetId: senderId, sdp: answer });
         } catch (error) {
           Alert.alert(
@@ -571,6 +876,24 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           Alert.alert(
             "Screen share xatosi",
             error instanceof Error ? error.message : "Screen share offer qabul qilinmadi.",
+          );
+        }
+      });
+
+      socket.on("screen-answer", async ({ senderId, sdp }) => {
+        try {
+          remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
+          const connection = screenPeerConnectionRef.current;
+          if (!connection) {
+            return;
+          }
+
+          await connection.setRemoteDescription(new RTCSessionDescription(sdp));
+          await flushPendingScreenIceCandidates();
+        } catch (error) {
+          Alert.alert(
+            "Screen share xatosi",
+            error instanceof Error ? error.message : "Screen share answer qabul qilinmadi.",
           );
         }
       });
@@ -645,7 +968,13 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       });
 
       socket.on("error", ({ message }) => {
-        Alert.alert("Private meet xatosi", String(message || "Noma'lum xatolik"));
+        const nextMessage = String(message || "Noma'lum xatolik");
+        if (!isCaller && nextMessage === "Room not found") {
+          retryJoinRoom();
+          return;
+        }
+
+        Alert.alert("Private meet xatosi", nextMessage);
       });
     };
 
@@ -653,11 +982,16 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
     return () => {
       cancelled = true;
+      if (joinRetryTimeout) {
+        clearTimeout(joinRetryTimeout);
+      }
     };
   }, [
     cleanupPeerConnection,
+    applyMediaOptimization,
     createOfferForPeer,
     createPeerConnection,
+    createScreenOfferForPeer,
     createScreenPeerConnection,
     displayName,
     flushPendingIceCandidates,
@@ -750,6 +1084,20 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const remoteInitial = useMemo(() => {
     return remoteDisplayName.slice(0, 1).toUpperCase();
   }, [remoteDisplayName]);
+  const localPreviewStream = isScreenSharing ? screenStream || localStream : localStream;
+  const remotePreviewStream = remoteScreenStream || remoteStream;
+  const remoteUsesScreenShare = Boolean(remoteScreenStream);
+  const localPreviewMirror = !isScreenSharing;
+  const stageStream = remotePreviewStream || (isScreenSharing ? screenStream : null);
+  const stageUsesLocalScreenShare = !remotePreviewStream && Boolean(isScreenSharing && screenStream);
+  const localTileShowsScreen = Boolean(isScreenSharing && remotePreviewStream && screenStream);
+  const localTileStream = isScreenSharing
+    ? remotePreviewStream
+      ? screenStream || localStream
+      : localStream
+    : localPreviewStream;
+  const localTileMirror = localTileShowsScreen ? false : localPreviewMirror;
+  const localTileUsesContain = localTileShowsScreen;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
@@ -783,11 +1131,13 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         </View>
 
         <View style={styles.stage}>
-          {remoteScreenStream || remoteStream ? (
+          {stageStream ? (
             <RTCView
-              streamURL={(remoteScreenStream || remoteStream)?.toURL() || ""}
+              streamURL={stageStream.toURL()}
               style={styles.remoteVideo}
-              objectFit="cover"
+              objectFit={remoteUsesScreenShare || stageUsesLocalScreenShare ? "contain" : "cover"}
+              mirror={stageUsesLocalScreenShare ? false : undefined}
+              zOrder={0}
             />
           ) : (
             <View style={styles.remotePlaceholder}>
@@ -818,14 +1168,17 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
             </View>
           )}
 
-          {localStream ? (
+          {localTileStream ? (
             <View style={styles.localTile}>
-              <RTCView
-                streamURL={localStream.toURL()}
-                style={styles.localVideo}
-                objectFit="cover"
-                mirror
-              />
+              <View style={styles.localVideoFrame}>
+                <RTCView
+                  streamURL={localTileStream.toURL()}
+                  style={styles.localVideo}
+                  objectFit={localTileUsesContain ? "contain" : "cover"}
+                  mirror={localTileMirror}
+                  zOrder={1}
+                />
+              </View>
             </View>
           ) : null}
         </View>
@@ -857,6 +1210,18 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
               <CameraOff size={20} color="#fff" />
             )}
           </Pressable>
+          {canScreenShare ? (
+            <Pressable
+              style={[styles.controlButton, isScreenSharing && styles.controlButtonActive]}
+              onPress={() => void handleToggleScreenShare()}
+            >
+              {isScreenSharing ? (
+                <Monitor size={20} color="#fff" />
+              ) : (
+                <MonitorOff size={20} color="#fff" />
+              )}
+            </Pressable>
+          ) : null}
           {Platform.OS !== "web" ? (
             <Pressable style={styles.controlButton} onPress={handleSwitchCamera}>
               <RefreshCcw size={20} color="#fff" />
@@ -1003,11 +1368,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
     backgroundColor: "#0d0f14",
+    zIndex: 5,
+    elevation: 5,
+  },
+  localVideoFrame: {
+    flex: 1,
+    borderRadius: 21,
+    overflow: "hidden",
+    backgroundColor: "#000",
   },
   localVideo: {
     width: "100%",
     height: "100%",
     backgroundColor: "#000",
+    borderRadius: 21,
   },
   controlsScroll: {
     flexGrow: 0,
@@ -1031,6 +1405,9 @@ const styles = StyleSheet.create({
   },
   controlButtonMuted: {
     backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  controlButtonActive: {
+    backgroundColor: "rgba(82, 196, 26, 0.28)",
   },
   controlButtonDanger: {
     backgroundColor: Colors.danger,
