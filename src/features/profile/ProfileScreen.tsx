@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   ActivityIndicator,
@@ -7,11 +7,13 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
 import {
   AlertCircle,
   Calendar,
@@ -22,8 +24,10 @@ import {
   Eye,
   Globe,
   GraduationCap,
+  HardDrive,
   Headphones,
   Heart,
+  ImageIcon,
   Lock,
   LogOut,
   MessageSquare,
@@ -34,6 +38,7 @@ import {
   Shield,
   Sparkles,
   Trash2,
+  Video,
   X,
 } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
@@ -44,7 +49,7 @@ import { Avatar } from "../../components/Avatar";
 import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
-import { UserDisplayName } from "../../components/UserDisplayName";
+import { OfficialBadgeIcon, UserDisplayName } from "../../components/UserDisplayName";
 import { APP_LIMITS, countWords } from "../../constants/appLimits";
 import {
   articlesApi,
@@ -55,6 +60,13 @@ import {
   postsApi,
   usersApi,
 } from "../../lib/api";
+import {
+  clearCourseVideoStorage,
+  clearFeedStorage,
+  deleteCourseVideoStorageItem,
+  deleteFeedStorageItem,
+  getDeviceStorageUsage,
+} from "../../lib/storage-usage";
 import { setAppUnlockToken } from "../../lib/session";
 import { useI18n } from "../../i18n";
 import type {
@@ -82,6 +94,7 @@ type ProfileTab =
   | "articles"
   | "courses"
   | "appearance"
+  | "storage"
   | "language"
   | "security"
   | "premium"
@@ -116,6 +129,7 @@ type CourseItem = {
 
 type UtilitySelectionSheet = null | "language" | "theme";
 type SecurityPinMode = "change" | "disable" | "setup";
+type StorageView = "images" | "videos";
 
 type PremiumPlan = {
   _id?: string;
@@ -161,6 +175,7 @@ const UTILITY_TABS: Array<{
   color: string;
 }> = [
   { key: "appearance", labelKey: "profile.tabs.appearance", icon: Palette, color: "#5865f2" },
+  { key: "storage", labelKey: "profile.tabs.storage", icon: HardDrive, color: "#22c55e" },
   { key: "language", labelKey: "profile.tabs.language", icon: Globe, color: "#0ea5e9" },
   { key: "security", labelKey: "profile.tabs.security", icon: Lock, color: "#ef4444" },
   { key: "premium", labelKey: "profile.tabs.premium", icon: Shield, color: "#f59e0b" },
@@ -179,6 +194,7 @@ const PROFILE_PANE_ROUTES: Record<Exclude<ProfileTab, null>, ProfilePaneRouteNam
   articles: "ProfileArticles",
   courses: "ProfileCourses",
   appearance: "ProfileAppearance",
+  storage: "ProfileStorage",
   language: "ProfileLanguage",
   security: "ProfileSecurity",
   premium: "ProfilePremium",
@@ -192,6 +208,7 @@ const PROFILE_PANE_SECTIONS_BY_ROUTE: Record<ProfilePaneRouteName, ProfilePaneSe
   ProfileArticles: "articles",
   ProfileCourses: "courses",
   ProfileAppearance: "appearance",
+  ProfileStorage: "storage",
   ProfileLanguage: "language",
   ProfileSecurity: "security",
   ProfilePremium: "premium",
@@ -205,6 +222,7 @@ const PROFILE_TAB_TOUR_KEYS: Partial<Record<Exclude<ProfileTab, null>, string>> 
   articles: "profile-articles-tab",
   courses: "profile-courses-tab",
   appearance: "profile-appearance-tab",
+  storage: "profile-storage-tab",
   language: "profile-language-tab",
   premium: "profile-premium-tab",
   support: "profile-support-tab",
@@ -233,6 +251,47 @@ function formatPostDate(value?: string) {
     hour: "2-digit",
     minute: "2-digit",
   })}`;
+}
+
+function formatStorageBytes(bytes?: number | null) {
+  const value = Number(bytes || 0);
+  if (!value) {
+    return "0 MB";
+  }
+  if (value >= 1024 * 1024 * 1024) {
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+  if (value >= 1024 * 1024) {
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
+
+function normalizeStorageTimestamp(value?: number | string | null) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const numeric =
+    typeof value === "number" ? value : Number(new Date(String(value)).getTime());
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+
+  return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+}
+
+function formatStorageDate(value?: number | string | null) {
+  const timestamp = normalizeStorageTimestamp(value);
+  if (!timestamp) {
+    return "";
+  }
+
+  return new Date(timestamp).toLocaleDateString("uz-UZ", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function formatPhone(value = "") {
@@ -991,8 +1050,13 @@ function ProfileScreenContent({
   const [securityModalMode, setSecurityModalMode] = useState<SecurityPinMode>("setup");
   const [utilitySelectionSheet, setUtilitySelectionSheet] =
     useState<UtilitySelectionSheet>(null);
+  const [storageView, setStorageView] = useState<StorageView>("images");
+  const [storageTabsWidth, setStorageTabsWidth] = useState(0);
+  const [storagePagerWidth, setStoragePagerWidth] = useState(0);
   const [promoCode, setPromoCode] = useState("");
   const profileScrollY = useRef(new Animated.Value(0)).current;
+  const storageScrollX = useRef(new Animated.Value(0)).current;
+  const storagePagerRef = useRef<ScrollView>(null);
   const activeTab = forcedTab ?? null;
   const themeOptions = useMemo(
     () =>
@@ -1023,6 +1087,33 @@ function ProfileScreenContent({
     utilitySelectionSheet === "theme" ? themeOptions : languageOptions;
   const selectedUtilityValue = utilitySelectionSheet === "theme" ? theme : language;
 
+  const setStorageViewWithPager = useCallback(
+    (nextView: StorageView, animated = true) => {
+      setStorageView(nextView);
+      if (!storagePagerWidth) {
+        return;
+      }
+
+      storagePagerRef.current?.scrollTo({
+        x: nextView === "videos" ? storagePagerWidth : 0,
+        animated,
+      });
+    },
+    [storagePagerWidth],
+  );
+
+  useEffect(() => {
+    if (!storagePagerWidth) {
+      return;
+    }
+
+    storagePagerRef.current?.scrollTo({
+      x: storageView === "videos" ? storagePagerWidth : 0,
+      animated: false,
+    });
+    storageScrollX.setValue(storageView === "videos" ? storagePagerWidth : 0);
+  }, [storagePagerWidth, storageScrollX, storageView]);
+
   const publicProfileQuery = useQuery({
     queryKey: ["public-profile", requestedProfileIdentifier],
     queryFn: () => usersApi.getPublicProfile(requestedProfileIdentifier),
@@ -1051,7 +1142,11 @@ function ProfileScreenContent({
   const coursesQuery = useQuery({
     queryKey: ["courses", "profile"],
     queryFn: () => coursesApi.fetchCourses(1, 40),
-    enabled: activeTab === "courses" || activeTab === null || activeTab === "learn",
+    enabled:
+      activeTab === "courses" ||
+      activeTab === null ||
+      activeTab === "learn" ||
+      activeTab === "storage",
   });
 
   const decorationsQuery = useQuery({
@@ -1088,6 +1183,12 @@ function ProfileScreenContent({
     queryKey: ["liked-articles"],
     queryFn: articlesApi.fetchLikedArticles,
     enabled: isViewingOwnProfile && activeTab === "favorites",
+  });
+
+  const storageUsageQuery = useQuery({
+    queryKey: ["device-storage-usage"],
+    queryFn: getDeviceStorageUsage,
+    enabled: isViewingOwnProfile && activeTab === "storage",
   });
 
   const createPostMutation = useMutation({
@@ -1183,6 +1284,20 @@ function ProfileScreenContent({
     },
   });
 
+  const groupInvitePrivacyMutation = useMutation({
+    mutationFn: (allowGroupInvites: boolean) =>
+      usersApi.updateMe({ disableGroupInvites: !allowGroupInvites }),
+    onSuccess: (updatedUser) => {
+      setUser(updatedUser);
+    },
+    onError: (error) => {
+      Alert.alert(
+        t("profileUtility.security.groupInvitesLabel"),
+        error instanceof Error ? error.message : t("profileUtility.security.groupInvitesSaveError"),
+      );
+    },
+  });
+
   const redeemPromoMutation = useMutation({
     mutationFn: (code: string) => premiumApi.redeemPromo(code),
     onSuccess: async () => {
@@ -1204,6 +1319,54 @@ function ProfileScreenContent({
     },
   });
 
+  const refreshStorageUsage = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["device-storage-usage"] });
+  };
+
+  const deleteFeedStorageMutation = useMutation({
+    mutationFn: (entryId: string) => deleteFeedStorageItem(entryId),
+    onSuccess: refreshStorageUsage,
+    onError: (error) => {
+      Alert.alert(
+        t("profileUtility.storage.title"),
+        error instanceof Error ? error.message : t("profileUtility.storage.deleteFeedDescription"),
+      );
+    },
+  });
+
+  const clearFeedStorageMutation = useMutation({
+    mutationFn: clearFeedStorage,
+    onSuccess: refreshStorageUsage,
+    onError: (error) => {
+      Alert.alert(
+        t("profileUtility.storage.title"),
+        error instanceof Error ? error.message : t("profileUtility.storage.clearFeedDescription"),
+      );
+    },
+  });
+
+  const deleteCourseVideoStorageMutation = useMutation({
+    mutationFn: (entryId: string) => deleteCourseVideoStorageItem(entryId),
+    onSuccess: refreshStorageUsage,
+    onError: (error) => {
+      Alert.alert(
+        t("profileUtility.storage.title"),
+        error instanceof Error ? error.message : t("profileUtility.storage.deleteVideoDescription"),
+      );
+    },
+  });
+
+  const clearCourseVideoStorageMutation = useMutation({
+    mutationFn: clearCourseVideoStorage,
+    onSuccess: refreshStorageUsage,
+    onError: (error) => {
+      Alert.alert(
+        t("profileUtility.storage.title"),
+        error instanceof Error ? error.message : t("profileUtility.storage.clearVideosDescription"),
+      );
+    },
+  });
+
   const ownedCourses = useMemo(() => {
     const allCourses = coursesQuery.data?.data || [];
     return allCourses.filter((course: CourseItem) => {
@@ -1214,6 +1377,34 @@ function ProfileScreenContent({
       return owner === profileUserId;
     });
   }, [coursesQuery.data?.data, profileUserId]);
+
+  const storageLabels = useMemo(() => {
+    const courseNames = new Map<string, string>();
+    const lessonTitles = new Map<string, string>();
+
+    for (const course of coursesQuery.data?.data || []) {
+      const courseName = String(course?.name || "").trim();
+      for (const identifier of [course?._id, course?.id, course?.urlSlug]) {
+        if (identifier && courseName) {
+          courseNames.set(String(identifier), courseName);
+        }
+      }
+
+      for (const lesson of course?.lessons || []) {
+        const lessonTitle = String(lesson?.title || "").trim();
+        for (const identifier of [lesson?._id, lesson?.id, lesson?.urlSlug]) {
+          if (identifier && lessonTitle) {
+            lessonTitles.set(String(identifier), lessonTitle);
+          }
+        }
+      }
+    }
+
+    return {
+      courseNames,
+      lessonTitles,
+    };
+  }, [coursesQuery.data?.data]);
 
   const stats = useMemo(
     () => [
@@ -1393,6 +1584,94 @@ function ProfileScreenContent({
     }
   };
 
+  const handleDeleteFeedStorage = (entryId: string) => {
+    Alert.alert(
+      t("profileUtility.storage.deleteFeedTitle"),
+      t("profileUtility.storage.deleteFeedDescription"),
+      [
+        { text: t("common.cancel"), style: "cancel" },
+        {
+          text: t("profileUtility.storage.deleteAction"),
+          style: "destructive",
+          onPress: () => {
+            deleteFeedStorageMutation.mutate(entryId);
+          },
+        },
+      ],
+    );
+  };
+
+  const handleDeleteCourseVideoStorage = (entryId: string) => {
+    Alert.alert(
+      t("profileUtility.storage.deleteVideoTitle"),
+      t("profileUtility.storage.deleteVideoDescription"),
+      [
+        { text: t("common.cancel"), style: "cancel" },
+        {
+          text: t("profileUtility.storage.deleteAction"),
+          style: "destructive",
+          onPress: () => {
+            deleteCourseVideoStorageMutation.mutate(entryId);
+          },
+        },
+      ],
+    );
+  };
+
+  const handleClearFeedStorage = () => {
+    Alert.alert(
+      t("profileUtility.storage.clearFeedTitle"),
+      t("profileUtility.storage.clearFeedDescription"),
+      [
+        { text: t("common.cancel"), style: "cancel" },
+        {
+          text: t("profileUtility.storage.clearFeedAction"),
+          style: "destructive",
+          onPress: () => {
+            clearFeedStorageMutation.mutate();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleClearCourseVideoStorage = () => {
+    Alert.alert(
+      t("profileUtility.storage.clearVideosTitle"),
+      t("profileUtility.storage.clearVideosDescription"),
+      [
+        { text: t("common.cancel"), style: "cancel" },
+        {
+          text: t("profileUtility.storage.clearVideosAction"),
+          style: "destructive",
+          onPress: () => {
+            clearCourseVideoStorageMutation.mutate();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleClearAllStorage = () => {
+    Alert.alert(
+      t("profileUtility.storage.clearAllTitle"),
+      t("profileUtility.storage.clearAllDescription"),
+      [
+        { text: t("common.cancel"), style: "cancel" },
+        {
+          text: t("profileUtility.storage.clearAllAction"),
+          style: "destructive",
+          onPress: async () => {
+            await Promise.all([
+              clearFeedStorageMutation.mutateAsync(),
+              clearCourseVideoStorageMutation.mutateAsync(),
+            ]);
+          },
+        },
+      ],
+    );
+  };
+
   const handleProfileSaved = async (updatedUser: User) => {
     setUser(updatedUser);
     await queryClient.invalidateQueries({ queryKey: ["profile-decorations"] });
@@ -1504,24 +1783,19 @@ function ProfileScreenContent({
             </Text>
           </View>
         </Animated.View>
+        </Animated.View>
 
-        <Animated.View
-          style={[
-            styles.statsCard,
-            { transform: [{ translateY: statsTranslateY }] },
-          ]}
-        >
+        <View style={styles.statsCard}>
           {stats.map((item, index) => (
             <View
               key={item.label}
               style={[styles.statItem, index === stats.length - 1 && styles.statItemLast]}
             >
-                <Text style={styles.statValue}>{item.value}</Text>
+              <Text style={styles.statValue}>{item.value}</Text>
               <Text style={styles.statLabel}>{item.label}</Text>
             </View>
           ))}
-        </Animated.View>
-        </Animated.View>
+        </View>
       </GuidedTourTarget>
 
       <View style={styles.tabRailContent}>
@@ -1881,6 +2155,358 @@ function ProfileScreenContent({
     );
   };
 
+  const renderStoragePane = () => {
+    const storageUsage = storageUsageQuery.data;
+    const feedImages = storageUsage?.feedImages || [];
+    const courseVideos = storageUsage?.courseVideos || [];
+    const hasCachedItems = (storageUsage?.totals.allBytes || 0) > 0;
+    const storageBusy =
+      deleteFeedStorageMutation.isPending ||
+      clearFeedStorageMutation.isPending ||
+      deleteCourseVideoStorageMutation.isPending ||
+      clearCourseVideoStorageMutation.isPending;
+
+    return (
+      <ScrollView
+        style={styles.paneScroll}
+        contentContainerStyle={styles.genericPaneContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.utilityStack}>
+          <View style={styles.storageHeroCard}>
+            {storageUsageQuery.isLoading ? (
+              <View style={styles.utilityLoadingPanel}>
+                <ActivityIndicator color={Colors.primary} />
+              </View>
+            ) : (
+              <>
+                <View style={styles.storageHeroTop}>
+                  <View style={styles.storageHeroTitleWrap}>
+                    <View style={styles.storageHeroIcon}>
+                      <HardDrive size={18} color={Colors.primary} />
+                    </View>
+                    <View style={styles.storageHeroCopy}>
+                      <Text style={styles.storageHeroEyebrow}>
+                        {t("profileUtility.storage.summaryTitle")}
+                      </Text>
+                      <Text style={styles.storageHeroTotal}>
+                        {formatStorageBytes(storageUsage?.totals.allBytes)}
+                      </Text>
+                    </View>
+                  </View>
+                  {hasCachedItems ? (
+                    <Pressable
+                      style={[
+                        styles.storageClearAllButton,
+                        storageBusy && styles.primaryButtonDisabled,
+                      ]}
+                      disabled={storageBusy}
+                      onPress={handleClearAllStorage}
+                    >
+                      <Trash2 size={14} color={Colors.danger} />
+                      <Text style={styles.storageClearAllText} numberOfLines={1}>
+                        {t("profileUtility.storage.clearAllAction")}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+
+                <Text style={styles.storageHeroDescription}>
+                  {t("profileUtility.storage.summaryDescription")}
+                </Text>
+
+                <View style={styles.storageHeroStats}>
+                  <View style={styles.storageStatPill}>
+                    <ImageIcon size={15} color="#22c55e" />
+                    <Text style={styles.storageStatLabel}>
+                      {t("profileUtility.storage.imagesTab")}
+                    </Text>
+                    <Text style={styles.storageStatValue}>
+                      {formatStorageBytes(storageUsage?.totals.feedImagesBytes)}
+                    </Text>
+                  </View>
+
+                  <View style={styles.storageStatPill}>
+                    <Video size={15} color="#f59e0b" />
+                    <Text style={styles.storageStatLabel}>
+                      {t("profileUtility.storage.videosTab")}
+                    </Text>
+                    <Text style={styles.storageStatValue}>
+                      {formatStorageBytes(storageUsage?.totals.courseVideosBytes)}
+                    </Text>
+                  </View>
+                </View>
+              </>
+            )}
+          </View>
+
+          <View
+            style={styles.storageSegmentedControl}
+            onLayout={(event) => setStorageTabsWidth(event.nativeEvent.layout.width)}
+          >
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.storageSegmentIndicator,
+                storageTabsWidth > 0 && storagePagerWidth > 0
+                  ? {
+                      width: storageTabsWidth / 2,
+                      transform: [
+                        {
+                          translateX: storageScrollX.interpolate({
+                            inputRange: [0, storagePagerWidth],
+                            outputRange: [0, storageTabsWidth / 2],
+                            extrapolate: "clamp",
+                          }),
+                        },
+                      ],
+                    }
+                  : null,
+              ]}
+            />
+            <Pressable
+              style={styles.storageSegmentButton}
+              onPress={() => setStorageViewWithPager("images")}
+            >
+              <Text
+                style={[
+                  styles.storageSegmentText,
+                  storageView === "images" && styles.storageSegmentTextActive,
+                ]}
+              >
+                {t("profileUtility.storage.imagesTab")}
+              </Text>
+              {!!feedImages.length ? (
+                <View
+                  style={[
+                    styles.storageSegmentBadge,
+                    storageView === "images" && styles.storageSegmentBadgeActive,
+                  ]}
+                >
+                  <Text style={styles.storageSegmentBadgeText}>{feedImages.length}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+
+            <Pressable
+              style={styles.storageSegmentButton}
+              onPress={() => setStorageViewWithPager("videos")}
+            >
+              <Text
+                style={[
+                  styles.storageSegmentText,
+                  storageView === "videos" && styles.storageSegmentTextActive,
+                ]}
+              >
+                {t("profileUtility.storage.videosTab")}
+              </Text>
+              {!!courseVideos.length ? (
+                <View
+                  style={[
+                    styles.storageSegmentBadge,
+                    storageView === "videos" && styles.storageSegmentBadgeActive,
+                  ]}
+                >
+                  <Text style={styles.storageSegmentBadgeText}>{courseVideos.length}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          </View>
+
+          <View
+            style={styles.storagePagerContainer}
+            onLayout={(event) => setStoragePagerWidth(event.nativeEvent.layout.width)}
+          >
+            <Animated.ScrollView
+              ref={storagePagerRef}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              bounces={false}
+              overScrollMode="never"
+              scrollEventThrottle={16}
+              style={styles.storagePagerTrack}
+              onScroll={Animated.event(
+                [{ nativeEvent: { contentOffset: { x: storageScrollX } } }],
+                { useNativeDriver: false },
+              )}
+              onMomentumScrollEnd={(event) => {
+                if (!storagePagerWidth) {
+                  return;
+                }
+
+                const nextIndex = Math.round(
+                  event.nativeEvent.contentOffset.x / storagePagerWidth,
+                );
+                const nextView = nextIndex > 0 ? "videos" : "images";
+                if (nextView !== storageView) {
+                  setStorageView(nextView);
+                }
+              }}
+            >
+              <View style={[styles.storagePagerPage, storagePagerWidth ? { width: storagePagerWidth } : null]}>
+                <View style={styles.utilityGroup}>
+                  <View style={styles.storageSectionHeader}>
+                    <View style={styles.storageSectionTitleWrap}>
+                      <Text style={styles.utilityGroupTitle}>
+                        {t("profileUtility.storage.feedImagesTitle")}
+                      </Text>
+                      <Text style={styles.utilityGroupDescription}>
+                        {t("profileUtility.storage.feedImagesDescription")}
+                      </Text>
+                    </View>
+                    {feedImages.length ? (
+                      <Pressable
+                        style={[
+                          styles.storageInlineAction,
+                          storageBusy && styles.primaryButtonDisabled,
+                        ]}
+                        disabled={storageBusy}
+                        onPress={handleClearFeedStorage}
+                      >
+                        <Trash2 size={13} color={Colors.danger} />
+                        <Text style={styles.storageInlineActionText}>{t("profileUtility.storage.clearAllAction")}</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.utilitySectionBody}>
+                    {storageUsageQuery.isLoading ? (
+                      <View style={styles.utilityLoadingPanel}>
+                        <ActivityIndicator color={Colors.primary} />
+                      </View>
+                    ) : feedImages.length ? (
+                      <View style={styles.storageImageGrid}>
+                        {feedImages.map((item) => {
+                          const updatedAt = formatStorageDate(item.modifiedAt);
+                          return (
+                            <View key={item.id} style={styles.storageImageCard}>
+                              <View style={styles.storageImagePreviewWrap}>
+                                <Image
+                                  source={{ uri: item.localUri }}
+                                  style={styles.storageImagePreview}
+                                  contentFit="cover"
+                                />
+                                <View style={styles.storageImageBadge}>
+                                  <Text style={styles.storageImageBadgeText}>
+                                    {formatStorageBytes(item.sizeBytes)}
+                                  </Text>
+                                </View>
+                                <Pressable
+                                  style={styles.storageCardDelete}
+                                  onPress={() => handleDeleteFeedStorage(item.id)}
+                                >
+                                  <Trash2 size={14} color="#fff" />
+                                </Pressable>
+                              </View>
+                              {updatedAt ? (
+                                <Text style={styles.storageImageMeta}>
+                                  {t("profileUtility.storage.updatedAt", { date: updatedAt })}
+                                </Text>
+                              ) : null}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    ) : (
+                      <View style={styles.storageEmptyCard}>
+                        <ImageIcon size={22} color={Colors.subtleText} />
+                        <Text style={styles.utilityEmptyText}>
+                          {t("profileUtility.storage.emptyFeedImages")}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              </View>
+
+              <View style={[styles.storagePagerPage, storagePagerWidth ? { width: storagePagerWidth } : null]}>
+                <View style={styles.utilityGroup}>
+                  <View style={styles.storageSectionHeader}>
+                    <View style={styles.storageSectionTitleWrap}>
+                      <Text style={styles.utilityGroupTitle}>
+                        {t("profileUtility.storage.courseVideosTitle")}
+                      </Text>
+                      <Text style={styles.utilityGroupDescription}>
+                        {t("profileUtility.storage.courseVideosDescription")}
+                      </Text>
+                    </View>
+                    {courseVideos.length ? (
+                      <Pressable
+                        style={[
+                          styles.storageInlineAction,
+                          storageBusy && styles.primaryButtonDisabled,
+                        ]}
+                        disabled={storageBusy}
+                        onPress={handleClearCourseVideoStorage}
+                      >
+                        <Trash2 size={13} color={Colors.danger} />
+                        <Text style={styles.storageInlineActionText}>{t("profileUtility.storage.clearAllAction")}</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+
+                  <View style={styles.utilitySectionBody}>
+                    {storageUsageQuery.isLoading ? (
+                      <View style={styles.utilityLoadingPanel}>
+                        <ActivityIndicator color={Colors.primary} />
+                      </View>
+                    ) : courseVideos.length ? (
+                      <View style={styles.storageVideoList}>
+                        {courseVideos.map((item) => {
+                          const courseTitle =
+                            (item.courseId &&
+                              storageLabels.courseNames.get(String(item.courseId))) ||
+                            t("profileUtility.storage.unknownCourse");
+                          const lessonTitle =
+                            (item.lessonId &&
+                              storageLabels.lessonTitles.get(String(item.lessonId))) ||
+                            t("profileUtility.storage.unknownLesson");
+                          const updatedAt = formatStorageDate(item.createdAt);
+
+                          return (
+                            <View key={item.id} style={styles.storageVideoCard}>
+                              <View style={styles.storageVideoIconWrap}>
+                                <Video size={18} color="#f59e0b" />
+                              </View>
+                              <View style={styles.storageVideoMeta}>
+                                <Text style={styles.storageVideoTitle}>{lessonTitle}</Text>
+                                <Text style={styles.storageVideoCourse}>{courseTitle}</Text>
+                                <Text style={styles.storageVideoCaption}>
+                                  {formatStorageBytes(item.sizeBytes)}
+                                  {" · "}
+                                  {String(item.streamType || "direct").toUpperCase()}
+                                  {updatedAt ? ` · ${updatedAt}` : ""}
+                                </Text>
+                              </View>
+                              <Pressable
+                                style={styles.storageVideoDelete}
+                                onPress={() => handleDeleteCourseVideoStorage(item.id)}
+                              >
+                                <Trash2 size={16} color={Colors.danger} />
+                              </Pressable>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    ) : (
+                      <View style={styles.storageEmptyCard}>
+                        <Video size={22} color={Colors.subtleText} />
+                        <Text style={styles.utilityEmptyText}>
+                          {t("profileUtility.storage.emptyCourseVideos")}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              </View>
+            </Animated.ScrollView>
+          </View>
+        </View>
+      </ScrollView>
+    );
+  };
+
   const renderLanguagePane = () => (
     <ScrollView
       style={styles.paneScroll}
@@ -1981,6 +2607,29 @@ function ProfileScreenContent({
               </View>
             </View>
           )}
+
+          <View style={styles.utilitySettingRow}>
+            <View style={styles.utilitySettingMeta}>
+              <Text style={styles.utilitySettingStrong}>
+                {t("profileUtility.security.groupInvitesLabel")}
+              </Text>
+              <Text style={styles.utilitySettingDescription}>
+                {t("profileUtility.security.groupInvitesDescription")}
+              </Text>
+            </View>
+            <Switch
+              value={!user?.disableGroupInvites}
+              onValueChange={(value) => {
+                groupInvitePrivacyMutation.mutate(value);
+              }}
+              disabled={groupInvitePrivacyMutation.isPending}
+              trackColor={{
+                false: Colors.border,
+                true: Colors.primary,
+              }}
+              thumbColor={Colors.background}
+            />
+          </View>
         </View>
 
         <View style={styles.utilityCardsGrid}>
@@ -2260,7 +2909,13 @@ function ProfileScreenContent({
                           }}
                         >
                           <View style={styles.decorationPreview}>
-                            <Text style={styles.decorationEmoji}>{decoration.emoji}</Text>
+                            {decoration.key === "premium-badge" ? (
+                              <View style={styles.decorationBadgeIconWrap}>
+                                <OfficialBadgeIcon size={22} color="#ff4fb3" />
+                              </View>
+                            ) : (
+                              <Text style={styles.decorationEmoji}>{decoration.emoji}</Text>
+                            )}
                             <Text style={styles.decorationTitle}>{decoration.label}</Text>
                           </View>
                           <Text style={styles.decorationMeta}>
@@ -2496,6 +3151,8 @@ function ProfileScreenContent({
         return renderCoursesPane();
       case "appearance":
         return renderAppearancePane();
+      case "storage":
+        return renderStoragePane();
       case "language":
         return renderLanguagePane();
       case "security":
@@ -3571,6 +4228,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
+  decorationBadgeIconWrap: {
+    width: 22,
+    height: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   decorationEmoji: {
     fontSize: 18,
   },
@@ -3768,6 +4431,342 @@ const styles = StyleSheet.create({
   learnLabel: {
     color: Colors.mutedText,
     fontSize: 12,
+  },
+  storageHeroCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    padding: 14,
+    gap: 12,
+  },
+  storageHeroTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+  },
+  storageHeroTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  storageHeroIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.primarySoft,
+  },
+  storageHeroCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  storageHeroEyebrow: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  storageHeroTotal: {
+    color: Colors.text,
+    fontSize: 24,
+    fontWeight: "800",
+  },
+  storageHeroDescription: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  storageClearAllButton: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(240, 71, 71, 0.12)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexShrink: 1,
+    maxWidth: "100%",
+  },
+  storageClearAllText: {
+    color: Colors.danger,
+    fontSize: 12,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+  storageHeroStats: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  storageStatPill: {
+    flex: 1,
+    minHeight: 64,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 6,
+  },
+  storageStatLabel: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  storageStatLabelActive: {
+    color: "#fff",
+  },
+  storageStatValue: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  storageStatValueActive: {
+    color: "#fff",
+  },
+  storageSegmentedControl: {
+    flexDirection: "row",
+    backgroundColor: Colors.surface,
+    minHeight: 50,
+    position: "relative",
+    justifyContent: "space-around",
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 16,
+    overflow: "hidden",
+  },
+  storageSegmentButton: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 11,
+    zIndex: 1,
+  },
+  storageSegmentIndicator: {
+    position: "absolute",
+    left: 0,
+    bottom: 0,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: Colors.primary,
+  },
+  storageSegmentText: {
+    color: Colors.subtleText,
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  storageSegmentTextActive: {
+    color: Colors.text,
+    fontWeight: "700",
+  },
+  storageSegmentBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 999,
+    paddingHorizontal: 5,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.primarySoft,
+  },
+  storageSegmentBadgeActive: {
+    backgroundColor: "rgba(255,255,255,0.18)",
+  },
+  storageSegmentBadgeText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  storagePagerContainer: {
+    overflow: "hidden",
+  },
+  storagePagerTrack: {
+    width: "100%",
+  },
+  storagePagerPage: {
+    flex: 1,
+  },
+  storageSectionHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  storageSectionTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  storageInlineAction: {
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(240, 71, 71, 0.12)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  storageInlineActionText: {
+    color: Colors.danger,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  storageEmptyCard: {
+    minHeight: 180,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 14,
+    backgroundColor: Colors.background,
+    padding: 20,
+  },
+  storageSummaryGrid: {
+    gap: 10,
+  },
+  storageSummaryCard: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    gap: 6,
+  },
+  storageSummaryIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  storageSummaryIconTotal: {
+    backgroundColor: Colors.primarySoft,
+  },
+  storageSummaryIconImages: {
+    backgroundColor: "rgba(34, 197, 94, 0.14)",
+  },
+  storageSummaryIconVideos: {
+    backgroundColor: "rgba(245, 158, 11, 0.14)",
+  },
+  storageSummaryTitle: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  storageSummarySize: {
+    color: Colors.text,
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  storageSummaryMeta: {
+    color: Colors.mutedText,
+    fontSize: 12,
+  },
+  storageImageGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  storageImageCard: {
+    width: "31.8%",
+    gap: 6,
+  },
+  storageImagePreviewWrap: {
+    aspectRatio: 1,
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: Colors.input,
+    position: "relative",
+  },
+  storageImagePreview: {
+    width: "100%",
+    height: "100%",
+  },
+  storageImageBadge: {
+    position: "absolute",
+    left: 8,
+    bottom: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.58)",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  storageImageBadgeText: {
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  storageCardDelete: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "rgba(0,0,0,0.56)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  storageImageMeta: {
+    color: Colors.mutedText,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  storageVideoList: {
+    gap: 10,
+  },
+  storageVideoCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  storageVideoIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(245, 158, 11, 0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  storageVideoMeta: {
+    flex: 1,
+    gap: 2,
+  },
+  storageVideoTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  storageVideoCourse: {
+    color: Colors.mutedText,
+    fontSize: 12,
+  },
+  storageVideoCaption: {
+    color: Colors.subtleText,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  storageVideoDelete: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(240, 71, 71, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   modalOverlay: {
     flex: 1,

@@ -60,6 +60,34 @@ export const getUserLabel = (user?: User | null) =>
 export const getDirectChatUserLabel = (user?: User | null) =>
   user?.username || user?.nickname || "User";
 
+const normalizeComparableValue = (value?: string | number | null) =>
+  String(value || "").trim().toLowerCase();
+
+const isSameMemberAsCurrentUser = (
+  member: User | null | undefined,
+  currentUserId: string,
+  currentUser?: User | null,
+) => {
+  const memberId = getEntityId(member);
+  if (memberId && currentUserId && memberId === currentUserId) {
+    return true;
+  }
+
+  const memberUsername = normalizeComparableValue(member?.username);
+  const currentUsername = normalizeComparableValue(currentUser?.username);
+  if (memberUsername && currentUsername && memberUsername === currentUsername) {
+    return true;
+  }
+
+  const memberJammId = normalizeComparableValue(member?.jammId);
+  const currentJammId = normalizeComparableValue(currentUser?.jammId);
+  if (memberJammId && currentJammId && memberJammId === currentJammId) {
+    return true;
+  }
+
+  return false;
+};
+
 export const getInitials = (label: string) => {
   const parts = label
     .trim()
@@ -77,10 +105,19 @@ export const getInitials = (label: string) => {
   return `${parts[0][0] || ""}${parts[parts.length - 1][0] || ""}`.toUpperCase();
 };
 
-export const getOtherMember = (chat: ChatSummary, currentUserId: string) =>
-  chat.members?.find((member) => getEntityId(member) !== currentUserId) || null;
+export const getOtherMember = (
+  chat: ChatSummary,
+  currentUserId: string,
+  currentUser?: User | null,
+) =>
+  chat.members?.find((member) => !isSameMemberAsCurrentUser(member, currentUserId, currentUser)) ||
+  null;
 
-export const getChatTitle = (chat: ChatSummary, currentUserId: string) => {
+export const getChatTitle = (
+  chat: ChatSummary,
+  currentUserId: string,
+  currentUser?: User | null,
+) => {
   if (chat.isSavedMessages) {
     return "Saved Messages";
   }
@@ -89,11 +126,15 @@ export const getChatTitle = (chat: ChatSummary, currentUserId: string) => {
     return chat.name || "Group";
   }
 
-  const otherMember = getOtherMember(chat, currentUserId);
+  const otherMember = getOtherMember(chat, currentUserId, currentUser);
   return getDirectChatUserLabel(otherMember) || chat.name || "Chat";
 };
 
-export const getChatAvatarUri = (chat: ChatSummary, currentUserId: string) => {
+export const getChatAvatarUri = (
+  chat: ChatSummary,
+  currentUserId: string,
+  currentUser?: User | null,
+) => {
   if (chat.isGroup) {
     return chat.avatar && chat.avatar.length > 1 ? chat.avatar : null;
   }
@@ -102,7 +143,7 @@ export const getChatAvatarUri = (chat: ChatSummary, currentUserId: string) => {
     return chat.avatar;
   }
 
-  return getOtherMember(chat, currentUserId)?.avatar || null;
+  return getOtherMember(chat, currentUserId, currentUser)?.avatar || null;
 };
 
 export const getChatPreview = (chat: ChatSummary) => {
@@ -117,7 +158,11 @@ export const getChatPreview = (chat: ChatSummary) => {
   return "Suhbatni boshlang";
 };
 
-export const getChatSecondaryLabel = (chat: ChatSummary, currentUserId: string) => {
+export const getChatSecondaryLabel = (
+  chat: ChatSummary,
+  currentUserId: string,
+  currentUser?: User | null,
+) => {
   if (chat.isSavedMessages) {
     return "o'zim";
   }
@@ -126,7 +171,7 @@ export const getChatSecondaryLabel = (chat: ChatSummary, currentUserId: string) 
     return `${chat.members?.length || 0} a'zo`;
   }
 
-  const otherMember = getOtherMember(chat, currentUserId);
+  const otherMember = getOtherMember(chat, currentUserId, currentUser);
   if (otherMember?.username) {
     return `@${otherMember.username}`;
   }

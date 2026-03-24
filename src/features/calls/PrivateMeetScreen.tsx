@@ -68,6 +68,15 @@ const ICE_CONFIG = {
 };
 
 const MAX_ROOM_JOIN_RETRIES = 6;
+const PEER_LEFT_GRACE_MS = 6500;
+const SCREEN_SHARE_MEDIA_CONSTRAINTS = {
+  video: {
+    frameRate: 10,
+    width: 960,
+    height: 540,
+  },
+  audio: false,
+} as const;
 const PRIVATE_CALL_QUALITY = {
   videoBitrate: 380_000,
   audioBitrate: 32_000,
@@ -122,6 +131,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const hangupStartedRef = useRef(false);
   const callRequestSentRef = useRef(Boolean(requestAlreadySent));
   const callConnectedAtRef = useRef<number | null>(null);
+  const peerLeftTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     localStreamRef.current = localStream;
@@ -167,6 +177,34 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     setRemoteStream(null);
     setRemoteScreenStream(null);
   }, []);
+
+  const clearPeerLeftTimeout = useCallback(() => {
+    if (peerLeftTimeoutRef.current) {
+      clearTimeout(peerLeftTimeoutRef.current);
+      peerLeftTimeoutRef.current = null;
+    }
+  }, []);
+
+  const prepareForRemoteRejoin = useCallback(
+    (nextPeerId: string) => {
+      if (!nextPeerId) {
+        return;
+      }
+
+      const currentPeerId = remotePeerIdRef.current;
+      if (!currentPeerId || currentPeerId === nextPeerId) {
+        clearPeerLeftTimeout();
+        remotePeerIdRef.current = nextPeerId;
+        return;
+      }
+
+      clearPeerLeftTimeout();
+      cleanupPeerConnection();
+      remotePeerIdRef.current = nextPeerId;
+      setCallStatus("Qayta ulanmoqda...");
+    },
+    [cleanupPeerConnection, clearPeerLeftTimeout],
+  );
 
   const flushPendingIceCandidates = useCallback(async () => {
     const connection = peerConnectionRef.current;
@@ -334,9 +372,10 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     return () => {
+      clearPeerLeftTimeout();
       void cleanupCall(false);
     };
-  }, [cleanupCall]);
+  }, [cleanupCall, clearPeerLeftTimeout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -630,6 +669,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       screenStreamRef.current = stream;
       setScreenStream(stream);
       setIsScreenSharing(true);
+      socketRef.current?.emit("screen-share-started", { roomId });
       ((videoTrack as unknown) as { onended?: (() => void) | null }).onended = () => {
         stopScreenShare();
       };
@@ -778,7 +818,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
           return;
         }
 
-        remotePeerIdRef.current = String(nextPeer.peerId);
+        prepareForRemoteRejoin(String(nextPeer.peerId));
         setCallStatus("Ulanmoqda...");
         if (isCaller && remoteAcceptedRef.current) {
           void createOfferForPeer(String(nextPeer.peerId));
@@ -791,7 +831,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       socket.on("peer-joined", ({ peerId }) => {
         clearJoinRetryTimeout();
         if (peerId) {
-          remotePeerIdRef.current = String(peerId);
+          prepareForRemoteRejoin(String(peerId));
           setCallStatus("Ulanmoqda...");
           if (isCaller && remoteAcceptedRef.current) {
             void createOfferForPeer(String(peerId));
@@ -804,6 +844,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
       socket.on("offer", async ({ senderId, sdp }) => {
         try {
+          clearPeerLeftTimeout();
           const connection = createPeerConnection(String(senderId));
           const nextDescription = new RTCSessionDescription(sdp);
           const currentRemoteDescription = connection.remoteDescription;
@@ -831,6 +872,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
       socket.on("answer", async ({ senderId, sdp }) => {
         try {
+          clearPeerLeftTimeout();
           remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
           const connection = peerConnectionRef.current;
           if (!connection) {
@@ -865,6 +907,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
       socket.on("screen-offer", async ({ senderId, sdp }) => {
         try {
+          clearPeerLeftTimeout();
           remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
           const connection = createScreenPeerConnection(String(senderId));
           await connection.setRemoteDescription(new RTCSessionDescription(sdp));
@@ -882,6 +925,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
 
       socket.on("screen-answer", async ({ senderId, sdp }) => {
         try {
+          clearPeerLeftTimeout();
           remotePeerIdRef.current = String(senderId || remotePeerIdRef.current || "");
           const connection = screenPeerConnectionRef.current;
           if (!connection) {
@@ -949,18 +993,21 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
       });
 
       socket.on("peer-left", () => {
-        setCallStatus("Qo'ng'iroq tugadi");
-        setRemoteStream(null);
-        setRemoteScreenStream(null);
-        cleanupPeerConnection();
-        if (!hangupStartedRef.current) {
-          setTimeout(() => {
+        clearPeerLeftTimeout();
+        setCallStatus("Qayta ulanmoqda...");
+        peerLeftTimeoutRef.current = setTimeout(() => {
+          setCallStatus("Qo'ng'iroq tugadi");
+          setRemoteStream(null);
+          setRemoteScreenStream(null);
+          cleanupPeerConnection();
+          if (!hangupStartedRef.current) {
             navigation.goBack();
-          }, 400);
-        }
+          }
+        }, PEER_LEFT_GRACE_MS);
       });
 
       socket.on("screen-share-stopped", () => {
+        clearPeerLeftTimeout();
         setRemoteScreenStream(null);
         screenPeerConnectionRef.current?.close();
         screenPeerConnectionRef.current = null;
@@ -988,11 +1035,13 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     };
   }, [
     cleanupPeerConnection,
+    clearPeerLeftTimeout,
     applyMediaOptimization,
     createOfferForPeer,
     createPeerConnection,
     createScreenOfferForPeer,
     createScreenPeerConnection,
+    prepareForRemoteRejoin,
     displayName,
     flushPendingIceCandidates,
     flushPendingScreenIceCandidates,

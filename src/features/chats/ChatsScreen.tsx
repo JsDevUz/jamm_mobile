@@ -509,7 +509,7 @@ export function ChatsScreen({ navigation }: Props) {
       return chat.name || t("chatsSidebar.groupFallback");
     }
 
-    const otherMember = getOtherMember(chat, currentUserId);
+    const otherMember = getOtherMember(chat, currentUserId, user);
     return getDirectChatUserLabel(otherMember) || chat.name || t("chatsSidebar.chatFallback");
   }
 
@@ -534,7 +534,7 @@ export function ChatsScreen({ navigation }: Props) {
       return t("chatsSidebar.search.groupMeta", { count: chat.members?.length || 0 });
     }
 
-    const otherMember = getOtherMember(chat, currentUserId);
+    const otherMember = getOtherMember(chat, currentUserId, user);
     if (otherMember?.username) {
       return `@${otherMember.username}`;
     }
@@ -596,10 +596,10 @@ export function ChatsScreen({ navigation }: Props) {
           }
           renderItem={({ item }) => {
             const title = getLocalizedChatTitle(item);
-            const avatarUri = getChatAvatarUri(item, currentUserId);
+            const avatarUri = getChatAvatarUri(item, currentUserId, user);
             const secondaryLabel = getLocalizedSecondaryLabel(item);
             const unreadCount = Math.max(0, Number(item.unread) || 0);
-            const otherMember = item.isGroup ? null : getOtherMember(item, currentUserId);
+            const otherMember = item.isGroup ? null : getOtherMember(item, currentUserId, user);
             const previewText = getLocalizedChatPreview(item) || secondaryLabel;
             const isPrivateOnline = Boolean(otherMember && isUserCurrentlyOnline(otherMember));
             const groupOnlineCount = item.isGroup

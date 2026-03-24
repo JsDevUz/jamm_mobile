@@ -76,6 +76,7 @@ import {
   openJammProfileMention,
 } from "../../navigation/internalLinks";
 import { useI18n } from "../../i18n";
+import { realtime } from "../../lib/realtime";
 import type { MainTabScreenProps } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -375,6 +376,7 @@ function FeedImageCarousel({
               blurDataUrl={image.blurDataUrl}
               style={styles.imageFill}
               requireManualDownload
+              manualDownloadVariant="icon"
               onPress={() => onOpenImage(images, index)}
             />
           </View>
@@ -1024,12 +1026,15 @@ function CommentsModal({
       if (editingComment) {
         await postsApi.updateComment(post._id, editingComment.commentId, text.trim());
       } else if (replyingTo) {
-        await postsApi.addReply(
+        const response = await postsApi.addReply(
           post._id,
           replyingTo.commentId,
           text.trim(),
           replyingTo.replyToUserId,
         );
+        if (typeof response.comments === "number") {
+          onCountChange(post._id, response.comments);
+        }
       } else {
         const response = await postsApi.addComment(post._id, text.trim());
         onCountChange(post._id, response.comments);
@@ -1043,6 +1048,23 @@ function CommentsModal({
       setSending(false);
     }
   };
+
+  useEffect(() => {
+    if (!visible || !post?._id) {
+      return;
+    }
+
+    return realtime.onPostEvent("post_comments_updated", (payload) => {
+      if (String(payload?.postId || "") !== post._id) {
+        return;
+      }
+
+      if (typeof payload?.comments === "number") {
+        onCountChange(post._id, payload.comments);
+      }
+      void loadComments(1);
+    });
+  }, [loadComments, onCountChange, post?._id, visible]);
 
   return (
     <DraggableBottomSheet
@@ -1774,6 +1796,9 @@ export function FeedScreen({ navigation }: Props) {
       ...current,
       comments: nextCount,
     }));
+    setCommentPost((current) =>
+      current && current._id === postId ? { ...current, comments: nextCount } : current,
+    );
   };
 
   const displayName =
@@ -1791,6 +1816,56 @@ export function FeedScreen({ navigation }: Props) {
     setLightboxState(null);
     setLightboxIndex(0);
   }, []);
+
+  useEffect(() => {
+    const subscriptions = [
+      realtime.onPostEvent("post_updated", (payload) => {
+        const postId = String(payload?._id || payload?.id || "");
+        if (!postId) {
+          return;
+        }
+
+        updatePostAcrossFeeds(postId, (current) => ({
+          ...current,
+          ...payload,
+          liked: current.liked,
+          previouslySeen: current.previouslySeen,
+        }));
+        setCommentPost((current) =>
+          current && current._id === postId
+            ? {
+                ...current,
+                ...payload,
+                liked: current.liked,
+                previouslySeen: current.previouslySeen,
+              }
+            : current,
+        );
+      }),
+      realtime.onPostEvent("post_deleted", (payload) => {
+        const postId = String(payload?.postId || "");
+        if (!postId) {
+          return;
+        }
+
+        removePostAcrossFeeds(postId);
+        setCommentPost((current) => (current && current._id === postId ? null : current));
+        setEditingPost((current) => (current && current._id === postId ? null : current));
+      }),
+      realtime.onPostEvent("post_comments_updated", (payload) => {
+        const postId = String(payload?.postId || "");
+        if (!postId || typeof payload?.comments !== "number") {
+          return;
+        }
+
+        handleCommentCountChange(postId, payload.comments);
+      }),
+    ];
+
+    return () => {
+      subscriptions.forEach((unsubscribe) => unsubscribe?.());
+    };
+  }, [handleCommentCountChange, removePostAcrossFeeds, updatePostAcrossFeeds]);
 
   const persistFeedScrollOffset = useCallback(
     (tab: FeedTab) => {

@@ -802,8 +802,8 @@ function CoursesScreenContent({
   const offlineTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoChromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pauseOnNextSourceLoadRef = useRef(true);
   const offlineTooltipSuppressPressRef = useRef(false);
-  const videoViewRef = useRef<VideoView | null>(null);
   const adminPaneBackdropOpacity = useMemo(
     () =>
       adminPaneTranslateX.interpolate({
@@ -1749,6 +1749,23 @@ function CoursesScreenContent({
   }, [lessonVideoPlayer, videoPlaybackRate]);
 
   useEffect(() => {
+    if (!playbackStreamUrl) {
+      return;
+    }
+
+    pauseOnNextSourceLoadRef.current = true;
+    clearVideoStartTimer();
+    setIsLessonVideoStarting(false);
+    lessonVideoPlayer.pause();
+  }, [
+    activeMediaIndex,
+    clearVideoStartTimer,
+    currentLesson?._id,
+    lessonVideoPlayer,
+    playbackStreamUrl,
+  ]);
+
+  useEffect(() => {
     setIsLessonVideoPlaying(lessonVideoPlayer.playing);
 
     const playingSubscription = lessonVideoPlayer.addListener("playingChange", (payload) => {
@@ -1765,7 +1782,7 @@ function CoursesScreenContent({
   }, [clearVideoStartTimer, lessonVideoPlayer]);
 
   useEffect(() => {
-    if (!playbackStreamUrl || isLessonVideoFullscreen || playerSettingsOpen) {
+    if (!playbackStreamUrl || playerSettingsOpen) {
       showVideoChrome(false);
       return;
     }
@@ -1777,7 +1794,6 @@ function CoursesScreenContent({
 
     showVideoChrome(false);
   }, [
-    isLessonVideoFullscreen,
     isLessonVideoPlaying,
     playbackStreamUrl,
     playerSettingsOpen,
@@ -1797,6 +1813,10 @@ function CoursesScreenContent({
       if (pendingSeekTimeRef.current !== null) {
         lessonVideoPlayer.currentTime = pendingSeekTimeRef.current;
         pendingSeekTimeRef.current = null;
+      }
+      if (pauseOnNextSourceLoadRef.current) {
+        lessonVideoPlayer.pause();
+        pauseOnNextSourceLoadRef.current = false;
       }
     });
     const playToEndSubscription = lessonVideoPlayer.addListener("playToEnd", () => {
@@ -1869,6 +1889,7 @@ function CoursesScreenContent({
     }
 
     setIsLessonVideoStarting(true);
+    pauseOnNextSourceLoadRef.current = false;
     clearVideoStartTimer();
     videoStartTimerRef.current = setTimeout(() => {
       setIsLessonVideoStarting(false);
@@ -1888,13 +1909,9 @@ function CoursesScreenContent({
 
   const handleEnterVideoFullscreen = useCallback(() => {
     showVideoChrome(false);
-    if (isLessonVideoFullscreen) {
-      void videoViewRef.current?.exitFullscreen();
-      return;
-    }
-
-    void videoViewRef.current?.enterFullscreen();
-  }, [isLessonVideoFullscreen, showVideoChrome]);
+    setPlayerSettingsOpen(false);
+    setIsLessonVideoFullscreen((current) => !current);
+  }, [showVideoChrome]);
 
   const handleDownloadLessonOffline = useCallback(async () => {
     if (
@@ -2593,7 +2610,7 @@ function CoursesScreenContent({
     });
   };
 
-  const renderCurrentLessonStage = () => {
+  const renderPlayableLessonStage = (fullscreenMode = false) => {
     const offlineBusy = offlineDownloading || offlineRemoving;
     const offlineButtonLabel = offlineDownloading
       ? t("coursePlayer.offline.downloading")
@@ -2602,312 +2619,301 @@ function CoursesScreenContent({
         : isLessonFullyOffline
           ? t("coursePlayer.offline.ready")
           : t("coursePlayer.offline.download");
+    const handleStageBack = () => {
+      if (fullscreenMode) {
+        setIsLessonVideoFullscreen(false);
+        showVideoChrome(false);
+        return;
+      }
+      handleCloseCourseDetail();
+    };
 
-    if (canRenderLessonPlayer) {
-      return (
-        <View style={styles.playerStageCard}>
-          <View style={styles.videoStage}>
-            {!isLessonVideoFullscreen && !playbackStreamUrl ? (
-              <View style={styles.videoStageTopBar}>
-                <Pressable
-                  style={styles.videoStageBackButton}
-                  onPress={handleCloseCourseDetail}
-                >
-                  <ArrowLeft size={18} color="#fff" />
-                </Pressable>
-                <Text style={styles.videoStageTopTitle} numberOfLines={1}>
-                  {currentLessonHeaderTitle}
-                </Text>
-                {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
-                  <View style={styles.videoStageTopActions}>
-                    <View style={styles.videoStageTopActionAnchor}>
-                      {offlineTooltipVisible ? (
-                        <View style={styles.videoStageTooltip}>
-                          <Text style={styles.videoStageTooltipText}>{offlineButtonLabel}</Text>
-                        </View>
-                      ) : null}
-                      <Pressable
-                        style={[
-                          styles.videoStageTopActionButton,
-                          isLessonFullyOffline && styles.videoStageTopActionButtonReady,
-                          offlineBusy && styles.sendButtonDisabled,
-                        ]}
-                        disabled={offlineBusy}
-                        delayLongPress={260}
-                        onLongPress={() => {
-                          offlineTooltipSuppressPressRef.current = true;
-                          showOfflineTooltip();
-                        }}
-                        onPress={() => {
-                          if (offlineTooltipSuppressPressRef.current) {
-                            offlineTooltipSuppressPressRef.current = false;
-                            return;
-                          }
-                          setOfflineTooltipVisible(false);
-                          clearOfflineTooltipTimer();
-                          void handleToggleLessonOffline();
-                        }}
-                      >
-                        {offlineBusy ? (
-                          <ActivityIndicator size="small" color="#fff" />
-                        ) : (
-                          <Ionicons
-                            name={isLessonFullyOffline ? "cloud-done-outline" : "arrow-down"}
-                            size={17}
-                            color="#fff"
-                          />
-                        )}
-                      </Pressable>
+    return (
+      <View style={fullscreenMode ? styles.videoStageFullscreen : styles.videoStage}>
+        {!fullscreenMode && !playbackStreamUrl ? (
+          <View style={styles.videoStageTopBar}>
+            <Pressable
+              style={styles.videoStageBackButton}
+              onPress={handleCloseCourseDetail}
+            >
+              <ArrowLeft size={18} color="#fff" />
+            </Pressable>
+            <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+              {currentLessonHeaderTitle}
+            </Text>
+            {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
+              <View style={styles.videoStageTopActions}>
+                <View style={styles.videoStageTopActionAnchor}>
+                  {offlineTooltipVisible ? (
+                    <View style={styles.videoStageTooltip}>
+                      <Text style={styles.videoStageTooltipText}>{offlineButtonLabel}</Text>
                     </View>
-                  </View>
-                ) : null}
+                  ) : null}
+                  <Pressable
+                    style={[
+                      styles.videoStageTopActionButton,
+                      isLessonFullyOffline && styles.videoStageTopActionButtonReady,
+                      offlineBusy && styles.sendButtonDisabled,
+                    ]}
+                    disabled={offlineBusy}
+                    delayLongPress={260}
+                    onLongPress={() => {
+                      offlineTooltipSuppressPressRef.current = true;
+                      showOfflineTooltip();
+                    }}
+                    onPress={() => {
+                      if (offlineTooltipSuppressPressRef.current) {
+                        offlineTooltipSuppressPressRef.current = false;
+                        return;
+                      }
+                      setOfflineTooltipVisible(false);
+                      clearOfflineTooltipTimer();
+                      void handleToggleLessonOffline();
+                    }}
+                  >
+                    {offlineBusy ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Ionicons
+                        name={isLessonFullyOffline ? "cloud-done-outline" : "arrow-down"}
+                        size={17}
+                        color="#fff"
+                      />
+                    )}
+                  </Pressable>
+                </View>
               </View>
             ) : null}
-            {playbackLoading ? (
-              <View style={styles.videoStageCenter}>
-                <ActivityIndicator color={Colors.primary} />
-              </View>
-            ) : playbackError ? (
-              <View style={styles.videoStageCenter}>
-                <AlertCircle size={30} color={Colors.warning} />
-                <Text style={styles.emptyTitle}>Video ochilmadi</Text>
-                <Text style={styles.emptyText}>{playbackError}</Text>
-              </View>
-            ) : playbackStreamUrl ? (
-              <>
-                <VideoView
-                  ref={videoViewRef}
-                  player={lessonVideoPlayer}
-                  style={styles.videoView}
-                  nativeControls={isLessonVideoFullscreen}
-                  contentFit="contain"
-                  surfaceType={Platform.OS === "android" ? "textureView" : undefined}
-                  fullscreenOptions={{ enable: true, orientation: "landscape" }}
-                  onFullscreenEnter={() => setIsLessonVideoFullscreen(true)}
-                  onFullscreenExit={() => setIsLessonVideoFullscreen(false)}
-                />
-                {!isLessonVideoFullscreen ? (
-                  <>
-                    <Pressable style={styles.videoStageTouchLayer} onPress={handleVideoSurfacePress} />
-                    {videoChromeVisible ? (
-                      <View pointerEvents="box-none" style={styles.videoStageOverlay}>
-                        <LinearGradient
-                          colors={["rgba(7,10,18,0.78)", "rgba(7,10,18,0.08)"]}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 0, y: 1 }}
-                          style={styles.videoStageTopGradient}
-                        >
-                          <View style={styles.videoStageTopBar}>
-                            <Pressable
-                              style={styles.videoStageBackButton}
-                              onPress={handleCloseCourseDetail}
-                            >
-                              <ArrowLeft size={18} color="#fff" />
-                            </Pressable>
-                            <View style={styles.videoStageTitleWrap}>
-                              <Text style={styles.videoStageTopTitle} numberOfLines={1}>
-                                {currentLessonHeaderTitle}
-                              </Text>
-                              <Text style={styles.videoStageSubtitle} numberOfLines={1}>
-                                {currentCourse?.name || "Jamm Course"} · {playbackSourceLabel}
-                              </Text>
+          </View>
+        ) : null}
+        {playbackLoading ? (
+          <View style={styles.videoStageCenter}>
+            <ActivityIndicator color={Colors.primary} />
+          </View>
+        ) : playbackError ? (
+          <View style={styles.videoStageCenter}>
+            <AlertCircle size={30} color={Colors.warning} />
+            <Text style={styles.emptyTitle}>Video ochilmadi</Text>
+            <Text style={styles.emptyText}>{playbackError}</Text>
+          </View>
+        ) : playbackStreamUrl ? (
+          <>
+            <VideoView
+              player={lessonVideoPlayer}
+              style={fullscreenMode ? styles.videoViewFullscreen : styles.videoView}
+              nativeControls={false}
+              contentFit="contain"
+              surfaceType={Platform.OS === "android" ? "textureView" : undefined}
+            />
+            <Pressable style={styles.videoStageTouchLayer} onPress={handleVideoSurfacePress} />
+            {videoChromeVisible ? (
+              <View pointerEvents="box-none" style={styles.videoStageOverlay}>
+                <LinearGradient
+                  colors={["rgba(7,10,18,0.78)", "rgba(7,10,18,0.08)"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.videoStageTopGradient}
+                >
+                  <View style={styles.videoStageTopBar}>
+                    <Pressable style={styles.videoStageBackButton} onPress={handleStageBack}>
+                      <ArrowLeft size={18} color="#fff" />
+                    </Pressable>
+                    <View style={styles.videoStageTitleWrap}>
+                      <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+                        {currentLessonHeaderTitle}
+                      </Text>
+                      <Text style={styles.videoStageSubtitle} numberOfLines={1}>
+                        {currentCourse?.name || "Jamm Course"} · {playbackSourceLabel}
+                      </Text>
+                    </View>
+                    <View style={styles.videoStageTopActions}>
+                      {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
+                        <View style={styles.videoStageTopActionAnchor}>
+                          {offlineTooltipVisible ? (
+                            <View style={styles.videoStageTooltip}>
+                              <Text style={styles.videoStageTooltipText}>{offlineButtonLabel}</Text>
                             </View>
-                            <View style={styles.videoStageTopActions}>
-                             
-                              {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
-                                <View style={styles.videoStageTopActionAnchor}>
-                                  {offlineTooltipVisible ? (
-                                    <View style={styles.videoStageTooltip}>
-                                      <Text style={styles.videoStageTooltipText}>
-                                        {offlineButtonLabel}
-                                      </Text>
-                                    </View>
-                                  ) : null}
-                                  <Pressable
-                                    style={[
-                                      styles.videoStageTopActionButton,
-                                      isLessonFullyOffline && styles.videoStageTopActionButtonReady,
-                                      offlineBusy && styles.sendButtonDisabled,
-                                    ]}
-                                    disabled={offlineBusy}
-                                    delayLongPress={260}
-                                    onLongPress={() => {
-                                      offlineTooltipSuppressPressRef.current = true;
-                                      showOfflineTooltip();
-                                    }}
-                                    onPress={() => {
-                                      if (offlineTooltipSuppressPressRef.current) {
-                                        offlineTooltipSuppressPressRef.current = false;
-                                        return;
-                                      }
-                                      setOfflineTooltipVisible(false);
-                                      clearOfflineTooltipTimer();
-                                      showVideoChrome();
-                                      void handleToggleLessonOffline();
-                                    }}
-                                  >
-                                    {offlineBusy ? (
-                                      <ActivityIndicator size="small" color="#fff" />
-                                    ) : (
-                                      <Ionicons
-                                        name={
-                                          isLessonFullyOffline
-                                            ? "cloud-done-outline"
-                                            : "arrow-down"
-                                        }
-                                        size={17}
-                                        color="#fff"
-                                      />
-                                    )}
-                                  </Pressable>
-                                </View>
-                              ) : null}
-                            </View>
-                          </View>
-                        </LinearGradient>
-
-                        <View style={styles.videoStageCenterControls}>
+                          ) : null}
                           <Pressable
-                            style={styles.videoStageSeekButton}
-                            onPress={() => handleSeekRelative(-10)}
+                            style={[
+                              styles.videoStageTopActionButton,
+                              isLessonFullyOffline && styles.videoStageTopActionButtonReady,
+                              offlineBusy && styles.sendButtonDisabled,
+                            ]}
+                            disabled={offlineBusy}
+                            delayLongPress={260}
+                            onLongPress={() => {
+                              offlineTooltipSuppressPressRef.current = true;
+                              showOfflineTooltip();
+                            }}
+                            onPress={() => {
+                              if (offlineTooltipSuppressPressRef.current) {
+                                offlineTooltipSuppressPressRef.current = false;
+                                return;
+                              }
+                              setOfflineTooltipVisible(false);
+                              clearOfflineTooltipTimer();
+                              showVideoChrome();
+                              void handleToggleLessonOffline();
+                            }}
                           >
-                            <Ionicons name="play-back" size={22} color="#fff" />
-                          </Pressable>
-                          <Pressable
-                            style={styles.videoStagePlayButton}
-                            onPress={handleToggleVideoPlayback}
-                          >
-                            {isLessonVideoStarting ? (
+                            {offlineBusy ? (
                               <ActivityIndicator size="small" color="#fff" />
                             ) : (
                               <Ionicons
-                                name={isLessonVideoPlaying ? "pause" : "play"}
-                                size={24}
+                                name={isLessonFullyOffline ? "cloud-done-outline" : "arrow-down"}
+                                size={17}
                                 color="#fff"
-                                style={!isLessonVideoPlaying ? styles.videoStagePlayIcon : undefined}
                               />
                             )}
                           </Pressable>
-                          <Pressable
-                            style={styles.videoStageSeekButton}
-                            onPress={() => handleSeekRelative(10)}
-                          >
-                            <Ionicons name="play-forward" size={22} color="#fff" />
-                          </Pressable>
                         </View>
+                      ) : null}
+                    </View>
+                  </View>
+                </LinearGradient>
 
-                        <LinearGradient
-                          colors={["rgba(7,10,18,0.08)", "rgba(7,10,18,0.9)"]}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 0, y: 1 }}
-                          style={[
-                            styles.videoStageBottomBar,
-                            { paddingBottom: 4 },
-                          ]}
-                        >
-                          
-
-                          <View
-                            style={styles.videoStageProgressTrack}
-                            onLayout={(event) =>
-                              setVideoProgressTrackWidth(event.nativeEvent.layout.width)
-                            }
-                            onStartShouldSetResponder={() => true}
-                            onMoveShouldSetResponder={() => true}
-                            onResponderGrant={(event) => {
-                              showVideoChrome();
-                              updateVideoScrubPreview(event.nativeEvent.locationX);
-                            }}
-                            onResponderMove={(event) => {
-                              updateVideoScrubPreview(event.nativeEvent.locationX);
-                            }}
-                            onResponderRelease={(event) => {
-                              showVideoChrome();
-                              finishVideoScrub(event.nativeEvent.locationX);
-                            }}
-                            onResponderTerminate={() => {
-                              setVideoScrubPercent(null);
-                            }}
-                          >
-                            <View
-                              style={[
-                                styles.videoStageProgressBuffered,
-                                { width: `${bufferedProgressPercent}%` },
-                              ]}
-                            />
-                            <View
-                              style={[
-                                styles.videoStageProgressElapsed,
-                                { width: `${displayedProgressPercent}%` },
-                              ]}
-                            />
-                            <View
-                              style={[
-                                styles.videoStageProgressThumb,
-                                { left: `${displayedProgressPercent}%` },
-                              ]}
-                            />
-                            {segmentBoundaries.map((boundary, index) => (
-                              <View
-                                key={`segment-${index}`}
-                                style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
-                              />
-                            ))}
-                          </View>
-
-                          <View style={styles.videoStageControlsRow}>
-                            <View style={styles.videoStageMetaRow}>
-                            <View style={styles.videoStageMetaBadge}>
-                              <Text style={styles.videoStageMetaBadgeText}>
-                                {activeMediaIndex + 1}/{Math.max(lessonMediaItems.length, 1)}
-                              </Text>
-                            </View>
-                          </View>
-                            <Text style={styles.videoStageTimeText}>
-                              {formatPlaybackClock(overallCurrentTime)} /{" "}
-                              {formatPlaybackClock(totalLessonDuration)}
-                            </Text>
-
-                            <Pressable
-                              style={styles.videoStageControlButtonWide}
-                              onPress={() => setPlayerSettingsOpen(true)}
-                            >
-                              <Ionicons name="options-outline" size={16} color="#fff" />
-                              <Text style={styles.videoStageControlButtonText}>Sozlamalar</Text>
-                            </Pressable>
-
-                            <Pressable
-                              style={styles.videoStageControlButton}
-                              onPress={handleEnterVideoFullscreen}
-                            >
-                              <Ionicons
-                                name={isLessonVideoFullscreen ? "contract-outline" : "expand-outline"}
-                                size={16}
-                                color="#fff"
-                              />
-                            </Pressable>
-                          </View>
-                        </LinearGradient>
-                      </View>
+                <View style={styles.videoStageCenterControls}>
+                  <Pressable
+                    style={styles.videoStageSeekButton}
+                    onPress={() => handleSeekRelative(-10)}
+                  >
+                    <Ionicons name="play-back" size={22} color="#fff" />
+                  </Pressable>
+                  <Pressable
+                    style={styles.videoStagePlayButton}
+                    onPress={handleToggleVideoPlayback}
+                  >
+                    {isLessonVideoStarting ? (
+                      <ActivityIndicator size="small" color="#fff" />
                     ) : (
-                      <View pointerEvents="none" style={styles.videoStageMiniProgressWrap}>
-                        <View
-                          style={[
-                            styles.videoStageMiniProgress,
-                            { width: `${overallProgressPercent}%` },
-                          ]}
-                        />
-                      </View>
+                      <Ionicons
+                        name={isLessonVideoPlaying ? "pause" : "play"}
+                        size={24}
+                        color="#fff"
+                        style={!isLessonVideoPlaying ? styles.videoStagePlayIcon : undefined}
+                      />
                     )}
-                  </>
-                ) : null}
-              </>
+                  </Pressable>
+                  <Pressable
+                    style={styles.videoStageSeekButton}
+                    onPress={() => handleSeekRelative(10)}
+                  >
+                    <Ionicons name="play-forward" size={22} color="#fff" />
+                  </Pressable>
+                </View>
+
+                <LinearGradient
+                  colors={["rgba(7,10,18,0.08)", "rgba(7,10,18,0.9)"]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={[styles.videoStageBottomBar, { paddingBottom: fullscreenMode ? 12 : 4 }]}
+                >
+                  <View
+                    style={styles.videoStageProgressTrack}
+                    onLayout={(event) => setVideoProgressTrackWidth(event.nativeEvent.layout.width)}
+                    onStartShouldSetResponder={() => true}
+                    onMoveShouldSetResponder={() => true}
+                    onResponderGrant={(event) => {
+                      showVideoChrome();
+                      updateVideoScrubPreview(event.nativeEvent.locationX);
+                    }}
+                    onResponderMove={(event) => {
+                      updateVideoScrubPreview(event.nativeEvent.locationX);
+                    }}
+                    onResponderRelease={(event) => {
+                      showVideoChrome();
+                      finishVideoScrub(event.nativeEvent.locationX);
+                    }}
+                    onResponderTerminate={() => {
+                      setVideoScrubPercent(null);
+                    }}
+                  >
+                    <View
+                      style={[
+                        styles.videoStageProgressBuffered,
+                        { width: `${bufferedProgressPercent}%` },
+                      ]}
+                    />
+                    <View
+                      style={[
+                        styles.videoStageProgressElapsed,
+                        { width: `${displayedProgressPercent}%` },
+                      ]}
+                    />
+                    <View
+                      style={[
+                        styles.videoStageProgressThumb,
+                        { left: `${displayedProgressPercent}%` },
+                      ]}
+                    />
+                    {segmentBoundaries.map((boundary, index) => (
+                      <View
+                        key={`segment-${index}`}
+                        style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
+                      />
+                    ))}
+                  </View>
+
+                  <View style={styles.videoStageControlsRow}>
+                    <View style={styles.videoStageMetaRow}>
+                      <View style={styles.videoStageMetaBadge}>
+                        <Text style={styles.videoStageMetaBadgeText}>
+                          {activeMediaIndex + 1}/{Math.max(lessonMediaItems.length, 1)}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.videoStageTimeText}>
+                      {formatPlaybackClock(overallCurrentTime)} /{" "}
+                      {formatPlaybackClock(totalLessonDuration)}
+                    </Text>
+
+                    <Pressable
+                      style={styles.videoStageControlButtonWide}
+                      onPress={() => setPlayerSettingsOpen(true)}
+                    >
+                      <Ionicons name="options-outline" size={16} color="#fff" />
+                      <Text style={styles.videoStageControlButtonText}>Sozlamalar</Text>
+                    </Pressable>
+
+                    <Pressable
+                      style={styles.videoStageControlButton}
+                      onPress={handleEnterVideoFullscreen}
+                    >
+                      <Ionicons
+                        name={fullscreenMode ? "contract-outline" : "expand-outline"}
+                        size={16}
+                        color="#fff"
+                      />
+                    </Pressable>
+                  </View>
+                </LinearGradient>
+              </View>
             ) : (
-              <View style={styles.videoStageCenter}>
-                <ActivityIndicator color={Colors.primary} />
+              <View pointerEvents="none" style={styles.videoStageMiniProgressWrap}>
+                <View
+                  style={[
+                    styles.videoStageMiniProgress,
+                    { width: `${overallProgressPercent}%` },
+                  ]}
+                />
               </View>
             )}
+          </>
+        ) : (
+          <View style={styles.videoStageCenter}>
+            <ActivityIndicator color={Colors.primary} />
           </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderCurrentLessonStage = () => {
+    if (canRenderLessonPlayer) {
+      return (
+        <View style={styles.playerStageCard}>
+          {isLessonVideoFullscreen ? <View style={styles.videoStagePlaceholder} /> : renderPlayableLessonStage(false)}
         </View>
       );
     }
@@ -4038,6 +4044,18 @@ function CoursesScreenContent({
         </ScrollView>
       </DraggableBottomSheet>
 
+      <Modal
+        visible={Boolean(isLessonVideoFullscreen && canRenderLessonPlayer)}
+        animationType="fade"
+        presentationStyle="fullScreen"
+        statusBarTranslucent
+        onRequestClose={() => setIsLessonVideoFullscreen(false)}
+      >
+        <View style={styles.videoFullscreenModal}>
+          {renderPlayableLessonStage(true)}
+        </View>
+      </Modal>
+
       {renderOwnerLessonAdminModal()}
 
       <CommentsModal
@@ -4664,11 +4682,26 @@ const styles = StyleSheet.create<Record<string, any>>({
     backgroundColor: Colors.surface,
     overflow: "hidden",
   },
+  videoFullscreenModal: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
   videoStage: {
     width: "100%",
     aspectRatio: 16 / 9,
     backgroundColor: "#111317",
     position: "relative",
+  },
+  videoStageFullscreen: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "#000",
+    position: "relative",
+  },
+  videoStagePlaceholder: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    backgroundColor: "#111317",
   },
   videoStageFallback: {
     width: "100%",
@@ -4772,6 +4805,12 @@ const styles = StyleSheet.create<Record<string, any>>({
     width: "100%",
     height: "100%",
     backgroundColor: "#111317",
+  },
+  videoViewFullscreen: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#000",
   },
   videoStageOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -41,6 +41,7 @@ export type ProfilePaneSection =
   | "articles"
   | "courses"
   | "appearance"
+  | "storage"
   | "language"
   | "security"
   | "premium"
@@ -58,6 +59,7 @@ export type ProfilePaneRouteName =
   | "ProfileArticles"
   | "ProfileCourses"
   | "ProfileAppearance"
+  | "ProfileStorage"
   | "ProfileLanguage"
   | "ProfileSecurity"
   | "ProfilePremium"
@@ -72,6 +74,7 @@ export type RootStackParamList = {
   ProfileArticles: ProfilePaneRouteParams;
   ProfileCourses: ProfilePaneRouteParams;
   ProfileAppearance: ProfilePaneRouteParams;
+  ProfileStorage: ProfilePaneRouteParams;
   ProfileLanguage: ProfilePaneRouteParams;
   ProfileSecurity: ProfilePaneRouteParams;
   ProfilePremium: ProfilePaneRouteParams;
@@ -88,8 +91,8 @@ export type RootStackParamList = {
   ArenaQuizList: undefined;
   ArenaFlashcardList:
     | {
-        deckId?: string;
-        folderId?: string;
+        deckId?: string | null;
+        folderId?: string | null;
       }
     | undefined;
   ArenaSentenceBuilderList:

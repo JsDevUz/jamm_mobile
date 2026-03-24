@@ -88,7 +88,7 @@ const isOfficialBadgeSelected = (decorationId?: string | null) =>
 const isPremiumBadgeSelected = (decorationId?: string | null) =>
   decorationId === "premium-badge";
 
-function OfficialBadgeIcon({
+export function OfficialBadgeIcon({
   size,
   color,
 }: {

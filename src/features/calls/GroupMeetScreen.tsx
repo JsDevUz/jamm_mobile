@@ -81,6 +81,16 @@ type KnockRequest = {
   displayName: string;
 };
 
+const PEER_LEFT_GRACE_MS = 6500;
+const SCREEN_SHARE_MEDIA_CONSTRAINTS = {
+  video: {
+    frameRate: 10,
+    width: 960,
+    height: 540,
+  },
+  audio: false,
+} as const;
+
 const ICE_CONFIG = {
   iceServers: [
     { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
@@ -182,6 +192,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const knownPeerNamesRef = useRef<Record<string, string>>({});
   const knownStreamsRef = useRef<Record<string, string>>({});
   const stalePeerTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const peerLeftTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const hangupStartedRef = useRef(false);
   const connectedAtRef = useRef<number | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -251,6 +262,11 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         clearTimeout(existingTimeout);
         delete stalePeerTimeoutsRef.current[peerId];
       }
+      const peerLeftTimeout = peerLeftTimeoutsRef.current[peerId];
+      if (peerLeftTimeout) {
+        clearTimeout(peerLeftTimeout);
+        delete peerLeftTimeoutsRef.current[peerId];
+      }
 
       setRemotePeers((previous) => {
         const existingIndex = previous.findIndex((peer) => peer.peerId === peerId);
@@ -290,6 +306,11 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       clearTimeout(existingTimeout);
       delete stalePeerTimeoutsRef.current[peerId];
     }
+    const peerLeftTimeout = peerLeftTimeoutsRef.current[peerId];
+    if (peerLeftTimeout) {
+      clearTimeout(peerLeftTimeout);
+      delete peerLeftTimeoutsRef.current[peerId];
+    }
     setRemotePeers((previous) => previous.filter((peer) => peer.peerId !== peerId));
     setRemoteScreenShares((previous) => previous.filter((peer) => peer.peerId !== peerId));
     setSelectedTileId((current) =>
@@ -316,6 +337,8 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     knownStreamsRef.current = {};
     Object.values(stalePeerTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
     stalePeerTimeoutsRef.current = {};
+    Object.values(peerLeftTimeoutsRef.current).forEach((timeoutId) => clearTimeout(timeoutId));
+    peerLeftTimeoutsRef.current = {};
     setRemotePeers([]);
     setRemoteScreenShares([]);
     setSelectedTileId(null);
@@ -773,6 +796,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       screenStreamRef.current = stream;
       setScreenStream(stream);
       setIsScreenSharing(true);
+      socketRef.current?.emit("screen-share-started", { roomId });
       ((videoTrack as unknown) as { onended?: (() => void) | null }).onended = () => {
         stopScreenShare();
       };
@@ -956,6 +980,12 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           const peerId = String(peer?.peerId || "");
           const peerDisplayName = String(peer?.displayName || peerId);
           if (!peerId) return;
+          const replacedPeerId = Object.entries(knownPeerNamesRef.current).find(
+            ([knownPeerId, knownName]) => knownPeerId !== peerId && knownName === peerDisplayName,
+          )?.[0];
+          if (replacedPeerId) {
+            removeRemotePeer(replacedPeerId);
+          }
           knownPeerNamesRef.current[peerId] = peerDisplayName;
           upsertRemotePeer(peerId, {
             displayName: peerDisplayName,
@@ -972,6 +1002,17 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         const normalizedPeerId = String(peerId || "");
         if (!normalizedPeerId || normalizedPeerId === socket.id) return;
         const normalizedName = String(peerDisplayName || normalizedPeerId);
+        const replacedPeerId = Object.entries(knownPeerNamesRef.current).find(
+          ([knownPeerId, knownName]) => knownPeerId !== normalizedPeerId && knownName === normalizedName,
+        )?.[0];
+        if (replacedPeerId) {
+          removeRemotePeer(replacedPeerId);
+        }
+        const pendingLeaveTimeout = peerLeftTimeoutsRef.current[normalizedPeerId];
+        if (pendingLeaveTimeout) {
+          clearTimeout(pendingLeaveTimeout);
+          delete peerLeftTimeoutsRef.current[normalizedPeerId];
+        }
         knownPeerNamesRef.current[normalizedPeerId] = normalizedName;
         upsertRemotePeer(normalizedPeerId, {
           displayName: normalizedName,
@@ -1116,7 +1157,14 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       socket.on("peer-left", ({ peerId }) => {
         const normalizedPeerId = String(peerId || "");
         if (!normalizedPeerId || normalizedPeerId === socket.id) return;
-        removeRemotePeer(normalizedPeerId);
+        const existingTimeout = peerLeftTimeoutsRef.current[normalizedPeerId];
+        if (existingTimeout) {
+          clearTimeout(existingTimeout);
+        }
+        peerLeftTimeoutsRef.current[normalizedPeerId] = setTimeout(() => {
+          delete peerLeftTimeoutsRef.current[normalizedPeerId];
+          removeRemotePeer(normalizedPeerId);
+        }, PEER_LEFT_GRACE_MS);
       });
 
       socket.on("screen-share-stopped", ({ peerId }) => {

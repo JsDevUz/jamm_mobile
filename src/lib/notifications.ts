@@ -39,6 +39,10 @@ export function setActiveNotificationChatId(chatId?: string | null) {
   activeNotificationChatId = chatId ? String(chatId) : null;
 }
 
+export function getActiveNotificationChatId() {
+  return activeNotificationChatId;
+}
+
 async function ensureAndroidChannel() {
   if (Platform.OS !== "android") {
     return;

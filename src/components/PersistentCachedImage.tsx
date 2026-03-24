@@ -10,8 +10,13 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { BlurView } from "expo-blur";
-import { Download } from "lucide-react-native";
-import { cacheRemoteMedia, getSecureCachedUri } from "../lib/secure-media-cache";
+import { ArrowDownToLine, Download } from "lucide-react-native";
+import {
+  cacheRemoteMedia,
+  getSecureCachedUri,
+  getSecureMediaCacheVersion,
+  subscribeSecureMediaCache,
+} from "../lib/secure-media-cache";
 import { Colors } from "../theme/colors";
 
 type Props = {
@@ -20,6 +25,7 @@ type Props = {
   style?: StyleProp<ViewStyle>;
   contentFit?: "cover" | "contain";
   requireManualDownload?: boolean;
+  manualDownloadVariant?: "pill" | "icon";
   onPress?: () => void;
 };
 
@@ -29,11 +35,15 @@ export function PersistentCachedImage({
   style,
   contentFit = "cover",
   requireManualDownload = false,
+  manualDownloadVariant = "pill",
   onPress,
 }: Props) {
   const [resolvedUri, setResolvedUri] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [cacheVersion, setCacheVersion] = useState(() => getSecureMediaCacheVersion());
+
+  useEffect(() => subscribeSecureMediaCache(setCacheVersion), []);
 
   useEffect(() => {
     let active = true;
@@ -78,7 +88,7 @@ export function PersistentCachedImage({
     return () => {
       active = false;
     };
-  }, [remoteUri, requireManualDownload]);
+  }, [cacheVersion, remoteUri, requireManualDownload]);
 
   const handleDownload = async () => {
     if (loading || downloaded) {
@@ -117,13 +127,25 @@ export function PersistentCachedImage({
           <View style={styles.previewShade} />
           <BlurView intensity={24} tint="dark" style={StyleSheet.absoluteFillObject} />
           <View style={styles.downloadOverlay}>
-            <Pressable style={styles.downloadButton} onPress={handleDownload}>
+            <Pressable
+              style={[
+                styles.downloadButton,
+                manualDownloadVariant === "icon" && styles.downloadButtonIconOnly,
+              ]}
+              onPress={handleDownload}
+            >
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Download size={18} color="#fff" />
-                  <Text style={styles.downloadText}>Yuklash</Text>
+                  {manualDownloadVariant === "icon" ? (
+                    <ArrowDownToLine size={18} color="#fff" />
+                  ) : (
+                    <>
+                      <Download size={18} color="#fff" />
+                      <Text style={styles.downloadText}>Yuklash</Text>
+                    </>
+                  )}
                 </>
               )}
             </Pressable>
@@ -181,6 +203,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
+  },
+  downloadButtonIconOnly: {
+    minWidth: 0,
+    width: 46,
+    height: 46,
+    paddingHorizontal: 0,
+    borderRadius: 16,
+    backgroundColor: "rgba(10, 12, 20, 0.8)",
   },
   downloadText: {
     color: "#fff",

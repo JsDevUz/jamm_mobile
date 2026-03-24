@@ -21,15 +21,23 @@ type PresenceEventMap = {
   "call:cancelled": (payload: any) => void;
 };
 
+type PostEventMap = {
+  post_updated: (payload: any) => void;
+  post_deleted: (payload: any) => void;
+  post_comments_updated: (payload: any) => void;
+};
+
 class RealtimeManager {
   private chatsSocket: Socket | null = null;
   private presenceSocket: Socket | null = null;
+  private postsSocket: Socket | null = null;
   private token: string | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private readonly joinedChats = new Set<string>();
   private readonly onlineUserIds = new Set<string>();
   private readonly chatListeners = new Map<string, Set<(...args: any[]) => void>>();
   private readonly presenceListeners = new Map<string, Set<(...args: any[]) => void>>();
+  private readonly postListeners = new Map<string, Set<(...args: any[]) => void>>();
 
   private bindStoredListeners() {
     this.chatListeners.forEach((handlers, event) => {
@@ -41,6 +49,12 @@ class RealtimeManager {
     this.presenceListeners.forEach((handlers, event) => {
       handlers.forEach((handler) => {
         this.presenceSocket?.on(event, handler);
+      });
+    });
+
+    this.postListeners.forEach((handlers, event) => {
+      handlers.forEach((handler) => {
+        this.postsSocket?.on(event, handler);
       });
     });
   }
@@ -79,6 +93,7 @@ class RealtimeManager {
 
     let didCreateChatsSocket = false;
     let didCreatePresenceSocket = false;
+    let didCreatePostsSocket = false;
 
     if (!this.chatsSocket) {
       didCreateChatsSocket = true;
@@ -134,7 +149,19 @@ class RealtimeManager {
       });
     }
 
-    if (didCreateChatsSocket || didCreatePresenceSocket) {
+    if (!this.postsSocket) {
+      didCreatePostsSocket = true;
+      this.postsSocket = io(buildSocketNamespaceUrl("/posts"), {
+        auth: { token },
+        transports: ["websocket", "polling"],
+        withCredentials: true,
+        reconnection: true,
+        reconnectionAttempts: 20,
+        reconnectionDelay: 1500,
+      });
+    }
+
+    if (didCreateChatsSocket || didCreatePresenceSocket || didCreatePostsSocket) {
       this.bindStoredListeners();
     }
   }
@@ -143,8 +170,10 @@ class RealtimeManager {
     this.stopPresenceHeartbeat();
     this.chatsSocket?.disconnect();
     this.presenceSocket?.disconnect();
+    this.postsSocket?.disconnect();
     this.chatsSocket = null;
     this.presenceSocket = null;
+    this.postsSocket = null;
     this.onlineUserIds.clear();
   }
 
@@ -211,6 +240,25 @@ class RealtimeManager {
         this.presenceListeners.delete(normalizedEvent);
       }
       this.presenceSocket?.off(normalizedEvent, normalizedHandler);
+    };
+  }
+
+  onPostEvent<EventName extends keyof PostEventMap>(
+    event: EventName,
+    handler: PostEventMap[EventName],
+  ) {
+    const normalizedEvent = String(event);
+    const normalizedHandler = handler as (...args: any[]) => void;
+    const handlers = this.postListeners.get(normalizedEvent) || new Set();
+    handlers.add(normalizedHandler);
+    this.postListeners.set(normalizedEvent, handlers);
+    this.postsSocket?.on(normalizedEvent, normalizedHandler);
+    return () => {
+      handlers.delete(normalizedHandler);
+      if (!handlers.size) {
+        this.postListeners.delete(normalizedEvent);
+      }
+      this.postsSocket?.off(normalizedEvent, normalizedHandler);
     };
   }
 

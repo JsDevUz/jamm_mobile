@@ -428,7 +428,9 @@ export const chatsApi = {
   resolveSlug: (slug: string) =>
     request<{ jammId: number }>(`/chats/resolve/${encodeURIComponent(slug)}`),
   fetchMessages: (chatId: string, before?: string | null) => {
-    const suffix = before ? `?before=${encodeURIComponent(before)}` : "";
+    const suffix = before
+      ? `?before=${encodeURIComponent(before)}&suppressAutoRead=1`
+      : "?suppressAutoRead=1";
     return request<PaginatedMessages>(`/chats/${chatId}/messages${suffix}`);
   },
   sendMessage: (payload: {
@@ -486,6 +488,11 @@ export const chatsApi = {
     request<{ active: boolean; roomId?: string; creatorId?: string }>(
       `/chats/${chatId}/call/status`,
     ),
+  updatePushNotifications: (chatId: string, enabled: boolean) =>
+    request<{ enabled: boolean }>(`/chats/${chatId}/push-notifications`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }),
 };
 
 export const usersApi = {
@@ -513,6 +520,7 @@ export const usersApi = {
     phone?: string;
     avatar?: string;
     bio?: string;
+    disableGroupInvites?: boolean;
   }) =>
     request<User>("/users/me", {
       method: "PATCH",
@@ -623,7 +631,7 @@ export const postsApi = {
     content: string,
     replyToUser?: string,
   ) =>
-    request<PostComment>(`/posts/${postId}/comments/${commentId}/reply`, {
+    request<{ replies: number; comments?: number }>(`/posts/${postId}/comments/${commentId}/reply`, {
       method: "POST",
       body: JSON.stringify({ content, replyToUser }),
     }),

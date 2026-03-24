@@ -57,7 +57,10 @@ import { ArenaQuizListScreen } from "./src/features/courses/ArenaQuizListScreen"
 import { ArenaTestPlayerScreen } from "./src/features/courses/ArenaTestPlayerScreen";
 import { CourseDetailScreen, CoursesScreen } from "./src/features/courses/CoursesScreen";
 import type { MainTabsParamList, RootStackParamList } from "./src/navigation/types";
-import { bootstrapPushNotifications } from "./src/lib/notifications";
+import {
+  bootstrapPushNotifications,
+  getActiveNotificationChatId,
+} from "./src/lib/notifications";
 import { realtime } from "./src/lib/realtime";
 import {
   ApiError,
@@ -270,6 +273,11 @@ function RootNavigator() {
           />
           <Stack.Screen
             name="ProfileAppearance"
+            component={ProfilePaneScreen}
+            options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="ProfileStorage"
             component={ProfilePaneScreen}
             options={{ animation: "slide_from_right" }}
           />
@@ -1189,6 +1197,8 @@ function AppServices() {
             typeof payload?.senderId === "string"
               ? payload.senderId
               : getEntityId(payload?.senderId);
+          const activeChatId = String(getActiveNotificationChatId() || "");
+          const isActiveChatOpen = Boolean(activeChatId) && activeChatId === chatId;
 
           const updatedChat: ChatSummary = {
             ...existing,
@@ -1197,7 +1207,7 @@ function AppServices() {
             updatedAt: payload?.createdAt || existing.updatedAt,
             hasMessages: true,
             unread:
-              senderId && senderId !== currentUserId
+              senderId && senderId !== currentUserId && !isActiveChatOpen
                 ? Math.max(0, Number(existing.unread || 0)) + 1
                 : existing.unread,
           };
@@ -1585,7 +1595,10 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
           navigationRef.navigate(
             "ArenaFlashcardList",
             target.deckId || target.folderId
-              ? { deckId: target.deckId, folderId: target.folderId }
+              ? {
+                  deckId: target.deckId ?? null,
+                  folderId: target.folderId ?? null,
+                }
               : undefined,
           );
           return;

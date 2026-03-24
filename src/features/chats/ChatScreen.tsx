@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  InputAccessoryView,
   Keyboard,
   Modal,
   type NativeScrollEvent,
@@ -11,6 +12,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Switch,
   StyleSheet,
   Text,
   TextInput as NativeTextInput,
@@ -21,22 +23,25 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import type { InfiniteData } from "@tanstack/react-query";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlashList } from "@shopify/flash-list";
-import type { FlashListRef } from "@shopify/flash-list";
+import type { FlashListRef, ViewToken } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
+import * as Notifications from "expo-notifications";
 import {
   PanGestureHandler,
   State,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
 import {
+  ChevronDown,
   Check,
   CheckCheck,
   Edit2,
   Info,
   LogOut,
   MoreVertical,
+  Phone,
   Reply,
   Timer,
   Trash2,
@@ -49,6 +54,7 @@ import { Avatar } from "../../components/Avatar";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { EditGroupDialog } from "./GroupDialogs";
+import { CHAT_EMOJI_SECTIONS } from "./constants/emojis";
 import { APP_BASE_URL } from "../../config/env";
 import { chatsApi } from "../../lib/api";
 import {
@@ -59,7 +65,10 @@ import {
   saveCachedMessages,
   saveChatScrollPosition,
 } from "../../lib/chat-cache";
-import { setActiveNotificationChatId } from "../../lib/notifications";
+import {
+  bootstrapPushNotifications,
+  setActiveNotificationChatId,
+} from "../../lib/notifications";
 import { realtime } from "../../lib/realtime";
 import type { RootStackParamList } from "../../navigation/types";
 import {
@@ -88,6 +97,14 @@ type MessageMenuLayout = {
   height: number;
 };
 
+const MESSAGE_MENU_SCREEN_PADDING = 12;
+const MESSAGE_MENU_GAP = 14;
+const MESSAGE_MENU_WIDTH = 188;
+const MESSAGE_MENU_ITEM_HEIGHT = 46;
+const MESSAGE_MENU_ACTION_GAP = 4;
+const MESSAGE_MENU_ACTIONS_PADDING = 6;
+const DEFAULT_STICKER_PICKER_HEIGHT = 320;
+
 type MessagesInfiniteData = InfiniteData<{
   data?: Message[];
   nextCursor?: string | null;
@@ -96,6 +113,8 @@ type MessagesInfiniteData = InfiniteData<{
 
 const ONLINE_PRESENCE_WINDOW_MS = 45_000;
 const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
+const NEW_MESSAGES_BOTTOM_THRESHOLD = 96;
+const IOS_CHAT_COMPOSER_ACCESSORY_ID = "chat-composer-accessory";
 
 const getNormalizedSenderId = (senderId?: string | User | null) =>
   typeof senderId === "string" ? senderId : getEntityId(senderId);
@@ -131,6 +150,20 @@ const upsertChatSummary = (current: ChatSummary[], nextChat: ChatSummary) => {
   });
   return nextChats;
 };
+
+const updateChatPushNotificationsInList = (
+  current: ChatSummary[] | undefined,
+  chatId: string,
+  enabled: boolean,
+) =>
+  (current || []).map((chat) =>
+    getEntityId(chat) === chatId
+      ? {
+          ...chat,
+          pushNotificationsEnabled: enabled,
+        }
+      : chat,
+  );
 
 const isMatchingOptimisticMessage = (
   message: Message,
@@ -480,6 +513,7 @@ function MessageBubbleBody({
   isMine,
   isGroup,
   onPressMention,
+  onPressReplyPreview,
   onLongPress,
   selectable = false,
 }: {
@@ -487,6 +521,7 @@ function MessageBubbleBody({
   isMine: boolean;
   isGroup: boolean;
   onPressMention: (username: string) => void;
+  onPressReplyPreview?: (messageId: string) => void;
   onLongPress?: () => void;
   selectable?: boolean;
 }) {
@@ -502,7 +537,14 @@ function MessageBubbleBody({
       ) : null}
 
       {message.replayTo ? (
-        <View
+        <Pressable
+          disabled={!getMessageIdentity(message.replayTo)}
+          onPress={() => {
+            const targetMessageId = getMessageIdentity(message.replayTo);
+            if (targetMessageId) {
+              onPressReplyPreview?.(targetMessageId);
+            }
+          }}
           style={[
             styles.replyPreview,
             isMine ? styles.replyPreviewMine : styles.replyPreviewTheirs,
@@ -520,7 +562,7 @@ function MessageBubbleBody({
           <Text style={styles.replyPreviewText} numberOfLines={1}>
             {message.replayTo.content || "Bu xabar o'chirilgan"}
           </Text>
-        </View>
+        </Pressable>
       ) : null}
 
       <MessageRichText
@@ -551,7 +593,9 @@ function ChatMessageRow({
   isGroup,
   onOpenMenu,
   onPressMention,
+  onPressReplyPreview,
   onSwipeReply,
+  highlightPulseKey = 0,
   hidden = false,
 }: {
   message: NormalizedMessage;
@@ -559,11 +603,14 @@ function ChatMessageRow({
   isGroup: boolean;
   onOpenMenu: (messageId: string, target: View | null) => void;
   onPressMention: (username: string) => void;
+  onPressReplyPreview: (messageId: string) => void;
   onSwipeReply: (message: NormalizedMessage) => void;
+  highlightPulseKey?: number;
   hidden?: boolean;
 }) {
   const swipeReplyDisabled = Boolean(message.isDeleted);
   const gestureTranslateX = useRef(new Animated.Value(0)).current;
+  const highlightAnim = useRef(new Animated.Value(0)).current;
   const bubbleRef = useRef<View | null>(null);
   const shouldTriggerReplySwipe = (dx: number, vx: number) =>
     dx < -28 || vx < -0.2;
@@ -622,6 +669,53 @@ function ChatMessageRow({
     [{ nativeEvent: { translationX: gestureTranslateX } }],
     { useNativeDriver: true },
   );
+  const highlightedBubbleStyle = useMemo(
+    () => ({
+      backgroundColor: highlightAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [Colors.input, isMine ? "rgba(88,101,242,0.34)" : "rgba(88,101,242,0.22)"],
+      }),
+      transform: [
+        {
+          scale: highlightAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: [1, 1.018],
+          }),
+        },
+      ],
+      borderColor: highlightAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ["transparent", "rgba(88,101,242,0.55)"],
+      }),
+      borderWidth: highlightAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0, 1],
+      }),
+    }),
+    [highlightAnim, isMine],
+  );
+
+  useEffect(() => {
+    if (!highlightPulseKey) {
+      return;
+    }
+
+    highlightAnim.stopAnimation();
+    highlightAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(highlightAnim, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: false,
+      }),
+      Animated.delay(700),
+      Animated.timing(highlightAnim, {
+        toValue: 0,
+        duration: 360,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [highlightAnim, highlightPulseKey]);
 
   return (
     <View style={styles.messageRowSwipeContainer}>
@@ -661,11 +755,12 @@ function ChatMessageRow({
               isMine ? styles.messageRowMine : styles.messageRowTheirs,
             ]}
           >
-            <View
+            <Animated.View
               ref={bubbleRef}
               style={[
                 styles.messageBubble,
                 isMine ? styles.messageBubbleMine : styles.messageBubbleTheirs,
+                highlightedBubbleStyle,
                 hidden && styles.messageBubbleHidden,
               ]}
             >
@@ -679,10 +774,11 @@ function ChatMessageRow({
                   isMine={isMine}
                   isGroup={isGroup}
                   onPressMention={onPressMention}
+                  onPressReplyPreview={onPressReplyPreview}
                   onLongPress={() => onOpenMenu(message.id, bubbleRef.current)}
                 />
               </Pressable>
-            </View>
+            </Animated.View>
           </View>
         </Animated.View>
       </PanGestureHandler>
@@ -692,12 +788,21 @@ function ChatMessageRow({
 
 export function ChatScreen({ navigation, route }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isWeb = Platform.OS === "web";
+  const useKeyboardAvoidingBody = false;
+  const useAnimatedKeyboardOffset = Platform.OS === "ios" && !isWeb;
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
   const [draft, setDraft] = useState("");
+  const [composerHeight, setComposerHeight] = useState(66);
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const [keyboardLayoutOffset, setKeyboardLayoutOffset] = useState(0);
+  const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
+  const [stickerToKeyboardTransition, setStickerToKeyboardTransition] = useState(false);
+  const [closedToKeyboardTransition, setClosedToKeyboardTransition] = useState(false);
+  const [composerSoftInputEnabled, setComposerSoftInputEnabled] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editGroupOpen, setEditGroupOpen] = useState(false);
   const [infoDrawerOpen, setInfoDrawerOpen] = useState(false);
@@ -710,6 +815,10 @@ export function ChatScreen({ navigation, route }: Props) {
   const [chatCacheHydrated, setChatCacheHydrated] = useState(false);
   const [messagesCacheHydrated, setMessagesCacheHydrated] = useState(false);
   const [savedScrollOffset, setSavedScrollOffset] = useState<number | null>(null);
+  const [pendingNewMessageIds, setPendingNewMessageIds] = useState<string[]>([]);
+  const [visibleMessageIds, setVisibleMessageIds] = useState<string[]>([]);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [highlightPulseKey, setHighlightPulseKey] = useState(0);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [selectedMessageLayout, setSelectedMessageLayout] = useState<MessageMenuLayout | null>(
     null,
@@ -718,6 +827,12 @@ export function ChatScreen({ navigation, route }: Props) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() => realtime.getOnlineUserIds());
+  const useIosInputAccessoryComposer =
+    Platform.OS === "ios" &&
+    !isWeb &&
+    keyboardInset > 0 &&
+    !stickerPickerVisible &&
+    !stickerToKeyboardTransition;
   const [outgoingCall, setOutgoingCall] = useState<{
     roomId: string;
     remoteUser: User;
@@ -729,6 +844,9 @@ export function ChatScreen({ navigation, route }: Props) {
     chatId: string;
   } | null>(null);
   const listRef = useRef<FlashListRef<MessageListItem>>(null);
+  const messageItemsRef = useRef<MessageListItem[]>([]);
+  const hasNextPageRef = useRef(false);
+  const messageHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const composerInputRef = useRef<NativeTextInput>(null);
   const composerFocusedRef = useRef(false);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -741,10 +859,15 @@ export function ChatScreen({ navigation, route }: Props) {
   const scrollOffsetRef = useRef(0);
   const scrollRestorePendingRef = useRef<number | null>(null);
   const scrollPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const previousLastMessageIdRef = useRef<string | null>(null);
+  const previousMessageCountRef = useRef(0);
   const messageMenuAnim = useRef(new Animated.Value(0)).current;
+  const accessoryHeightAnim = useRef(new Animated.Value(0)).current;
   const infoPageTranslateX = useRef(new Animated.Value(screenWidth)).current;
   const infoPageBackdropOpacity = useRef(new Animated.Value(0)).current;
   const infoPageStartXRef = useRef(screenWidth);
+  const lastKeyboardInsetRef = useRef(0);
   const isBackSwipeGesture = (dx: number, dy: number, vx: number) =>
     dx > 2 &&
     ((dx > 10 && Math.abs(dx) > Math.abs(dy) * 0.45) || (dx > 4 && vx > 0.08));
@@ -762,19 +885,23 @@ export function ChatScreen({ navigation, route }: Props) {
     () =>
       (chatsQuery.data || []).find(
         (chat) =>
+          Boolean(chat.isGroup) === Boolean(route.params.isGroup) &&
+          (
           getEntityId(chat) === route.params.chatId ||
           chat.privateurl === route.params.chatId ||
-          chat.urlSlug === route.params.chatId,
+          chat.urlSlug === route.params.chatId
+          ),
       ) || null,
-    [chatsQuery.data, route.params.chatId],
+    [chatsQuery.data, route.params.chatId, route.params.isGroup],
   );
   const hasChatsSnapshot = Array.isArray(chatsQuery.data);
+  const isGroupChat = Boolean(currentChat?.isGroup ?? route.params.isGroup);
 
   const chatTitle = currentChat
-    ? getChatTitle(currentChat, currentUserId)
+    ? getChatTitle(currentChat, currentUserId, user)
     : route.params.title;
-  const chatAvatarUri = currentChat ? getChatAvatarUri(currentChat, currentUserId) : null;
-  const otherMember = currentChat ? getOtherMember(currentChat, currentUserId) : null;
+  const chatAvatarUri = currentChat ? getChatAvatarUri(currentChat, currentUserId, user) : null;
+  const otherMember = currentChat ? getOtherMember(currentChat, currentUserId, user) : null;
   const knownUsers = useMemo(() => {
     const map = new Map<string, User>();
     (chatsQuery.data || []).forEach((chat) => {
@@ -803,7 +930,7 @@ export function ChatScreen({ navigation, route }: Props) {
     (admin) => (admin.userId || admin.id || admin._id) === currentUserId,
   );
   const canEditGroup =
-    Boolean(currentChat?.isGroup) &&
+    isGroupChat &&
     (String(currentChat?.createdBy || "") === currentUserId ||
       Boolean(myAdminRecord?.permissions?.length));
   const groupLinkSlug = String(currentChat?.privateurl || currentChat?.urlSlug || "").trim();
@@ -814,7 +941,7 @@ export function ChatScreen({ navigation, route }: Props) {
     String(currentChat?.createdBy || "") === currentUserId ||
     Boolean(myAdminRecord?.permissions?.includes("delete_others_messages"));
   const isGroupOwnerLeaving =
-    Boolean(currentChat?.isGroup) &&
+    isGroupChat &&
     String(currentChat?.createdBy || "") !== currentUserId;
   const infoDrawerUser = useMemo(() => {
     if (!infoDrawerUserId) {
@@ -831,7 +958,7 @@ export function ChatScreen({ navigation, route }: Props) {
     return knownUsers.find((member) => getEntityId(member) === infoDrawerUserId) || null;
   }, [currentChat?.members, infoDrawerUserId, knownUsers]);
   const isViewingGroupMemberInfo = Boolean(currentChat?.isGroup && infoDrawerUser);
-  const drawerUser = currentChat?.isGroup ? infoDrawerUser : otherMember;
+  const drawerUser = isGroupChat ? infoDrawerUser : otherMember;
   const drawerAvatarUri = drawerUser?.avatar || chatAvatarUri || null;
   const drawerTitle = drawerUser
     ? "Foydalanuvchi ma'lumotlari"
@@ -979,12 +1106,35 @@ export function ChatScreen({ navigation, route }: Props) {
   const hasMessagesSnapshot = Boolean(messagesQuery.data);
 
   const messagesPages = messagesQuery.data?.pages || [];
+  const flatMessages = useMemo(
+    () => [...messagesPages].reverse().flatMap((page) => page.data || []),
+    [messagesPages],
+  );
   const messageItems = useMemo(() => {
-    const flattenedMessages = [...messagesPages]
-      .reverse()
-      .flatMap((page) => page.data || []);
-    return buildMessageItems(flattenedMessages);
-  }, [messagesPages]);
+    return buildMessageItems(flatMessages);
+  }, [flatMessages]);
+  useEffect(() => {
+    messageItemsRef.current = messageItems;
+  }, [messageItems]);
+  useEffect(() => {
+    hasNextPageRef.current = Boolean(messagesQuery.hasNextPage);
+  }, [messagesQuery.hasNextPage]);
+  useEffect(() => {
+    return () => {
+      if (messageHighlightTimeoutRef.current) {
+        clearTimeout(messageHighlightTimeoutRef.current);
+        messageHighlightTimeoutRef.current = null;
+      }
+    };
+  }, []);
+  const stickyDateHeaderIndices = useMemo(() => {
+    return messageItems.reduce<number[]>((indices, item, index) => {
+      if (item.type === "date") {
+        indices.push(index);
+      }
+      return indices;
+    }, []);
+  }, [messageItems]);
   const initialMessageIndex =
     !initialScrollDoneRef.current &&
     savedScrollOffset === null &&
@@ -1007,48 +1157,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const selectedMessageIsMine =
     selectedMessage?.type === "message" &&
     selectedMessage.message.senderId === currentUserId;
-  const messageMenuActionsTop = useMemo(() => {
-    if (!selectedMessageLayout) {
-      return null;
-    }
-
-    const menuHeight = 58;
-    const belowY = selectedMessageLayout.y + selectedMessageLayout.height + 14;
-    const availableHeight = screenHeight - insets.top - insets.bottom - 12;
-
-    if (belowY + menuHeight <= availableHeight) {
-      return belowY;
-    }
-
-    return Math.max(12, selectedMessageLayout.y - menuHeight - 14);
-  }, [insets.bottom, insets.top, screenHeight, selectedMessageLayout]);
-  const messageMenuActionsLeft = useMemo(() => {
-    if (!selectedMessageLayout) {
-      return null;
-    }
-
-    const actionBarWidth = 176;
-    const idealLeft = selectedMessageIsMine
-      ? selectedMessageLayout.x + selectedMessageLayout.width - actionBarWidth
-      : selectedMessageLayout.x;
-
-    return Math.max(12, Math.min(screenWidth - actionBarWidth - 12, idealLeft));
-  }, [screenWidth, selectedMessageIsMine, selectedMessageLayout]);
-  const messageMenuBubbleLift = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, -16],
-    extrapolate: "clamp",
-  });
-  const messageMenuBubbleScale = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.98, 1],
-    extrapolate: "clamp",
-  });
-  const messageMenuOverlayOpacity = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 1],
-    extrapolate: "clamp",
-  });
 
   const sendMutation = useMutation({
     mutationFn: ({
@@ -1135,10 +1243,37 @@ export function ChatScreen({ navigation, route }: Props) {
     },
   });
 
+  const chatPushNotificationsMutation = useMutation({
+    mutationFn: ({ chatId, enabled }: { chatId: string; enabled: boolean }) =>
+      chatsApi.updatePushNotifications(chatId, enabled),
+    onMutate: async ({ chatId, enabled }) => {
+      const previousChats = queryClient.getQueryData<ChatSummary[]>(["chats"]);
+      queryClient.setQueryData<ChatSummary[]>(
+        ["chats"],
+        updateChatPushNotificationsInList(previousChats, chatId, enabled),
+      );
+      return { previousChats };
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previousChats) {
+        queryClient.setQueryData(["chats"], context.previousChats);
+      }
+      Alert.alert(
+        "Bildirishnoma sozlanmadi",
+        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+      );
+    },
+  });
+
   const isSending = sendMutation.isPending || editMutation.isPending;
   const isComposerDisabled = messagesQuery.isLoading;
-  const dismissKeyboard = () => {
+  const dismissKeyboard = (options?: { preserveStickerPicker?: boolean }) => {
+    composerFocusedRef.current = false;
+    composerInputRef.current?.blur();
     Keyboard.dismiss();
+    if (!options?.preserveStickerPicker && stickerPickerVisible) {
+      hideStickerPicker(false);
+    }
   };
   const flushSavedScrollOffset = useCallback(() => {
     if (!currentUserId) {
@@ -1173,17 +1308,159 @@ export function ChatScreen({ navigation, route }: Props) {
     }, 180);
   };
   const handleMessagesScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    scrollOffsetRef.current = Math.max(0, event.nativeEvent.contentOffset?.y || 0);
+    const nextOffset = Math.max(0, event.nativeEvent.contentOffset?.y || 0);
+    scrollOffsetRef.current = nextOffset;
+
+    const contentHeight = Math.max(0, event.nativeEvent.contentSize?.height || 0);
+    const viewportHeight = Math.max(0, event.nativeEvent.layoutMeasurement?.height || 0);
+    const distanceToBottom = Math.max(0, contentHeight - viewportHeight - nextOffset);
+    shouldStickToBottomRef.current = distanceToBottom <= NEW_MESSAGES_BOTTOM_THRESHOLD;
+
+    if (shouldStickToBottomRef.current) {
+      setPendingNewMessageIds([]);
+    }
   };
   const scrollToLatestMessage = (animated = true) => {
     requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated });
     });
   };
+  const handleJumpToLatestMessages = () => {
+    shouldStickToBottomRef.current = true;
+    setPendingNewMessageIds([]);
+    scrollToLatestMessage(true);
+  };
+  const handleViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: Array<ViewToken<MessageListItem>> }) => {
+      const nextVisibleIds = viewableItems
+        .map((token) => token.item)
+        .filter((item): item is Extract<MessageListItem, { type: "message" }> => item?.type === "message")
+        .map((item) => item.message.id)
+        .filter(Boolean);
 
-  const handleSend = async () => {
-    const content = draft.trim();
-    if (!content || isSending || isComposerDisabled) {
+      setVisibleMessageIds((previous) => {
+        if (
+          previous.length === nextVisibleIds.length &&
+          previous.every((value, index) => value === nextVisibleIds[index])
+        ) {
+          return previous;
+        }
+        return nextVisibleIds;
+      });
+    },
+  ).current;
+  const animateAccessoryHeight = useCallback(
+    (toValue: number, duration = 220) => {
+      accessoryHeightAnim.stopAnimation();
+      Animated.timing(accessoryHeightAnim, {
+        toValue,
+        duration,
+        useNativeDriver: false,
+      }).start();
+    },
+    [accessoryHeightAnim],
+  );
+  const getStickerPickerHeight = useCallback(() => {
+    const rememberedKeyboardHeight = Math.max(0, lastKeyboardInsetRef.current || 0);
+    if (rememberedKeyboardHeight > 0) {
+      return rememberedKeyboardHeight;
+    }
+
+    const estimatedKeyboardHeight = Math.round(
+      screenHeight * (Platform.OS === "ios" ? 0.42 : 0.38),
+    );
+    return Math.max(DEFAULT_STICKER_PICKER_HEIGHT, estimatedKeyboardHeight);
+  }, [screenHeight]);
+  const beginClosedToKeyboardTransition = useCallback(() => {
+    if (
+      Platform.OS !== "android" ||
+      isWeb ||
+      keyboardInset > 0 ||
+      stickerPickerVisible ||
+      stickerToKeyboardTransition
+    ) {
+      return;
+    }
+
+    setClosedToKeyboardTransition(true);
+    animateAccessoryHeight(getStickerPickerHeight(), 140);
+  }, [
+    animateAccessoryHeight,
+    getStickerPickerHeight,
+    isWeb,
+    keyboardInset,
+    stickerPickerVisible,
+    stickerToKeyboardTransition,
+  ]);
+  const hideStickerPicker = useCallback(
+    (focusInput = false) => {
+      setStickerPickerVisible(false);
+      setComposerSoftInputEnabled(true);
+
+      if (isWeb) {
+        setStickerToKeyboardTransition(false);
+        setClosedToKeyboardTransition(false);
+        animateAccessoryHeight(0, 120);
+        if (focusInput) {
+          requestAnimationFrame(() => {
+            composerInputRef.current?.focus();
+          });
+        }
+        return;
+      }
+
+      if (Platform.OS === "android" && focusInput) {
+        setStickerToKeyboardTransition(false);
+        setClosedToKeyboardTransition(false);
+        animateAccessoryHeight(0, 120);
+        requestAnimationFrame(() => {
+          composerInputRef.current?.blur();
+          composerInputRef.current?.focus();
+        });
+        return;
+      }
+
+      if (focusInput) {
+        setStickerToKeyboardTransition(true);
+        requestAnimationFrame(() => {
+          composerInputRef.current?.blur();
+          composerInputRef.current?.focus();
+        });
+        return;
+      }
+
+      setStickerToKeyboardTransition(false);
+      setClosedToKeyboardTransition(false);
+      if (keyboardInset <= 0) {
+        animateAccessoryHeight(0);
+      }
+    },
+    [animateAccessoryHeight, isWeb, keyboardInset],
+  );
+  const openStickerPicker = useCallback(() => {
+    const nextHeight = getStickerPickerHeight();
+    setStickerToKeyboardTransition(false);
+    setClosedToKeyboardTransition(false);
+    setStickerPickerVisible(true);
+    setComposerSoftInputEnabled(false);
+    composerFocusedRef.current = false;
+    composerInputRef.current?.blur();
+    animateAccessoryHeight(nextHeight);
+    Keyboard.dismiss();
+    scrollToLatestMessage(false);
+  }, [animateAccessoryHeight, getStickerPickerHeight, scrollToLatestMessage]);
+  const toggleStickerPicker = useCallback(() => {
+    if (stickerPickerVisible) {
+      hideStickerPicker(true);
+      return;
+    }
+
+    openStickerPicker();
+  }, [hideStickerPicker, openStickerPicker, stickerPickerVisible]);
+
+  const handleSendContent = async (content: string) => {
+    const trimmedContent = content.trim();
+    if (!trimmedContent || isSending || isComposerDisabled) {
       return;
     }
 
@@ -1191,7 +1468,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
     if (editingMessageId) {
       editMutation.mutate(
-        { messageId: editingMessageId, content },
+        { messageId: editingMessageId, content: trimmedContent },
         {
           onSuccess: () => {
             setDraft("");
@@ -1213,7 +1490,7 @@ export function ChatScreen({ navigation, route }: Props) {
           }
         : null;
     const optimisticMessage = createOptimisticMessage({
-      content,
+      content: trimmedContent,
       replyToMessage,
       currentUser: user,
     });
@@ -1221,12 +1498,30 @@ export function ChatScreen({ navigation, route }: Props) {
     setDraft("");
     setReplyingToId(null);
     sendMutation.mutate({
-      content,
+      content: trimmedContent,
       replayToId: replyingToId,
       optimisticMessage,
     });
     scrollToLatestMessage(true);
   };
+
+  const handleSend = async () => {
+    await handleSendContent(draft);
+  };
+  const handleAttachmentPress = async () => {
+    await Haptics.selectionAsync();
+    Alert.alert("Rasm yuborish", "Bu funksiya tez orada qo'shiladi.");
+  };
+  const handleVoiceMessagePress = async () => {
+    await Haptics.selectionAsync();
+    Alert.alert("Ovozli xabar", "Ovozli xabar yuborish yaqinda qo'shiladi.");
+  };
+  const handleStickerPress = async (sticker: string) => {
+    await handleSendContent(sticker);
+  };
+  const hasComposerText = Boolean(draft.trim());
+  const isComposerInputEditable = !isComposerDisabled && composerSoftInputEnabled;
+  const isStickerPanelActive = stickerPickerVisible;
 
   const openInfoPage = (targetUser?: User | null) => {
     if (!currentChat) return;
@@ -1292,7 +1587,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
         navigation.push("ChatRoom", {
           chatId: getEntityId(privateChat),
-          title: getChatTitle(privateChat, currentUserId),
+          title: getChatTitle(privateChat, currentUserId, user),
           isGroup: false,
         });
       } catch (error) {
@@ -1302,7 +1597,7 @@ export function ChatScreen({ navigation, route }: Props) {
         );
       }
     },
-    [currentUserId, navigation, queryClient],
+    [currentUserId, navigation, queryClient, user],
   );
 
   const handleBackToGroupInfo = () => {
@@ -1461,6 +1756,11 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const handleStartVideoCall = async () => {
     if ((!currentChat?._id && !currentChat?.id) || !otherMember) {
+      return;
+    }
+
+    if (!isOtherMemberOnline) {
+      Alert.alert("Private meet", "Qo'ng'iroq qilish uchun foydalanuvchi online bo'lishini kuting.");
       return;
     }
 
@@ -1643,6 +1943,53 @@ export function ChatScreen({ navigation, route }: Props) {
     });
   };
 
+  const handleScrollToRepliedMessage = useCallback(
+    async (targetMessageId: string) => {
+      if (!targetMessageId) {
+        return;
+      }
+
+      const findTargetIndex = () =>
+        messageItemsRef.current.findIndex(
+          (item) => item.type === "message" && item.message.id === targetMessageId,
+        );
+
+      let targetIndex = findTargetIndex();
+      let attempts = 0;
+
+      while (targetIndex === -1 && hasNextPageRef.current && attempts < 8) {
+        await messagesQuery.fetchNextPage();
+        attempts += 1;
+        targetIndex = findTargetIndex();
+      }
+
+      if (targetIndex === -1) {
+        return;
+      }
+
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToIndex({
+          index: targetIndex,
+          animated: true,
+          viewPosition: 0.35,
+        });
+      });
+
+      setHighlightedMessageId(targetMessageId);
+      setHighlightPulseKey((current) => current + 1);
+      if (messageHighlightTimeoutRef.current) {
+        clearTimeout(messageHighlightTimeoutRef.current);
+      }
+      messageHighlightTimeoutRef.current = setTimeout(() => {
+        setHighlightedMessageId((current) =>
+          current === targetMessageId ? null : current,
+        );
+        messageHighlightTimeoutRef.current = null;
+      }, 1800);
+    },
+    [messagesQuery],
+  );
+
   const handleEditMessage = () => {
     if (!selectedMessage || selectedMessage.type !== "message") return;
     closeMessageMenu();
@@ -1723,6 +2070,83 @@ export function ChatScreen({ navigation, route }: Props) {
   const canReplySelectedMessage = Boolean(
     selectedMessage?.type === "message" && !selectedMessage.message.isDeleted,
   );
+  const messageMenuActionCount = [
+    canReplySelectedMessage,
+    canCopySelectedMessage,
+    canEditSelectedMessage,
+    canDeleteSelectedMessage,
+  ].filter(Boolean).length;
+  const messageMenuPosition = useMemo(() => {
+    if (!selectedMessageLayout || messageMenuActionCount === 0) {
+      return null;
+    }
+
+    const overlayHeight = screenHeight - insets.top - insets.bottom;
+    const menuHeight =
+      MESSAGE_MENU_ACTIONS_PADDING * 2 +
+      messageMenuActionCount * MESSAGE_MENU_ITEM_HEIGHT +
+      Math.max(0, messageMenuActionCount - 1) * MESSAGE_MENU_ACTION_GAP;
+    const maxPreviewTop =
+      overlayHeight -
+      MESSAGE_MENU_SCREEN_PADDING -
+      menuHeight -
+      MESSAGE_MENU_GAP -
+      selectedMessageLayout.height;
+    const previewTop = Math.max(
+      MESSAGE_MENU_SCREEN_PADDING,
+      Math.min(selectedMessageLayout.y, maxPreviewTop),
+    );
+    const idealLeft = selectedMessageIsMine
+      ? selectedMessageLayout.x + selectedMessageLayout.width - MESSAGE_MENU_WIDTH
+      : selectedMessageLayout.x;
+    const actionsLeft = Math.max(
+      MESSAGE_MENU_SCREEN_PADDING,
+      Math.min(screenWidth - MESSAGE_MENU_WIDTH - MESSAGE_MENU_SCREEN_PADDING, idealLeft),
+    );
+
+    return {
+      previewTop,
+      actionsTop: previewTop + selectedMessageLayout.height + MESSAGE_MENU_GAP,
+      actionsLeft,
+    };
+  }, [
+    insets.bottom,
+    insets.top,
+    messageMenuActionCount,
+    screenHeight,
+    screenWidth,
+    selectedMessageIsMine,
+    selectedMessageLayout,
+  ]);
+  const messageMenuPreviewTranslateTo =
+    selectedMessageLayout && messageMenuPosition
+      ? messageMenuPosition.previewTop - selectedMessageLayout.y
+      : 0;
+  const messageMenuBubbleLift = messageMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, messageMenuPreviewTranslateTo],
+    extrapolate: "clamp",
+  });
+  const messageMenuBubbleScale = messageMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+    extrapolate: "clamp",
+  });
+  const messageMenuActionsTranslateY = messageMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [10, 0],
+    extrapolate: "clamp",
+  });
+  const messageMenuActionsScale = messageMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+    extrapolate: "clamp",
+  });
+  const messageMenuOverlayOpacity = messageMenuAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
   const typingMembers = useMemo(
     () =>
       typingUserIds
@@ -1786,8 +2210,8 @@ export function ChatScreen({ navigation, route }: Props) {
       return typingSubtitle;
     }
 
-    if (currentChat?.isGroup) {
-      const membersCount = currentChat.members?.length || 0;
+    if (isGroupChat) {
+      const membersCount = currentChat?.members?.length || 0;
       return groupOnlineCount > 0
         ? `${membersCount} a'zo, ${groupOnlineCount} online`
         : `${membersCount} a'zo`;
@@ -1807,6 +2231,7 @@ export function ChatScreen({ navigation, route }: Props) {
     currentChat?.isSavedMessages,
     currentChat?.members,
     groupOnlineCount,
+    isGroupChat,
     isOtherMemberOnline,
     otherMember?.isOfficialProfile,
     otherMember?.officialBadgeLabel,
@@ -1814,7 +2239,7 @@ export function ChatScreen({ navigation, route }: Props) {
   ]);
   const showHeaderStatusDot = Boolean(
     !typingSubtitle &&
-      !currentChat?.isGroup &&
+      !isGroupChat &&
       !currentChat?.isSavedMessages &&
       !otherMember?.isOfficialProfile,
   );
@@ -1861,6 +2286,42 @@ export function ChatScreen({ navigation, route }: Props) {
 
     return drawerStatusLabel;
   }, [currentChat?.isGroup, drawerStatusLabel, drawerUser]);
+  const chatPushNotificationsEnabled = currentChat?.pushNotificationsEnabled !== false;
+  const showChatPushNotificationsToggle = Boolean(
+    currentChat &&
+      !currentChat.isSavedMessages &&
+      (!drawerUser || !currentChat.isGroup),
+  );
+  const handleToggleChatPushNotifications = useCallback(
+    async (nextEnabled: boolean) => {
+      if (chatPushNotificationsMutation.isPending || !currentChat) {
+        return;
+      }
+
+      const chatId = getEntityId(currentChat);
+      if (!chatId) {
+        return;
+      }
+
+      if (nextEnabled) {
+        const permission = await Notifications.getPermissionsAsync();
+        if (permission.status !== "granted") {
+          await bootstrapPushNotifications().catch(() => null);
+          const refreshedPermission = await Notifications.getPermissionsAsync();
+          if (refreshedPermission.status !== "granted") {
+            Alert.alert(
+              "Push ruxsati kerak",
+              "Bu chat uchun bildirishnomalarni yoqishdan oldin push notification ruxsatini bering.",
+            );
+            return;
+          }
+        }
+      }
+
+      chatPushNotificationsMutation.mutate({ chatId, enabled: nextEnabled });
+    },
+    [chatPushNotificationsMutation, currentChat],
+  );
 
   useEffect(() => {
     return () => {
@@ -1893,31 +2354,79 @@ export function ChatScreen({ navigation, route }: Props) {
   }, [menuOpen]);
 
   useEffect(() => {
+    if (isWeb) {
+      return;
+    }
+
     if (Platform.OS === "ios") {
       const frameChangeSubscription = Keyboard.addListener(
         "keyboardWillChangeFrame",
         (event) => {
           const overlap = Math.max(0, screenHeight - event.endCoordinates.screenY);
-          setKeyboardInset(Math.max(0, overlap - insets.bottom));
-          if (composerFocusedRef.current) {
-            requestAnimationFrame(() => {
-              scrollToLatestMessage(false);
-            });
+          const nextInset = Math.max(0, overlap);
+          const duration = typeof event.duration === "number" ? event.duration : 220;
+          Keyboard.scheduleLayoutAnimation(event);
+          setKeyboardInset(nextInset);
+          setKeyboardLayoutOffset(nextInset);
+          if (nextInset > 0) {
+            lastKeyboardInsetRef.current = nextInset;
+            setClosedToKeyboardTransition(false);
+          }
+          if (stickerToKeyboardTransition) {
+            animateAccessoryHeight(0, duration);
+            return;
+          }
+          if (stickerPickerVisible && nextInset <= 0) {
+            animateAccessoryHeight(getStickerPickerHeight(), duration);
+          } else {
+            animateAccessoryHeight(0, duration);
           }
         },
       );
+      const showSubscription = Keyboard.addListener("keyboardDidShow", (event) => {
+        const nextInset = Math.max(0, event.endCoordinates?.height || 0);
+        setKeyboardInset(nextInset);
+        setKeyboardLayoutOffset(nextInset);
+        if (nextInset > 0) {
+          lastKeyboardInsetRef.current = nextInset;
+        }
+        setStickerToKeyboardTransition(false);
+        setClosedToKeyboardTransition(false);
+        animateAccessoryHeight(0, 120);
+      });
       const hideSubscription = Keyboard.addListener("keyboardWillHide", () => {
         setKeyboardInset(0);
+        setKeyboardLayoutOffset(0);
+        if (!stickerPickerVisible && !stickerToKeyboardTransition) {
+          setStickerToKeyboardTransition(false);
+        }
+        if (!composerFocusedRef.current) {
+          setClosedToKeyboardTransition(false);
+        }
+        animateAccessoryHeight(
+          stickerPickerVisible || stickerToKeyboardTransition
+            ? getStickerPickerHeight()
+            : 0,
+        );
       });
 
       return () => {
         frameChangeSubscription.remove();
+        showSubscription.remove();
         hideSubscription.remove();
       };
     }
 
     const showSubscription = Keyboard.addListener("keyboardDidShow", (event) => {
-      setKeyboardInset(Math.max(0, event.endCoordinates?.height || 0));
+      const nextInset = Math.max(0, event.endCoordinates?.height || 0);
+      setKeyboardInset(nextInset);
+      setKeyboardLayoutOffset(0);
+      if (nextInset > 0) {
+        lastKeyboardInsetRef.current = nextInset;
+      }
+      setStickerToKeyboardTransition(false);
+      setClosedToKeyboardTransition(false);
+      animateAccessoryHeight(0, 0);
       if (composerFocusedRef.current) {
         requestAnimationFrame(() => {
           scrollToLatestMessage(false);
@@ -1926,13 +2435,35 @@ export function ChatScreen({ navigation, route }: Props) {
     });
     const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
       setKeyboardInset(0);
+      setKeyboardLayoutOffset(0);
+      if (!stickerPickerVisible && !stickerToKeyboardTransition) {
+        setStickerToKeyboardTransition(false);
+      }
+      if (!composerFocusedRef.current) {
+        setClosedToKeyboardTransition(false);
+      }
+      animateAccessoryHeight(
+        stickerPickerVisible || stickerToKeyboardTransition
+          ? getStickerPickerHeight()
+          : 0,
+        180,
+      );
     });
 
     return () => {
       showSubscription.remove();
       hideSubscription.remove();
     };
-  }, [insets.bottom, screenHeight]);
+  }, [
+    animateAccessoryHeight,
+    getStickerPickerHeight,
+    insets.bottom,
+    isWeb,
+    screenHeight,
+    scrollToLatestMessage,
+    stickerToKeyboardTransition,
+    stickerPickerVisible,
+  ]);
 
   useEffect(() => {
     const subscriptions = [
@@ -2188,31 +2719,149 @@ export function ChatScreen({ navigation, route }: Props) {
   }, [currentUserId, queryClient, route.params.chatId]);
 
   useEffect(() => {
-    const incomingMessageIds = (messagesQuery.data?.pages
-      ?.flatMap((page) => page.data || []) || [])
+    const visibleIncomingMessageIds = flatMessages
       .filter((message) => {
+        const messageId = getEntityId(message);
         const senderId =
           typeof message.senderId === "string"
             ? message.senderId
             : getEntityId(message.senderId as User);
-        return senderId && senderId !== currentUserId && !message.isDeleted;
+        const readBy = normalizeReadByIds(message.readBy || []);
+
+        return (
+          Boolean(messageId) &&
+          visibleMessageIds.includes(String(messageId)) &&
+          senderId &&
+          senderId !== currentUserId &&
+          !message.isDeleted &&
+          !readBy.includes(String(currentUserId || ""))
+        );
       })
       .map((message) => getEntityId(message))
       .filter(Boolean);
 
-    if (!incomingMessageIds.length) {
+    if (!visibleIncomingMessageIds.length) {
       return;
     }
 
-    realtime.emitReadMessages(route.params.chatId, incomingMessageIds);
-  }, [currentUserId, messagesQuery.data?.pages, route.params.chatId]);
+    queryClient.setQueryData<MessagesInfiniteData>(["messages", route.params.chatId], (previous) =>
+      patchMessagesPages(previous, (pages) =>
+        pages.map((page) => ({
+          ...page,
+          data: (page.data || []).map((message) => {
+            const messageId = getMessageIdentity(message);
+            if (!visibleIncomingMessageIds.includes(messageId)) {
+              return message;
+            }
+
+            const nextReadBy = normalizeReadByIds(message.readBy || []);
+            if (nextReadBy.includes(String(currentUserId || ""))) {
+              return message;
+            }
+
+            return {
+              ...message,
+              readBy: [...nextReadBy, String(currentUserId || "")],
+              deliveryStatus:
+                getMessageDeliveryStatus(message) === "failed" ? "failed" : "read",
+            };
+          }),
+        })),
+      ),
+    );
+    realtime.emitReadMessages(route.params.chatId, visibleIncomingMessageIds);
+  }, [currentUserId, flatMessages, queryClient, route.params.chatId, visibleMessageIds]);
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
     setMessageListVisible(false);
     scrollOffsetRef.current = 0;
     scrollRestorePendingRef.current = null;
+    shouldStickToBottomRef.current = true;
+    previousLastMessageIdRef.current = null;
+    previousMessageCountRef.current = 0;
+    setPendingNewMessageIds([]);
+    setVisibleMessageIds([]);
   }, [route.params.chatId]);
+
+  useEffect(() => {
+    const lastMessage = flatMessages[flatMessages.length - 1];
+    const lastMessageId = getMessageIdentity(lastMessage);
+    const previousLastMessageId = previousLastMessageIdRef.current;
+    const previousMessageCount = previousMessageCountRef.current;
+
+    if (!lastMessageId) {
+      previousLastMessageIdRef.current = null;
+      previousMessageCountRef.current = flatMessages.length;
+      return;
+    }
+
+    if (!previousLastMessageId) {
+      previousLastMessageIdRef.current = lastMessageId;
+      previousMessageCountRef.current = flatMessages.length;
+      return;
+    }
+
+    const appendedAtBottom =
+      flatMessages.length >= previousMessageCount &&
+      String(lastMessageId) !== String(previousLastMessageId);
+
+    if (appendedAtBottom) {
+      const appendedMessages = flatMessages.slice(previousMessageCount).filter((message) => {
+        const senderId = String(getNormalizedSenderId(message.senderId) || "");
+
+        return (
+          senderId &&
+          senderId !== currentUserId &&
+          getMessageDeliveryStatus(message) !== "failed"
+        );
+      });
+
+      if (appendedMessages.length > 0) {
+        if (shouldStickToBottomRef.current) {
+          setPendingNewMessageIds([]);
+        } else {
+          setPendingNewMessageIds((previous) => {
+            const nextIds = appendedMessages
+              .map((message) => getMessageIdentity(message))
+              .filter(Boolean);
+            return Array.from(new Set([...previous, ...nextIds]));
+          });
+        }
+      }
+    }
+
+    previousLastMessageIdRef.current = lastMessageId;
+    previousMessageCountRef.current = flatMessages.length;
+  }, [currentUserId, flatMessages]);
+
+  useEffect(() => {
+    if (!pendingNewMessageIds.length) {
+      return;
+    }
+
+    const unreadMessageIds = new Set(
+      flatMessages
+        .filter((message) => {
+          const senderId = String(getNormalizedSenderId(message.senderId) || "");
+          const readBy = normalizeReadByIds(message.readBy || []);
+
+          return (
+            senderId &&
+            senderId !== currentUserId &&
+            !readBy.includes(String(currentUserId || "")) &&
+            getMessageDeliveryStatus(message) !== "failed"
+          );
+        })
+        .map((message) => String(getMessageIdentity(message)))
+        .filter(Boolean),
+    );
+
+    setPendingNewMessageIds((previous) => {
+      const next = previous.filter((id) => unreadMessageIds.has(String(id)));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [currentUserId, flatMessages, pendingNewMessageIds.length]);
 
   useEffect(() => {
     return () => {
@@ -2255,14 +2904,9 @@ export function ChatScreen({ navigation, route }: Props) {
   }, [draft, route.params.chatId]);
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
+    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <Animated.View style={styles.container}>
-        <View
-          style={[
-            styles.container,
-            keyboardInset > 0 ? { paddingBottom: keyboardInset } : null,
-          ]}
-        >
+        <View style={styles.container}>
         <View style={styles.header}>
           <Pressable
             style={styles.headerButton}
@@ -2286,11 +2930,11 @@ export function ChatScreen({ navigation, route }: Props) {
               uri={chatAvatarUri}
               size={40}
               isSavedMessages={Boolean(currentChat?.isSavedMessages)}
-              isGroup={Boolean(currentChat?.isGroup)}
+              isGroup={isGroupChat}
               shape="circle"
             />
             <View style={styles.headerTextWrap}>
-              {otherMember && !currentChat?.isGroup ? (
+              {otherMember && !isGroupChat ? (
                 <UserDisplayName
                   user={otherMember}
                   fallback={getDirectChatUserLabel(otherMember)}
@@ -2322,9 +2966,9 @@ export function ChatScreen({ navigation, route }: Props) {
           </Pressable>
 
           <View style={styles.headerActions}>
-            {!currentChat?.isGroup && !currentChat?.isSavedMessages ? (
+            {!isGroupChat && !currentChat?.isSavedMessages ? (
               <Pressable style={styles.headerButton} onPress={handleStartVideoCall}>
-                <Video size={18} color={Colors.mutedText} />
+                <Phone size={18} color={Colors.mutedText} />
               </Pressable>
             ) : null}
 
@@ -2340,102 +2984,162 @@ export function ChatScreen({ navigation, route }: Props) {
           </View>
         </View>
 
-        {!chatCacheHydrated || !messagesCacheHydrated || (messagesQuery.isLoading && !hasMessagesSnapshot) ? (
-          <View style={styles.centerState}>
-            <ActivityIndicator color={Colors.primary} />
-            <Text style={styles.helperText}>Xabarlar yuklanmoqda...</Text>
-          </View>
-        ) : messagesQuery.isError && !hasMessagesSnapshot ? (
-          <View style={styles.centerState}>
-            <Ionicons name="alert-circle-outline" size={28} color={Colors.warning} />
-            <Text style={styles.helperText}>
-              {messagesQuery.error instanceof Error
-                ? messagesQuery.error.message
-                : "Xabarlarni olishda xatolik yuz berdi."}
-            </Text>
-          </View>
-        ) : (
-          <FlashList
-            ref={listRef}
-            data={messageItems}
-            keyExtractor={(item) => item.id}
-            initialScrollIndex={initialMessageIndex}
-            drawDistance={280}
-            contentContainerStyle={styles.messagesContent}
-            style={!messageListVisible ? styles.messagesListHidden : undefined}
-            onLoad={() => {
-              if (initialScrollDoneRef.current) {
-                return;
-              }
-
-              initialScrollDoneRef.current = true;
-              requestAnimationFrame(() => {
-                const nextScrollOffset = scrollRestorePendingRef.current;
-                if (nextScrollOffset !== null) {
-                  scrollOffsetRef.current = nextScrollOffset;
-                  listRef.current?.scrollToOffset({
-                    offset: nextScrollOffset,
-                    animated: false,
-                  });
-                } else {
-                  listRef.current?.scrollToEnd({ animated: false });
+        <Animated.View
+          style={[
+            styles.chatBody,
+          ]}
+        >
+        <Animated.View
+          style={[
+            styles.messagesViewport,
+            useAnimatedKeyboardOffset
+              ? {
+                  marginBottom:
+                    keyboardLayoutOffset > 0 ? keyboardLayoutOffset : accessoryHeightAnim,
                 }
-                scrollRestorePendingRef.current = null;
+              : null,
+          ]}
+        >
+          {messagesQuery.isFetchingNextPage ? (
+            <View style={styles.historyLoader}>
+              <ActivityIndicator size="small" color={Colors.mutedText} />
+              <Text style={styles.historyLoaderText}>Oldingi xabarlar yuklanmoqda...</Text>
+            </View>
+          ) : null}
+          {!chatCacheHydrated || !messagesCacheHydrated || (messagesQuery.isLoading && !hasMessagesSnapshot) ? (
+            <View style={styles.centerState}>
+              <ActivityIndicator color={Colors.primary} />
+              <Text style={styles.helperText}>Xabarlar yuklanmoqda...</Text>
+            </View>
+          ) : messagesQuery.isError && !hasMessagesSnapshot ? (
+            <View style={styles.centerState}>
+              <Ionicons name="alert-circle-outline" size={28} color={Colors.warning} />
+              <Text style={styles.helperText}>
+                {messagesQuery.error instanceof Error
+                  ? messagesQuery.error.message
+                  : "Xabarlarni olishda xatolik yuz berdi."}
+              </Text>
+            </View>
+          ) : (
+            <FlashList
+              ref={listRef}
+              data={messageItems}
+              keyExtractor={(item) => item.id}
+              initialScrollIndex={initialMessageIndex}
+              drawDistance={280}
+              stickyHeaderIndices={stickyDateHeaderIndices}
+              contentContainerStyle={[
+                styles.messagesContent,
+                { paddingBottom: composerHeight + 20 },
+              ]}
+              style={!messageListVisible ? styles.messagesListHidden : undefined}
+              onLoad={() => {
+                if (initialScrollDoneRef.current) {
+                  return;
+                }
 
+                initialScrollDoneRef.current = true;
                 requestAnimationFrame(() => {
-                  setMessageListVisible(true);
+                  const nextScrollOffset = scrollRestorePendingRef.current;
+                  if (nextScrollOffset !== null) {
+                    scrollOffsetRef.current = nextScrollOffset;
+                    shouldStickToBottomRef.current = nextScrollOffset <= NEW_MESSAGES_BOTTOM_THRESHOLD;
+                    listRef.current?.scrollToOffset({
+                      offset: nextScrollOffset,
+                      animated: false,
+                    });
+                  } else {
+                    shouldStickToBottomRef.current = true;
+                    listRef.current?.scrollToEnd({ animated: false });
+                  }
+                  scrollRestorePendingRef.current = null;
+
+                  requestAnimationFrame(() => {
+                    setMessageListVisible(true);
+                  });
                 });
-              });
-            }}
-            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-            keyboardShouldPersistTaps="handled"
-            onScroll={handleMessagesScroll}
-            onScrollEndDrag={scheduleScrollOffsetPersist}
-            onMomentumScrollEnd={scheduleScrollOffsetPersist}
-            scrollEventThrottle={16}
-            onStartReached={() => {
-              if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
-                void messagesQuery.fetchNextPage();
-              }
-            }}
-            onStartReachedThreshold={0.15}
-            ListHeaderComponent={
-              messagesQuery.isFetchingNextPage ? (
-                <View style={styles.historyLoader}>
-                  <ActivityIndicator size="small" color={Colors.mutedText} />
-                  <Text style={styles.historyLoaderText}>Oldingi xabarlar yuklanmoqda...</Text>
-                </View>
-              ) : null
-            }
-            renderItem={({ item }) => {
-              if (item.type === "date") {
+              }}
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              keyboardShouldPersistTaps="handled"
+              onScroll={handleMessagesScroll}
+              onScrollEndDrag={scheduleScrollOffsetPersist}
+              onMomentumScrollEnd={scheduleScrollOffsetPersist}
+              onViewableItemsChanged={handleViewableItemsChanged}
+              viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
+              scrollEventThrottle={16}
+              onStartReached={() => {
+                if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
+                  void messagesQuery.fetchNextPage();
+                }
+              }}
+              onStartReachedThreshold={0.15}
+              renderItem={({ item }) => {
+                if (item.type === "date") {
+                  return (
+                    <View style={styles.dateDivider}>
+                      <Text style={styles.dateDividerText}>{item.label}</Text>
+                    </View>
+                  );
+                }
+
+                const isMine = item.message.senderId === currentUserId;
                 return (
-                  <View style={styles.dateDivider}>
-                    <Text style={styles.dateDividerText}>{item.label}</Text>
-                  </View>
+                  <ChatMessageRow
+                    message={item.message}
+                    isMine={isMine}
+                    isGroup={Boolean(currentChat?.isGroup)}
+                    onOpenMenu={handleMessageMenu}
+                    onPressMention={handleMentionPress}
+                    onPressReplyPreview={handleScrollToRepliedMessage}
+                    onSwipeReply={handleSwipeReply}
+                    highlightPulseKey={
+                      highlightedMessageId === item.message.id ? highlightPulseKey : 0
+                    }
+                    hidden={messageMenuMounted && messageMenuOpen && selectedMessageId === item.message.id}
+                  />
                 );
-              }
+              }}
+            />
+          )}
 
-              const isMine = item.message.senderId === currentUserId;
-              return (
-                <ChatMessageRow
-                  message={item.message}
-                  isMine={isMine}
-                  isGroup={Boolean(currentChat?.isGroup)}
-                  onOpenMenu={handleMessageMenu}
-                  onPressMention={handleMentionPress}
-                  onSwipeReply={handleSwipeReply}
-                  hidden={messageMenuMounted && messageMenuOpen && selectedMessageId === item.message.id}
-                />
-              );
-            }}
-          />
-        )}
+          {pendingNewMessageIds.length > 0 ? (
+            <Pressable style={styles.newMessagesButton} onPress={handleJumpToLatestMessages}>
+              <ChevronDown size={18} color="#fff" />
+              <View style={styles.newMessagesChip}>
+                <Text style={styles.newMessagesChipText}>
+                  {pendingNewMessageIds.length > 99 ? "99+" : pendingNewMessageIds.length}
+                </Text>
+              </View>
+            </Pressable>
+          ) : null}
+        </Animated.View>
 
-        <View
+        <Animated.View
+          onLayout={(event) => {
+            const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
+            if (nextHeight > 0 && nextHeight !== composerHeight) {
+              setComposerHeight(nextHeight);
+            }
+          }}
           style={[
             styles.composerShell,
-            { paddingBottom: Math.max(insets.bottom, 12) },
+            {
+              position: useKeyboardAvoidingBody ? "relative" : "absolute",
+              left: useKeyboardAvoidingBody ? undefined : 0,
+              right: useKeyboardAvoidingBody ? undefined : 0,
+              bottom:
+                useAnimatedKeyboardOffset
+                  ? keyboardLayoutOffset > 0
+                    ? keyboardLayoutOffset
+                    : accessoryHeightAnim
+                  : accessoryHeightAnim,
+              paddingBottom:
+                keyboardInset > 0 ||
+                stickerPickerVisible ||
+                stickerToKeyboardTransition
+                  ? 12
+                  : Math.max(insets.bottom, 12),
+            },
           ]}
         >
           <View style={styles.composerStack}>
@@ -2460,68 +3164,168 @@ export function ChatScreen({ navigation, route }: Props) {
               </Pressable>
             ) : null}
 
-            <View style={styles.composerField}>
-              <View style={styles.composerSideLeft}>
-                <Pressable style={styles.iconButton} disabled={isComposerDisabled}>
-                  <Ionicons name="add" size={20} color={Colors.mutedText} />
-                </Pressable>
+            <View style={styles.composerRow}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.composerActionButton,
+                  pressed && styles.composerActionButtonPressed,
+                  isComposerDisabled && styles.composerActionButtonDisabled,
+                ]}
+                disabled={isComposerDisabled}
+                onPress={handleAttachmentPress}
+              >
+                <Ionicons name="image-outline" size={20} color={Colors.mutedText} />
+              </Pressable>
+
+              <View style={styles.composerField}>
+                <TextInput
+                  ref={composerInputRef}
+                  style={styles.composerInput}
+                  value={draft}
+                  onChangeText={setDraft}
+                  placeholder={
+                    isComposerDisabled
+                      ? "Suhbat yuklanmoqda..."
+                      : editingMessageId
+                        ? "Xabarni tahrirlash..."
+                        : "Xabar..."
+                  }
+                  placeholderTextColor={Colors.mutedText}
+                  multiline
+                  maxLength={3000}
+                  editable={isComposerInputEditable}
+                  showSoftInputOnFocus={composerSoftInputEnabled}
+                  caretHidden={!composerSoftInputEnabled}
+                  onFocus={() => {
+                    if (!composerSoftInputEnabled) {
+                      composerInputRef.current?.blur();
+                      return;
+                    }
+                    composerFocusedRef.current = true;
+                    shouldStickToBottomRef.current = true;
+                    if (stickerPickerVisible) {
+                      if (isWeb) {
+                        setStickerPickerVisible(false);
+                        setStickerToKeyboardTransition(false);
+                        setClosedToKeyboardTransition(false);
+                        animateAccessoryHeight(0, 120);
+                      } else if (Platform.OS === "android") {
+                        setStickerPickerVisible(false);
+                        setStickerToKeyboardTransition(false);
+                        setClosedToKeyboardTransition(false);
+                        animateAccessoryHeight(0, 120);
+                      } else {
+                        setStickerPickerVisible(false);
+                        setStickerToKeyboardTransition(true);
+                      }
+                    } else {
+                      beginClosedToKeyboardTransition();
+                    }
+                  }}
+                  onBlur={() => {
+                    composerFocusedRef.current = false;
+                    if (!stickerPickerVisible && keyboardInset <= 0) {
+                      setClosedToKeyboardTransition(false);
+                      animateAccessoryHeight(0, 160);
+                    }
+                  }}
+                />
+
+                <View style={styles.composerSideRight}>
+                  <Pressable
+                    style={styles.iconButton}
+                    disabled={isComposerDisabled}
+                    onPress={toggleStickerPicker}
+                  >
+                    <Ionicons
+                      name={isStickerPanelActive ? "keypad-outline" : "happy-outline"}
+                      size={20}
+                      color={Colors.mutedText}
+                    />
+                  </Pressable>
+
+                  {hasComposerText || editingMessageId ? (
+                    <Pressable
+                      onPress={handleSend}
+                      style={({ pressed }) => [
+                        styles.composerInlineSendButton,
+                        pressed && styles.composerInlineSendButtonPressed,
+                        ((!hasComposerText && Boolean(editingMessageId)) ||
+                          isSending ||
+                          isComposerDisabled) &&
+                          styles.composerInlineSendButtonDisabled,
+                      ]}
+                      disabled={((!hasComposerText && Boolean(editingMessageId)) ||
+                        isSending ||
+                        isComposerDisabled)}
+                    >
+                      {isSending ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Ionicons
+                          name={editingMessageId ? "checkmark" : "send"}
+                          size={15}
+                          color="#fff"
+                        />
+                      )}
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
 
-              <TextInput
-                ref={composerInputRef}
-                style={styles.composerInput}
-                value={draft}
-                onChangeText={setDraft}
-                placeholder={
-                  isComposerDisabled
-                    ? "Suhbat yuklanmoqda..."
-                    : editingMessageId
-                      ? "Xabarni tahrirlash..."
-                      : "Xabar..."
-                }
-                placeholderTextColor={Colors.mutedText}
-                multiline
-                maxLength={3000}
-                editable={!isComposerDisabled}
-                onFocus={() => {
-                  composerFocusedRef.current = true;
-                  scrollToLatestMessage(true);
-                }}
-                onBlur={() => {
-                  composerFocusedRef.current = false;
-                }}
-              />
-
-              <View style={styles.composerSideRight}>
+              {!hasComposerText && !editingMessageId ? (
                 <Pressable
-                  onPress={handleSend}
+                  onPress={handleVoiceMessagePress}
                   style={({ pressed }) => [
                     styles.sendButton,
-                    !draft.trim() && styles.sendButtonHidden,
                     pressed && styles.sendButtonPressed,
-                    (!draft.trim() || isSending || isComposerDisabled) &&
-                      styles.sendButtonDisabled,
+                    (isSending || isComposerDisabled) && styles.sendButtonDisabled,
                   ]}
-                  disabled={!draft.trim() || isSending || isComposerDisabled}
+                  disabled={isSending || isComposerDisabled}
                 >
                   {isSending ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
-                    <Ionicons
-                      name={editingMessageId ? "checkmark" : "send"}
-                      size={16}
-                      color="#fff"
-                    />
+                    <Ionicons name="mic" size={18} color="#fff" />
                   )}
                 </Pressable>
-
-                <Pressable style={styles.iconButton} disabled={isComposerDisabled}>
-                  <Ionicons name="happy-outline" size={20} color={Colors.mutedText} />
-                </Pressable>
-              </View>
+              ) : null}
             </View>
           </View>
-        </View>
+        </Animated.View>
+        <Animated.View style={[styles.stickerPickerShell, { height: accessoryHeightAnim }]}>
+          {stickerPickerVisible ? (
+            <ScrollView
+              contentContainerStyle={[
+                styles.stickerPickerContent,
+                { paddingBottom: Math.max(insets.bottom, 16) },
+              ]}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {CHAT_EMOJI_SECTIONS.map((section) => (
+                <View key={section.label} style={styles.emojiSection}>
+                  <Text style={styles.emojiSectionLabel}>{section.label}</Text>
+                  <View style={styles.emojiGrid}>
+                    {section.emojis.map((emoji, index) => (
+                      <Pressable
+                        key={`${section.label}-${emoji}-${index}`}
+                        style={({ pressed }) => [
+                          styles.emojiButton,
+                          pressed && styles.emojiButtonPressed,
+                        ]}
+                        onPress={() => void handleStickerPress(emoji)}
+                      >
+                        <Text style={styles.emojiButtonText}>{emoji}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          ) : null}
+        </Animated.View>
+        </Animated.View>
         </View>
 
         {messageMenuMounted && selectedMessage?.type === "message" && selectedMessageLayout ? (
@@ -2570,15 +3374,18 @@ export function ChatScreen({ navigation, route }: Props) {
               </View>
             </Animated.View>
 
-            {messageMenuActionsTop !== null && messageMenuActionsLeft !== null ? (
+            {messageMenuPosition ? (
               <Animated.View
                 style={[
                   styles.messageMenuActionBar,
                   {
-                    top: messageMenuActionsTop,
-                    left: messageMenuActionsLeft,
+                    top: messageMenuPosition.actionsTop,
+                    left: messageMenuPosition.actionsLeft,
                     opacity: messageMenuOverlayOpacity,
-                    transform: [{ translateY: messageMenuBubbleLift }],
+                    transform: [
+                      { translateY: messageMenuActionsTranslateY },
+                      { scale: messageMenuActionsScale },
+                    ],
                   },
                 ]}
               >
@@ -2755,6 +3562,32 @@ export function ChatScreen({ navigation, route }: Props) {
 
                   {drawerUser ? (
                     <View style={styles.infoCard}>
+                      {showChatPushNotificationsToggle ? (
+                        <>
+                          <View style={styles.infoSwitchRow}>
+                            <View style={styles.infoSwitchCopy}>
+                              <Text style={styles.infoLabel}>BILDIRISHNOMALAR</Text>
+                              <Text style={styles.infoValue}>
+                                Bildirishnoma yuborilsin
+                              </Text>
+                            </View>
+                            <Switch
+                              value={chatPushNotificationsEnabled}
+                              onValueChange={(value) => {
+                                void handleToggleChatPushNotifications(value);
+                              }}
+                              disabled={chatPushNotificationsMutation.isPending}
+                              trackColor={{
+                                false: Colors.border,
+                                true: Colors.primary,
+                              }}
+                              thumbColor={Colors.background}
+                            />
+                          </View>
+                          <View style={styles.infoDivider} />
+                        </>
+                      ) : null}
+
                       {drawerUser.username ? (
                         <>
                           <View style={styles.infoItem}>
@@ -2803,6 +3636,34 @@ export function ChatScreen({ navigation, route }: Props) {
                   ) : (
                     <>
                       <View style={styles.infoCard}>
+                        {showChatPushNotificationsToggle ? (
+                          <>
+                            <View style={styles.infoSwitchRow}>
+                              <View style={styles.infoSwitchCopy}>
+                                <Text style={styles.infoLabel}>PUSH BILDIRISHNOMALARI</Text>
+                                <Text style={styles.infoValue}>
+                                  Shu guruhga yangi xabar kelsa bildirishnoma yuborilsin
+                                </Text>
+                              </View>
+                              <Switch
+                                value={chatPushNotificationsEnabled}
+                                onValueChange={(value) => {
+                                  void handleToggleChatPushNotifications(value);
+                                }}
+                                disabled={chatPushNotificationsMutation.isPending}
+                                trackColor={{
+                                  false: Colors.border,
+                                  true: Colors.primary,
+                                }}
+                                thumbColor={Colors.background}
+                              />
+                            </View>
+                            {(groupLinkUrl || currentChat?.description) ? (
+                              <View style={styles.infoDivider} />
+                            ) : null}
+                          </>
+                        ) : null}
+
                         {groupLinkUrl ? (
                           <>
                             <View style={styles.infoItem}>
@@ -3063,6 +3924,14 @@ const styles = StyleSheet.create({
     color: Colors.mutedText,
     fontSize: 12,
   },
+  messagesViewport: {
+    flex: 1,
+    position: "relative",
+  },
+  chatBody: {
+    flex: 1,
+    position: "relative",
+  },
   messagesListHidden: {
     opacity: 0,
   },
@@ -3073,7 +3942,9 @@ const styles = StyleSheet.create({
   },
   dateDivider: {
     alignItems: "center",
-    marginVertical: 16,
+    paddingVertical: 12,
+    backgroundColor: "transparent",
+    zIndex: 2,
   },
   dateDividerText: {
     color: Colors.mutedText,
@@ -3084,6 +3955,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 6,
     borderRadius: 999,
+    backgroundColor: Colors.surface,
   },
   messageRow: {
     flexDirection: "row",
@@ -3117,7 +3989,7 @@ const styles = StyleSheet.create({
     opacity: 0,
   },
   messageBubbleMine: {
-    backgroundColor: Colors.hover,
+    backgroundColor: Colors.input,
   },
   messageBubbleTheirs: {
     backgroundColor: Colors.input,
@@ -3212,10 +4084,11 @@ const styles = StyleSheet.create({
   },
   messageMenuBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.28)",
+    backgroundColor: "rgba(0,0,0,0.48)",
   },
   messageMenuPreview: {
     position: "absolute",
+    zIndex: 2,
   },
   messageMenuBubbleShadow: {
     shadowColor: "#000",
@@ -3233,7 +4106,7 @@ const styles = StyleSheet.create({
   },
   messageMenuActionBar: {
     position: "absolute",
-    width: 176,
+    width: MESSAGE_MENU_WIDTH,
     flexDirection: "column",
     alignItems: "stretch",
     gap: 4,
@@ -3251,6 +4124,7 @@ const styles = StyleSheet.create({
       height: 8,
     },
     elevation: 12,
+    zIndex: 3,
   },
   messageMenuAction: {
     width: "100%",
@@ -3269,23 +4143,68 @@ const styles = StyleSheet.create({
   messageMenuActionTextDanger: {
     color: Colors.danger,
   },
+  newMessagesButton: {
+    position: "absolute",
+    right: 16,
+    bottom: 14,
+    minHeight: 42,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: Colors.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    elevation: 8,
+  },
+  newMessagesChip: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  newMessagesChipText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   composerShell: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    zIndex: 4,
     paddingHorizontal: 16,
     paddingTop: 12,
-    backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    backgroundColor: "transparent",
+    borderTopWidth: 0,
   },
   composerStack: {
     gap: 8,
   },
+  composerRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+    backgroundColor: "transparent",
+  },
   composerField: {
+    flex: 1,
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: Colors.input,
     borderRadius: 20,
-    paddingHorizontal: 12,
+    paddingLeft: 14,
+    paddingRight: 10,
     paddingVertical: 8,
     opacity: 1,
   },
@@ -3295,19 +4214,43 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  composerSideLeft: {
-    minWidth: 20,
-    marginRight: 16,
-    alignItems: "flex-start",
+  composerActionButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
     justifyContent: "center",
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   composerSideRight: {
-    minWidth: 72,
-    marginLeft: 16,
+    minWidth: 20,
+    marginLeft: 12,
     flexDirection: "row",
     justifyContent: "flex-end",
     alignItems: "center",
-    gap: 16,
+    gap: 12,
+  },
+  composerInlineSendButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  composerInlineSendButtonPressed: {
+    opacity: 0.88,
+  },
+  composerInlineSendButtonDisabled: {
+    opacity: 0.45,
+  },
+  composerActionButtonPressed: {
+    opacity: 0.82,
+  },
+  composerActionButtonDisabled: {
+    opacity: 0.45,
   },
   composerContextCard: {
     flexDirection: "row",
@@ -3354,16 +4297,72 @@ const styles = StyleSheet.create({
     flex: 1,
     color: Colors.text,
     fontSize: 15,
-    lineHeight: 25,
-    minHeight: 25,
+    lineHeight: 21,
+    minHeight: 21,
     maxHeight: 120,
-    paddingVertical: 0,
+    paddingVertical: Platform.OS === "ios" ? 1 : 0,
     paddingHorizontal: 0,
+    textAlignVertical: "center",
+    alignSelf: "center",
+  },
+  stickerPickerShell: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    overflow: "hidden",
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  stickerPickerContent: {
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 16,
+  },
+  emojiSection: {
+    gap: 8,
+  },
+  emojiSectionLabel: {
+    color: Colors.mutedText,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    paddingHorizontal: 4,
+  },
+  emojiGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginHorizontal: -3,
+  },
+  emojiButton: {
+    width: "14.2857%",
+    minWidth: 40,
+    minHeight: 40,
+    padding: 3,
+  },
+  emojiButtonPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.96 }],
+  },
+  emojiButtonText: {
+    flex: 1,
+    textAlign: "center",
+    textAlignVertical: "center",
+    fontSize: 22,
+    lineHeight: 40,
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
   sendButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
@@ -3586,6 +4585,17 @@ const styles = StyleSheet.create({
   infoItem: {
     paddingHorizontal: 16,
     paddingVertical: 14,
+    gap: 4,
+  },
+  infoSwitchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  infoSwitchCopy: {
+    flex: 1,
     gap: 4,
   },
   infoLabel: {

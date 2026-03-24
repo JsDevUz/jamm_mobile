@@ -23,6 +23,18 @@ export type OfflineLessonPlayback = {
 
 type OfflineLessonMetadata = OfflineLessonPlayback & {
   version: 2;
+  courseId?: string;
+  lessonId?: string;
+  mediaId?: string | null;
+};
+
+export type OfflineLessonCacheEntry = OfflineLessonPlayback & {
+  id: string;
+  entryDir: string;
+  sizeBytes: number;
+  courseId?: string;
+  lessonId?: string;
+  mediaId?: string | null;
 };
 
 const ROOT_DIR = `${FileSystem.documentDirectory ?? ""}jamm-private-courses/`;
@@ -87,6 +99,32 @@ const ensureDirectory = async (directory: string) => {
       });
     } catch {}
   }
+};
+
+const getDirectorySize = async (directory: string): Promise<number> => {
+  const entries = await FileSystem.readDirectoryAsync(directory);
+  const sizes = await Promise.all(
+    entries.map(async (entryName) => {
+      const target = `${directory}${entryName}`;
+      const info = (await FileSystem.getInfoAsync(target)) as {
+        exists: boolean;
+        isDirectory?: boolean;
+        size?: number;
+      };
+
+      if (!info.exists) {
+        return 0;
+      }
+
+      if (info.isDirectory) {
+        return getDirectorySize(`${target}/`);
+      }
+
+      return Number(info.size || 0);
+    }),
+  );
+
+  return sizes.reduce((total, value) => total + value, 0);
 };
 
 const ensureRootDir = async () => {
@@ -306,6 +344,9 @@ export const downloadOfflineLessonPlayback = async (
     streamType: args.streamType,
     localUrl,
     createdAt: new Date().toISOString(),
+    courseId: args.courseId,
+    lessonId: args.lessonId,
+    mediaId: args.mediaId ?? null,
   };
 
   await writeMetadata(entryDir, payload);
@@ -326,4 +367,74 @@ export const removeOfflineLessonPlayback = async (
 
   const entryDir = await getEntryDir(args);
   await FileSystem.deleteAsync(entryDir, { idempotent: true });
+};
+
+export const listOfflineLessonCacheEntries = async (): Promise<OfflineLessonCacheEntry[]> => {
+  if (!CAN_USE_OFFLINE_COURSE_CACHE) {
+    return [];
+  }
+
+  await ensureRootDir();
+  const entries = await FileSystem.readDirectoryAsync(ROOT_DIR);
+  const items: Array<OfflineLessonCacheEntry | null> = await Promise.all(
+    entries.map(async (entryName) => {
+      const entryDir = `${ROOT_DIR}${entryName}/`;
+      const info = (await FileSystem.getInfoAsync(entryDir)) as {
+        exists: boolean;
+        isDirectory?: boolean;
+      };
+
+      if (!info.exists || !info.isDirectory) {
+        return null;
+      }
+
+      const metadata = await readMetadata(entryDir);
+      if (!metadata?.localUrl) {
+        return null;
+      }
+
+      const localInfo = await FileSystem.getInfoAsync(metadata.localUrl);
+      if (!localInfo.exists) {
+        return null;
+      }
+
+      const item: OfflineLessonCacheEntry = {
+        id: entryDir,
+        entryDir,
+        localUrl: metadata.localUrl,
+        streamType: metadata.streamType,
+        createdAt: metadata.createdAt,
+        courseId: metadata.courseId,
+        lessonId: metadata.lessonId,
+        mediaId: metadata.mediaId ?? null,
+        sizeBytes: await getDirectorySize(entryDir),
+      };
+
+      return item;
+    }),
+  );
+
+  return items
+    .filter((item): item is OfflineLessonCacheEntry => item !== null)
+    .sort((left, right) => {
+      const leftTime = new Date(left.createdAt).getTime();
+      const rightTime = new Date(right.createdAt).getTime();
+      return rightTime - leftTime;
+    });
+};
+
+export const removeOfflineLessonCacheEntry = async (entryId: string) => {
+  if (!entryId || !CAN_USE_OFFLINE_COURSE_CACHE) {
+    return;
+  }
+
+  await FileSystem.deleteAsync(entryId, { idempotent: true });
+};
+
+export const clearOfflineLessonCache = async () => {
+  if (!CAN_USE_OFFLINE_COURSE_CACHE) {
+    return;
+  }
+
+  await FileSystem.deleteAsync(ROOT_DIR, { idempotent: true });
 };

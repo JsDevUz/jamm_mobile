@@ -75,6 +75,7 @@ export type ChatSummary = {
   createdBy?: string;
   admins?: ChatAdmin[];
   members?: ChatMember[];
+  pushNotificationsEnabled?: boolean;
 };
 
 export type GroupLinkPreview = {
