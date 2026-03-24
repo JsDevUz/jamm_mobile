@@ -7,6 +7,7 @@ import {
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type TextInputSelectionChangeEventData,
   PanResponder,
   Platform,
   Pressable,
@@ -458,9 +459,16 @@ function MessageRichText({
 }) {
   if (selectable) {
     return (
-      <Text style={styles.messageText} onLongPress={onLongPress} selectable>
-        {content}
-      </Text>
+      <TextInput
+        style={[styles.messageText, styles.messageSelectableInput]}
+        value={content}
+        editable={false}
+        multiline
+        scrollEnabled={false}
+        selectTextOnFocus
+        showSoftInputOnFocus={false}
+        contextMenuHidden={false}
+      />
     );
   }
 
@@ -800,6 +808,7 @@ export function ChatScreen({ navigation, route }: Props) {
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [keyboardLayoutOffset, setKeyboardLayoutOffset] = useState(0);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
+  const [stickerUsesAccessoryOffset, setStickerUsesAccessoryOffset] = useState(false);
   const [stickerToKeyboardTransition, setStickerToKeyboardTransition] = useState(false);
   const [closedToKeyboardTransition, setClosedToKeyboardTransition] = useState(false);
   const [composerSoftInputEnabled, setComposerSoftInputEnabled] = useState(true);
@@ -842,6 +851,7 @@ export function ChatScreen({ navigation, route }: Props) {
   const hasNextPageRef = useRef(false);
   const messageHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const composerInputRef = useRef<NativeTextInput>(null);
+  const composerSelectionRef = useRef({ start: 0, end: 0 });
   const composerFocusedRef = useRef(false);
   const composerNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1393,6 +1403,7 @@ export function ChatScreen({ navigation, route }: Props) {
       setComposerSoftInputEnabled(true);
 
       if (isWeb) {
+        setStickerUsesAccessoryOffset(false);
         setStickerToKeyboardTransition(false);
         setClosedToKeyboardTransition(false);
         animateAccessoryHeight(0, 120);
@@ -1405,6 +1416,7 @@ export function ChatScreen({ navigation, route }: Props) {
       }
 
       if (Platform.OS === "android" && focusInput) {
+        setStickerUsesAccessoryOffset(false);
         setStickerToKeyboardTransition(false);
         setClosedToKeyboardTransition(false);
         animateAccessoryHeight(0, 120);
@@ -1426,6 +1438,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
       setStickerToKeyboardTransition(false);
       setClosedToKeyboardTransition(false);
+      setStickerUsesAccessoryOffset(false);
       if (keyboardInset <= 0) {
         setKeyboardLayoutOffset(0);
         animateAccessoryHeight(0);
@@ -1435,28 +1448,24 @@ export function ChatScreen({ navigation, route }: Props) {
   );
   const openStickerPicker = useCallback(() => {
     const nextHeight = getStickerPickerHeight();
+    const transitioningFromKeyboard = keyboardInset > 0;
     setStickerToKeyboardTransition(false);
     setClosedToKeyboardTransition(false);
     setStickerPickerVisible(true);
+    setStickerUsesAccessoryOffset(!transitioningFromKeyboard);
     setComposerSoftInputEnabled(false);
-    composerFocusedRef.current = false;
+    composerFocusedRef.current = true;
     accessoryHeightAnim.stopAnimation();
-    if (useNativeKeyboardLayout) {
-      setKeyboardLayoutOffset(nextHeight);
-      accessoryHeightAnim.setValue(nextHeight);
-    } else {
+    if (!transitioningFromKeyboard) {
+      setKeyboardLayoutOffset(0);
       animateAccessoryHeight(nextHeight);
     }
-    composerInputRef.current?.blur();
     Keyboard.dismiss();
-    scrollToLatestMessage(false);
   }, [
     accessoryHeightAnim,
     animateAccessoryHeight,
     getStickerPickerHeight,
-    keyboardLayoutOffset,
-    scrollToLatestMessage,
-    useNativeKeyboardLayout,
+    keyboardInset,
   ]);
   const toggleStickerPicker = useCallback(() => {
     if (stickerPickerVisible) {
@@ -1500,6 +1509,7 @@ export function ChatScreen({ navigation, route }: Props) {
         {
           onSuccess: () => {
             setDraft("");
+            composerSelectionRef.current = { start: 0, end: 0 };
             setEditingMessageId(null);
           },
         },
@@ -1524,6 +1534,7 @@ export function ChatScreen({ navigation, route }: Props) {
     });
 
     setDraft("");
+    composerSelectionRef.current = { start: 0, end: 0 };
     setReplyingToId(null);
     sendMutation.mutate({
       content: trimmedContent,
@@ -1545,7 +1556,23 @@ export function ChatScreen({ navigation, route }: Props) {
     showComposerNotice("Ovozli xabar tez orada qo'shiladi.");
   };
   const handleStickerPress = async (sticker: string) => {
-    await handleSendContent(sticker);
+    await Haptics.selectionAsync();
+    let nextCaret = 0;
+    setDraft((current) => {
+      const source = current || "";
+      const start = Math.max(0, Math.min(composerSelectionRef.current.start, source.length));
+      const end = Math.max(start, Math.min(composerSelectionRef.current.end, source.length));
+      const nextValue = `${source.slice(0, start)}${sticker}${source.slice(end)}`;
+      nextCaret = start + sticker.length;
+      return nextValue;
+    });
+    composerSelectionRef.current = { start: nextCaret, end: nextCaret };
+    shouldStickToBottomRef.current = true;
+    requestAnimationFrame(() => {
+      composerInputRef.current?.setNativeProps({
+        selection: { start: nextCaret, end: nextCaret },
+      });
+    });
   };
   const hasComposerText = Boolean(draft.trim());
   const isComposerInputEditable = !isComposerDisabled && composerSoftInputEnabled;
@@ -1940,9 +1967,11 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const closeMessageMenu = () => {
     setMessageMenuOpen(false);
-    Animated.timing(messageMenuAnim, {
+    Animated.spring(messageMenuAnim, {
       toValue: 0,
-      duration: 140,
+      damping: 26,
+      stiffness: 240,
+      mass: 0.95,
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (!finished) {
@@ -2131,58 +2160,70 @@ export function ChatScreen({ navigation, route }: Props) {
         </Pressable>
 
         <View style={styles.composerField}>
-          <TextInput
-            ref={composerInputRef}
-            style={styles.composerInput}
-            value={draft}
-            onChangeText={setDraft}
-            placeholder={
-              isComposerDisabled
-                ? "Suhbat yuklanmoqda..."
-                : editingMessageId
-                  ? "Xabarni tahrirlash..."
-                  : "Xabar..."
-            }
-            placeholderTextColor={Colors.mutedText}
-            multiline
-            maxLength={3000}
-            editable={isComposerInputEditable}
-            showSoftInputOnFocus={composerSoftInputEnabled}
-            caretHidden={!composerSoftInputEnabled}
-            onFocus={() => {
-              if (!composerSoftInputEnabled) {
-                composerInputRef.current?.blur();
-                return;
+          <View style={styles.composerInputWrap}>
+            <TextInput
+              ref={composerInputRef}
+              style={styles.composerInput}
+              value={draft}
+              onChangeText={setDraft}
+              onSelectionChange={(
+                event: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
+              ) => {
+                composerSelectionRef.current = event.nativeEvent.selection;
+              }}
+              placeholder={
+                isComposerDisabled
+                  ? "Suhbat yuklanmoqda..."
+                  : editingMessageId
+                    ? "Xabarni tahrirlash..."
+                    : "Xabar..."
               }
-              composerFocusedRef.current = true;
-              shouldStickToBottomRef.current = true;
-              if (stickerPickerVisible) {
-                if (isWeb) {
-                  setStickerPickerVisible(false);
-                  setStickerToKeyboardTransition(false);
-                  setClosedToKeyboardTransition(false);
-                  animateAccessoryHeight(0, 120);
-                } else if (Platform.OS === "android") {
-                  setStickerPickerVisible(false);
-                  setStickerToKeyboardTransition(false);
-                  setClosedToKeyboardTransition(false);
-                  animateAccessoryHeight(0, 120);
-                } else {
-                  setStickerPickerVisible(false);
-                  setStickerToKeyboardTransition(true);
+              placeholderTextColor={Colors.mutedText}
+              multiline
+              maxLength={3000}
+              editable={!isComposerDisabled}
+              showSoftInputOnFocus={composerSoftInputEnabled}
+              caretHidden={!composerSoftInputEnabled && !stickerPickerVisible}
+              onPressIn={() => {
+                if (stickerPickerVisible) {
+                  hideStickerPicker(true);
                 }
-              } else {
-                beginClosedToKeyboardTransition();
-              }
-            }}
-            onBlur={() => {
-              composerFocusedRef.current = false;
-              if (!stickerPickerVisible && keyboardInset <= 0) {
-                setClosedToKeyboardTransition(false);
-                animateAccessoryHeight(0, 160);
-              }
-            }}
-          />
+              }}
+              onFocus={() => {
+                if (!composerSoftInputEnabled && !stickerPickerVisible) {
+                  composerInputRef.current?.blur();
+                  return;
+                }
+                composerFocusedRef.current = true;
+                shouldStickToBottomRef.current = true;
+                if (stickerPickerVisible) {
+                  if (isWeb) {
+                    setStickerPickerVisible(false);
+                    setStickerToKeyboardTransition(false);
+                    setClosedToKeyboardTransition(false);
+                    animateAccessoryHeight(0, 120);
+                  } else if (Platform.OS === "android") {
+                    setStickerPickerVisible(false);
+                    setStickerToKeyboardTransition(false);
+                    setClosedToKeyboardTransition(false);
+                    animateAccessoryHeight(0, 120);
+                  } else {
+                    setStickerPickerVisible(false);
+                    setStickerToKeyboardTransition(true);
+                  }
+                } else {
+                  beginClosedToKeyboardTransition();
+                }
+              }}
+              onBlur={() => {
+                composerFocusedRef.current = false;
+                if (!stickerPickerVisible && keyboardInset <= 0) {
+                  setClosedToKeyboardTransition(false);
+                  animateAccessoryHeight(0, 160);
+                }
+              }}
+            />
+          </View>
 
           <View style={styles.composerSideRight}>
             <Pressable
@@ -2437,7 +2478,8 @@ export function ChatScreen({ navigation, route }: Props) {
       </View>
     ) : null;
   const shouldApplyStickerBottomOffset =
-    !useNativeKeyboardLayout && (stickerPickerVisible || stickerToKeyboardTransition);
+    (!useNativeKeyboardLayout && (stickerPickerVisible || stickerToKeyboardTransition)) ||
+    (useNativeKeyboardLayout && stickerUsesAccessoryOffset);
   const typingMembers = useMemo(
     () =>
       typingUserIds
@@ -2667,15 +2709,13 @@ export function ChatScreen({ navigation, route }: Props) {
           stickerPickerVisible || stickerToKeyboardTransition
             ? getStickerPickerHeight()
             : 0;
-        const nextBottomOffset =
-          stickerPickerVisible && nextInset <= 0 ? stickerHeight : nextInset;
-
         Keyboard.scheduleLayoutAnimation?.(event as never);
         setKeyboardInset(nextInset);
-        setKeyboardLayoutOffset(nextBottomOffset);
+        setKeyboardLayoutOffset(nextInset);
         if (nextInset > 0) {
           lastKeyboardInsetRef.current = nextInset;
           setClosedToKeyboardTransition(false);
+          setStickerUsesAccessoryOffset(false);
         }
         if (stickerToKeyboardTransition) {
           animateAccessoryHeight(0, duration);
@@ -2684,7 +2724,7 @@ export function ChatScreen({ navigation, route }: Props) {
         if (stickerPickerVisible && nextInset <= 0) {
           animateAccessoryHeight(stickerHeight, duration);
         } else {
-          animateAccessoryHeight(0, duration);
+          animateAccessoryHeight(0, Math.min(duration, 70));
         }
       };
       const willShowSubscription = Keyboard.addListener("keyboardWillShow", (event) => {
@@ -2705,7 +2745,7 @@ export function ChatScreen({ navigation, route }: Props) {
         }
         setStickerToKeyboardTransition(false);
         setClosedToKeyboardTransition(false);
-        animateAccessoryHeight(0, 120);
+        animateAccessoryHeight(0, 64);
       });
       const hideSubscription = Keyboard.addListener("keyboardWillHide", (event) => {
         const duration = typeof event.duration === "number" ? event.duration : 220;
@@ -2715,7 +2755,9 @@ export function ChatScreen({ navigation, route }: Props) {
             : 0;
         Keyboard.scheduleLayoutAnimation?.(event);
         setKeyboardInset(0);
-        setKeyboardLayoutOffset(stickerPickerVisible ? stickerHeight : 0);
+        setKeyboardLayoutOffset(
+          stickerPickerVisible && !stickerUsesAccessoryOffset ? stickerHeight : 0,
+        );
         if (!stickerPickerVisible && !stickerToKeyboardTransition) {
           setStickerToKeyboardTransition(false);
         }
@@ -2726,7 +2768,7 @@ export function ChatScreen({ navigation, route }: Props) {
           stickerPickerVisible || stickerToKeyboardTransition
             ? stickerHeight
             : 0,
-          duration,
+          stickerPickerVisible || stickerToKeyboardTransition ? duration : 70,
         );
       });
 
@@ -2782,6 +2824,7 @@ export function ChatScreen({ navigation, route }: Props) {
     isWeb,
     screenHeight,
     scrollToLatestMessage,
+    stickerUsesAccessoryOffset,
     stickerToKeyboardTransition,
     stickerPickerVisible,
   ]);
@@ -3416,7 +3459,7 @@ export function ChatScreen({ navigation, route }: Props) {
                     highlightPulseKey={
                       highlightedMessageId === item.message.id ? highlightPulseKey : 0
                     }
-                    hidden={messageMenuMounted && messageMenuOpen && selectedMessageId === item.message.id}
+                    hidden={messageMenuMounted && selectedMessageId === item.message.id}
                   />
                 );
               }}
@@ -3434,6 +3477,13 @@ export function ChatScreen({ navigation, route }: Props) {
             </Pressable>
           ) : null}
         </Animated.View>
+
+        {stickerPickerVisible ? (
+          <Pressable
+            style={styles.stickerDismissBackdrop}
+            onPress={() => hideStickerPicker(false)}
+          />
+        ) : null}
 
         <Animated.View
           onLayout={(event) => {
@@ -4088,6 +4138,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  messageSelectableInput: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    minHeight: 0,
+    textAlignVertical: "top",
+    backgroundColor: "transparent",
+  },
   messageLink: {
     color: "#7DB6FF",
     textDecorationLine: "underline",
@@ -4302,10 +4359,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: Colors.input,
     borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
     paddingLeft: 14,
     paddingRight: 10,
     paddingVertical: 8,
     opacity: 1,
+  },
+  composerInputWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   iconButton: {
     width: 20,
@@ -4321,7 +4384,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: Colors.input,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: "rgba(255,255,255,0.12)",
   },
   composerSideRight: {
     minWidth: 20,
@@ -4402,13 +4465,20 @@ const styles = StyleSheet.create({
     paddingVertical: Platform.OS === "ios" ? 1 : 0,
     paddingHorizontal: 0,
     textAlignVertical: "center",
-    alignSelf: "center",
+    textAlign: "left",
+    alignSelf: "stretch",
+  },
+  stickerDismissBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "transparent",
+    zIndex: 3,
   },
   stickerPickerShell: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
+    zIndex: 5,
     overflow: "hidden",
     backgroundColor: Colors.surface,
     borderTopWidth: 1,
@@ -4463,6 +4533,8 @@ const styles = StyleSheet.create({
     height: 42,
     borderRadius: 21,
     backgroundColor: Colors.primary,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
     alignItems: "center",
     justifyContent: "center",
   },
