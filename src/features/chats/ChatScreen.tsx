@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  InputAccessoryView,
   Keyboard,
   Modal,
   type NativeScrollEvent,
@@ -33,6 +32,7 @@ import {
   State,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
+import { FullWindowOverlay } from "react-native-screens";
 import {
   ChevronDown,
   Check,
@@ -114,7 +114,6 @@ type MessagesInfiniteData = InfiniteData<{
 const ONLINE_PRESENCE_WINDOW_MS = 45_000;
 const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
 const NEW_MESSAGES_BOTTOM_THRESHOLD = 96;
-const IOS_CHAT_COMPOSER_ACCESSORY_ID = "chat-composer-accessory";
 
 const getNormalizedSenderId = (senderId?: string | User | null) =>
   typeof senderId === "string" ? senderId : getEntityId(senderId);
@@ -790,13 +789,14 @@ export function ChatScreen({ navigation, route }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const isWeb = Platform.OS === "web";
   const useKeyboardAvoidingBody = false;
-  const useAnimatedKeyboardOffset = Platform.OS === "ios" && !isWeb;
+  const useNativeKeyboardLayout = Platform.OS === "ios" && !isWeb;
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
   const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(66);
+  const [composerNotice, setComposerNotice] = useState<string | null>(null);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [keyboardLayoutOffset, setKeyboardLayoutOffset] = useState(0);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
@@ -827,12 +827,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() => realtime.getOnlineUserIds());
-  const useIosInputAccessoryComposer =
-    Platform.OS === "ios" &&
-    !isWeb &&
-    keyboardInset > 0 &&
-    !stickerPickerVisible &&
-    !stickerToKeyboardTransition;
   const [outgoingCall, setOutgoingCall] = useState<{
     roomId: string;
     remoteUser: User;
@@ -849,6 +843,7 @@ export function ChatScreen({ navigation, route }: Props) {
   const messageHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const composerInputRef = useRef<NativeTextInput>(null);
   const composerFocusedRef = useRef(false);
+  const composerNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMenuInfoRef = useRef<{
@@ -1432,6 +1427,7 @@ export function ChatScreen({ navigation, route }: Props) {
       setStickerToKeyboardTransition(false);
       setClosedToKeyboardTransition(false);
       if (keyboardInset <= 0) {
+        setKeyboardLayoutOffset(0);
         animateAccessoryHeight(0);
       }
     },
@@ -1444,11 +1440,24 @@ export function ChatScreen({ navigation, route }: Props) {
     setStickerPickerVisible(true);
     setComposerSoftInputEnabled(false);
     composerFocusedRef.current = false;
+    accessoryHeightAnim.stopAnimation();
+    if (useNativeKeyboardLayout) {
+      setKeyboardLayoutOffset(nextHeight);
+      accessoryHeightAnim.setValue(nextHeight);
+    } else {
+      animateAccessoryHeight(nextHeight);
+    }
     composerInputRef.current?.blur();
-    animateAccessoryHeight(nextHeight);
     Keyboard.dismiss();
     scrollToLatestMessage(false);
-  }, [animateAccessoryHeight, getStickerPickerHeight, scrollToLatestMessage]);
+  }, [
+    accessoryHeightAnim,
+    animateAccessoryHeight,
+    getStickerPickerHeight,
+    keyboardLayoutOffset,
+    scrollToLatestMessage,
+    useNativeKeyboardLayout,
+  ]);
   const toggleStickerPicker = useCallback(() => {
     if (stickerPickerVisible) {
       hideStickerPicker(true);
@@ -1457,6 +1466,25 @@ export function ChatScreen({ navigation, route }: Props) {
 
     openStickerPicker();
   }, [hideStickerPicker, openStickerPicker, stickerPickerVisible]);
+  const showComposerNotice = useCallback(
+    (message: string) => {
+      setComposerNotice(message);
+      if (composerNoticeTimeoutRef.current) {
+        clearTimeout(composerNoticeTimeoutRef.current);
+      }
+      composerNoticeTimeoutRef.current = setTimeout(() => {
+        setComposerNotice(null);
+        composerNoticeTimeoutRef.current = null;
+      }, 1800);
+
+      if (composerFocusedRef.current || keyboardInset > 0) {
+        requestAnimationFrame(() => {
+          composerInputRef.current?.focus();
+        });
+      }
+    },
+    [keyboardInset],
+  );
 
   const handleSendContent = async (content: string) => {
     const trimmedContent = content.trim();
@@ -1510,11 +1538,11 @@ export function ChatScreen({ navigation, route }: Props) {
   };
   const handleAttachmentPress = async () => {
     await Haptics.selectionAsync();
-    Alert.alert("Rasm yuborish", "Bu funksiya tez orada qo'shiladi.");
+    showComposerNotice("Rasm yuborish tez orada qo'shiladi.");
   };
   const handleVoiceMessagePress = async () => {
     await Haptics.selectionAsync();
-    Alert.alert("Ovozli xabar", "Ovozli xabar yuborish yaqinda qo'shiladi.");
+    showComposerNotice("Ovozli xabar tez orada qo'shiladi.");
   };
   const handleStickerPress = async (sticker: string) => {
     await handleSendContent(sticker);
@@ -1863,6 +1891,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const openMessageMenu = (messageId: string, layout: MessageMenuLayout) => {
     void Haptics.selectionAsync();
+    const keepKeyboardOpen = composerFocusedRef.current && keyboardInset > 0;
     setSelectedMessageId(messageId);
     setSelectedMessageLayout(layout);
     setMessageMenuMounted(true);
@@ -1875,6 +1904,11 @@ export function ChatScreen({ navigation, route }: Props) {
       mass: 0.9,
       useNativeDriver: true,
     }).start();
+    if (keepKeyboardOpen) {
+      requestAnimationFrame(() => {
+        composerInputRef.current?.focus();
+      });
+    }
   };
 
   const handleMessageMenu = (messageId: string, target: View | null) => {
@@ -1892,7 +1926,8 @@ export function ChatScreen({ navigation, route }: Props) {
       const maxWidth = screenWidth - 24;
       const clampedWidth = Math.min(width || maxWidth, maxWidth);
       const localY = y - insets.top;
-      const availableHeight = screenHeight - insets.top - insets.bottom;
+      const availableHeight =
+        screenHeight - insets.top - Math.max(insets.bottom, keyboardInset);
 
       openMessageMenu(messageId, {
         x: Math.max(12, Math.min(screenWidth - clampedWidth - 12, x)),
@@ -1925,6 +1960,7 @@ export function ChatScreen({ navigation, route }: Props) {
     void Haptics.selectionAsync();
     setEditingMessageId(null);
     setReplyingToId(selectedMessage.message.id);
+    setComposerSoftInputEnabled(true);
     requestAnimationFrame(() => {
       composerInputRef.current?.focus();
     });
@@ -1938,6 +1974,7 @@ export function ChatScreen({ navigation, route }: Props) {
     void Haptics.selectionAsync();
     setEditingMessageId(null);
     setReplyingToId(message.id);
+    setComposerSoftInputEnabled(true);
     requestAnimationFrame(() => {
       composerInputRef.current?.focus();
     });
@@ -1996,6 +2033,7 @@ export function ChatScreen({ navigation, route }: Props) {
     setReplyingToId(null);
     setEditingMessageId(selectedMessage.message.id);
     setDraft(selectedMessage.message.content);
+    setComposerSoftInputEnabled(true);
   };
 
   const handleCopyMessage = async () => {
@@ -2051,6 +2089,163 @@ export function ChatScreen({ navigation, route }: Props) {
       : replyingMessage?.type === "message"
         ? replyingMessage.message
         : null;
+  const composerContent = (
+    <View style={styles.composerStack}>
+      {composerNotice ? (
+        <View style={styles.composerNoticeCard}>
+          <Text style={styles.composerNoticeText}>{composerNotice}</Text>
+        </View>
+      ) : null}
+      {composerContextMessage ? (
+        <Pressable
+          style={styles.composerContextCard}
+          onPress={() => {
+            listRef.current?.scrollToEnd({ animated: true });
+          }}
+        >
+          <View style={styles.composerContextTextWrap}>
+            <Text style={styles.composerContextLabel}>
+              {editingMessageId ? "Tahrirlanmoqda" : composerContextMessage.senderName}
+            </Text>
+            <Text style={styles.composerContextText} numberOfLines={1}>
+              {composerContextMessage.content}
+            </Text>
+          </View>
+          <Pressable onPress={clearComposerMode} style={styles.composerContextClose}>
+            <Ionicons name="close" size={16} color={Colors.mutedText} />
+          </Pressable>
+        </Pressable>
+      ) : null}
+
+      <View style={styles.composerRow}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.composerActionButton,
+            pressed && styles.composerActionButtonPressed,
+            isComposerDisabled && styles.composerActionButtonDisabled,
+          ]}
+          disabled={isComposerDisabled}
+          onPress={handleAttachmentPress}
+        >
+          <Ionicons name="image-outline" size={20} color={Colors.mutedText} />
+        </Pressable>
+
+        <View style={styles.composerField}>
+          <TextInput
+            ref={composerInputRef}
+            style={styles.composerInput}
+            value={draft}
+            onChangeText={setDraft}
+            placeholder={
+              isComposerDisabled
+                ? "Suhbat yuklanmoqda..."
+                : editingMessageId
+                  ? "Xabarni tahrirlash..."
+                  : "Xabar..."
+            }
+            placeholderTextColor={Colors.mutedText}
+            multiline
+            maxLength={3000}
+            editable={isComposerInputEditable}
+            showSoftInputOnFocus={composerSoftInputEnabled}
+            caretHidden={!composerSoftInputEnabled}
+            onFocus={() => {
+              if (!composerSoftInputEnabled) {
+                composerInputRef.current?.blur();
+                return;
+              }
+              composerFocusedRef.current = true;
+              shouldStickToBottomRef.current = true;
+              if (stickerPickerVisible) {
+                if (isWeb) {
+                  setStickerPickerVisible(false);
+                  setStickerToKeyboardTransition(false);
+                  setClosedToKeyboardTransition(false);
+                  animateAccessoryHeight(0, 120);
+                } else if (Platform.OS === "android") {
+                  setStickerPickerVisible(false);
+                  setStickerToKeyboardTransition(false);
+                  setClosedToKeyboardTransition(false);
+                  animateAccessoryHeight(0, 120);
+                } else {
+                  setStickerPickerVisible(false);
+                  setStickerToKeyboardTransition(true);
+                }
+              } else {
+                beginClosedToKeyboardTransition();
+              }
+            }}
+            onBlur={() => {
+              composerFocusedRef.current = false;
+              if (!stickerPickerVisible && keyboardInset <= 0) {
+                setClosedToKeyboardTransition(false);
+                animateAccessoryHeight(0, 160);
+              }
+            }}
+          />
+
+          <View style={styles.composerSideRight}>
+            <Pressable
+              style={styles.iconButton}
+              disabled={isComposerDisabled}
+              onPress={toggleStickerPicker}
+            >
+              <Ionicons
+                name={isStickerPanelActive ? "keypad-outline" : "happy-outline"}
+                size={20}
+                color={Colors.mutedText}
+              />
+            </Pressable>
+
+            {hasComposerText || editingMessageId ? (
+              <Pressable
+                onPress={handleSend}
+                style={({ pressed }) => [
+                  styles.composerInlineSendButton,
+                  pressed && styles.composerInlineSendButtonPressed,
+                  ((!hasComposerText && Boolean(editingMessageId)) ||
+                    isSending ||
+                    isComposerDisabled) &&
+                    styles.composerInlineSendButtonDisabled,
+                ]}
+                disabled={
+                  (!hasComposerText && Boolean(editingMessageId)) || isSending || isComposerDisabled
+                }
+              >
+                {isSending ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons
+                    name={editingMessageId ? "checkmark" : "send"}
+                    size={15}
+                    color="#fff"
+                  />
+                )}
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+
+        {!hasComposerText && !editingMessageId ? (
+          <Pressable
+            onPress={handleVoiceMessagePress}
+            style={({ pressed }) => [
+              styles.sendButton,
+              pressed && styles.sendButtonPressed,
+              (isSending || isComposerDisabled) && styles.sendButtonDisabled,
+            ]}
+            disabled={isSending || isComposerDisabled}
+          >
+            {isSending ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="mic" size={18} color="#fff" />
+            )}
+          </Pressable>
+        ) : null}
+      </View>
+    </View>
+  );
 
   const canEditSelectedMessage = Boolean(
     selectedMessage?.type === "message" &&
@@ -2081,7 +2276,8 @@ export function ChatScreen({ navigation, route }: Props) {
       return null;
     }
 
-    const overlayHeight = screenHeight - insets.top - insets.bottom;
+    const overlayHeight =
+      screenHeight - insets.top - Math.max(insets.bottom, keyboardInset);
     const menuHeight =
       MESSAGE_MENU_ACTIONS_PADDING * 2 +
       messageMenuActionCount * MESSAGE_MENU_ITEM_HEIGHT +
@@ -2110,6 +2306,7 @@ export function ChatScreen({ navigation, route }: Props) {
       actionsLeft,
     };
   }, [
+    keyboardInset,
     insets.bottom,
     insets.top,
     messageMenuActionCount,
@@ -2147,6 +2344,100 @@ export function ChatScreen({ navigation, route }: Props) {
     outputRange: [0, 1],
     extrapolate: "clamp",
   });
+  const messageMenuOverlayContent =
+    messageMenuMounted && selectedMessage?.type === "message" && selectedMessageLayout ? (
+      <View style={styles.messageMenuLayer} pointerEvents="box-none">
+        <Pressable style={styles.messageMenuBackdropPressable} onPress={closeMessageMenu}>
+          <Animated.View
+            style={[
+              styles.messageMenuBackdrop,
+              { opacity: messageMenuOverlayOpacity },
+            ]}
+          />
+        </Pressable>
+
+        <Animated.View
+          pointerEvents="box-none"
+          style={[
+            styles.messageMenuPreview,
+            {
+              top: selectedMessageLayout.y,
+              left: selectedMessageLayout.x,
+              width: selectedMessageLayout.width,
+              transform: [
+                { translateY: messageMenuBubbleLift },
+                { scale: messageMenuBubbleScale },
+              ],
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.messageBubble,
+              selectedMessageIsMine
+                ? styles.messageBubbleMine
+                : styles.messageBubbleTheirs,
+              styles.messageMenuBubbleFixed,
+              styles.messageMenuBubbleShadow,
+            ]}
+          >
+            <MessageBubbleBody
+              message={selectedMessage.message}
+              isMine={Boolean(selectedMessageIsMine)}
+              isGroup={Boolean(currentChat?.isGroup)}
+              onPressMention={handleMentionPress}
+              selectable
+            />
+          </View>
+        </Animated.View>
+
+        {messageMenuPosition ? (
+          <Animated.View
+            style={[
+              styles.messageMenuActionBar,
+              {
+                top: messageMenuPosition.actionsTop,
+                left: messageMenuPosition.actionsLeft,
+                opacity: messageMenuOverlayOpacity,
+                transform: [
+                  { translateY: messageMenuActionsTranslateY },
+                  { scale: messageMenuActionsScale },
+                ],
+              },
+            ]}
+          >
+            {canReplySelectedMessage ? (
+              <Pressable style={styles.messageMenuAction} onPress={handleReply}>
+                <Reply size={17} color={Colors.text} />
+                <Text style={styles.messageMenuActionText}>Javob</Text>
+              </Pressable>
+            ) : null}
+            {canCopySelectedMessage ? (
+              <Pressable style={styles.messageMenuAction} onPress={() => void handleCopyMessage()}>
+                <Ionicons name="copy-outline" size={17} color={Colors.text} />
+                <Text style={styles.messageMenuActionText}>Copy</Text>
+              </Pressable>
+            ) : null}
+            {canEditSelectedMessage ? (
+              <Pressable style={styles.messageMenuAction} onPress={handleEditMessage}>
+                <Edit2 size={17} color={Colors.text} />
+                <Text style={styles.messageMenuActionText}>Edit</Text>
+              </Pressable>
+            ) : null}
+            {canDeleteSelectedMessage ? (
+              <Pressable style={styles.messageMenuAction} onPress={handleDeleteMessage}>
+                <Trash2 size={17} color={Colors.danger} />
+                <Text style={[styles.messageMenuActionText, styles.messageMenuActionTextDanger]}>
+                  Delete
+                </Text>
+              </Pressable>
+            ) : null}
+          </Animated.View>
+        ) : null}
+      </View>
+    ) : null;
+  const shouldApplyStickerBottomOffset =
+    !useNativeKeyboardLayout && (stickerPickerVisible || stickerToKeyboardTransition);
   const typingMembers = useMemo(
     () =>
       typingUserIds
@@ -2329,6 +2620,11 @@ export function ChatScreen({ navigation, route }: Props) {
         clearTimeout(openInfoTimeoutRef.current);
       }
 
+      if (composerNoticeTimeoutRef.current) {
+        clearTimeout(composerNoticeTimeoutRef.current);
+        composerNoticeTimeoutRef.current = null;
+      }
+
       if (scrollPersistTimeoutRef.current) {
         clearTimeout(scrollPersistTimeoutRef.current);
         scrollPersistTimeoutRef.current = null;
@@ -2359,28 +2655,45 @@ export function ChatScreen({ navigation, route }: Props) {
     }
 
     if (Platform.OS === "ios") {
+      const applyIosKeyboardLayout = (event: { endCoordinates: { screenY?: number; height?: number }; duration?: number }) => {
+        const overlapFromScreenY =
+          typeof event.endCoordinates?.screenY === "number"
+            ? Math.max(0, screenHeight - event.endCoordinates.screenY)
+            : 0;
+        const overlapFromHeight = Math.max(0, event.endCoordinates?.height || 0);
+        const nextInset = Math.max(overlapFromScreenY, overlapFromHeight);
+        const duration = typeof event.duration === "number" ? event.duration : 220;
+        const stickerHeight =
+          stickerPickerVisible || stickerToKeyboardTransition
+            ? getStickerPickerHeight()
+            : 0;
+        const nextBottomOffset =
+          stickerPickerVisible && nextInset <= 0 ? stickerHeight : nextInset;
+
+        Keyboard.scheduleLayoutAnimation?.(event as never);
+        setKeyboardInset(nextInset);
+        setKeyboardLayoutOffset(nextBottomOffset);
+        if (nextInset > 0) {
+          lastKeyboardInsetRef.current = nextInset;
+          setClosedToKeyboardTransition(false);
+        }
+        if (stickerToKeyboardTransition) {
+          animateAccessoryHeight(0, duration);
+          return;
+        }
+        if (stickerPickerVisible && nextInset <= 0) {
+          animateAccessoryHeight(stickerHeight, duration);
+        } else {
+          animateAccessoryHeight(0, duration);
+        }
+      };
+      const willShowSubscription = Keyboard.addListener("keyboardWillShow", (event) => {
+        applyIosKeyboardLayout(event);
+      });
       const frameChangeSubscription = Keyboard.addListener(
         "keyboardWillChangeFrame",
         (event) => {
-          const overlap = Math.max(0, screenHeight - event.endCoordinates.screenY);
-          const nextInset = Math.max(0, overlap);
-          const duration = typeof event.duration === "number" ? event.duration : 220;
-          Keyboard.scheduleLayoutAnimation(event);
-          setKeyboardInset(nextInset);
-          setKeyboardLayoutOffset(nextInset);
-          if (nextInset > 0) {
-            lastKeyboardInsetRef.current = nextInset;
-            setClosedToKeyboardTransition(false);
-          }
-          if (stickerToKeyboardTransition) {
-            animateAccessoryHeight(0, duration);
-            return;
-          }
-          if (stickerPickerVisible && nextInset <= 0) {
-            animateAccessoryHeight(getStickerPickerHeight(), duration);
-          } else {
-            animateAccessoryHeight(0, duration);
-          }
+          applyIosKeyboardLayout(event);
         },
       );
       const showSubscription = Keyboard.addListener("keyboardDidShow", (event) => {
@@ -2394,9 +2707,15 @@ export function ChatScreen({ navigation, route }: Props) {
         setClosedToKeyboardTransition(false);
         animateAccessoryHeight(0, 120);
       });
-      const hideSubscription = Keyboard.addListener("keyboardWillHide", () => {
+      const hideSubscription = Keyboard.addListener("keyboardWillHide", (event) => {
+        const duration = typeof event.duration === "number" ? event.duration : 220;
+        const stickerHeight =
+          stickerPickerVisible || stickerToKeyboardTransition
+            ? getStickerPickerHeight()
+            : 0;
+        Keyboard.scheduleLayoutAnimation?.(event);
         setKeyboardInset(0);
-        setKeyboardLayoutOffset(0);
+        setKeyboardLayoutOffset(stickerPickerVisible ? stickerHeight : 0);
         if (!stickerPickerVisible && !stickerToKeyboardTransition) {
           setStickerToKeyboardTransition(false);
         }
@@ -2405,12 +2724,14 @@ export function ChatScreen({ navigation, route }: Props) {
         }
         animateAccessoryHeight(
           stickerPickerVisible || stickerToKeyboardTransition
-            ? getStickerPickerHeight()
+            ? stickerHeight
             : 0,
+          duration,
         );
       });
 
       return () => {
+        willShowSubscription.remove();
         frameChangeSubscription.remove();
         showSubscription.remove();
         hideSubscription.remove();
@@ -2992,10 +3313,10 @@ export function ChatScreen({ navigation, route }: Props) {
         <Animated.View
           style={[
             styles.messagesViewport,
-            useAnimatedKeyboardOffset
+            useNativeKeyboardLayout
               ? {
-                  marginBottom:
-                    keyboardLayoutOffset > 0 ? keyboardLayoutOffset : accessoryHeightAnim,
+                  bottom: keyboardLayoutOffset,
+                  marginBottom: shouldApplyStickerBottomOffset ? accessoryHeightAnim : 0,
                 }
               : null,
           ]}
@@ -3127,12 +3448,8 @@ export function ChatScreen({ navigation, route }: Props) {
               position: useKeyboardAvoidingBody ? "relative" : "absolute",
               left: useKeyboardAvoidingBody ? undefined : 0,
               right: useKeyboardAvoidingBody ? undefined : 0,
-              bottom:
-                useAnimatedKeyboardOffset
-                  ? keyboardLayoutOffset > 0
-                    ? keyboardLayoutOffset
-                    : accessoryHeightAnim
-                  : accessoryHeightAnim,
+              bottom: useNativeKeyboardLayout ? keyboardLayoutOffset : 0,
+              marginBottom: shouldApplyStickerBottomOffset ? accessoryHeightAnim : 0,
               paddingBottom:
                 keyboardInset > 0 ||
                 stickerPickerVisible ||
@@ -3142,156 +3459,7 @@ export function ChatScreen({ navigation, route }: Props) {
             },
           ]}
         >
-          <View style={styles.composerStack}>
-            {composerContextMessage ? (
-              <Pressable
-                style={styles.composerContextCard}
-                onPress={() => {
-                  listRef.current?.scrollToEnd({ animated: true });
-                }}
-              >
-                <View style={styles.composerContextTextWrap}>
-                  <Text style={styles.composerContextLabel}>
-                    {editingMessageId ? "Tahrirlanmoqda" : composerContextMessage.senderName}
-                  </Text>
-                  <Text style={styles.composerContextText} numberOfLines={1}>
-                    {composerContextMessage.content}
-                  </Text>
-                </View>
-                <Pressable onPress={clearComposerMode} style={styles.composerContextClose}>
-                  <Ionicons name="close" size={16} color={Colors.mutedText} />
-                </Pressable>
-              </Pressable>
-            ) : null}
-
-            <View style={styles.composerRow}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.composerActionButton,
-                  pressed && styles.composerActionButtonPressed,
-                  isComposerDisabled && styles.composerActionButtonDisabled,
-                ]}
-                disabled={isComposerDisabled}
-                onPress={handleAttachmentPress}
-              >
-                <Ionicons name="image-outline" size={20} color={Colors.mutedText} />
-              </Pressable>
-
-              <View style={styles.composerField}>
-                <TextInput
-                  ref={composerInputRef}
-                  style={styles.composerInput}
-                  value={draft}
-                  onChangeText={setDraft}
-                  placeholder={
-                    isComposerDisabled
-                      ? "Suhbat yuklanmoqda..."
-                      : editingMessageId
-                        ? "Xabarni tahrirlash..."
-                        : "Xabar..."
-                  }
-                  placeholderTextColor={Colors.mutedText}
-                  multiline
-                  maxLength={3000}
-                  editable={isComposerInputEditable}
-                  showSoftInputOnFocus={composerSoftInputEnabled}
-                  caretHidden={!composerSoftInputEnabled}
-                  onFocus={() => {
-                    if (!composerSoftInputEnabled) {
-                      composerInputRef.current?.blur();
-                      return;
-                    }
-                    composerFocusedRef.current = true;
-                    shouldStickToBottomRef.current = true;
-                    if (stickerPickerVisible) {
-                      if (isWeb) {
-                        setStickerPickerVisible(false);
-                        setStickerToKeyboardTransition(false);
-                        setClosedToKeyboardTransition(false);
-                        animateAccessoryHeight(0, 120);
-                      } else if (Platform.OS === "android") {
-                        setStickerPickerVisible(false);
-                        setStickerToKeyboardTransition(false);
-                        setClosedToKeyboardTransition(false);
-                        animateAccessoryHeight(0, 120);
-                      } else {
-                        setStickerPickerVisible(false);
-                        setStickerToKeyboardTransition(true);
-                      }
-                    } else {
-                      beginClosedToKeyboardTransition();
-                    }
-                  }}
-                  onBlur={() => {
-                    composerFocusedRef.current = false;
-                    if (!stickerPickerVisible && keyboardInset <= 0) {
-                      setClosedToKeyboardTransition(false);
-                      animateAccessoryHeight(0, 160);
-                    }
-                  }}
-                />
-
-                <View style={styles.composerSideRight}>
-                  <Pressable
-                    style={styles.iconButton}
-                    disabled={isComposerDisabled}
-                    onPress={toggleStickerPicker}
-                  >
-                    <Ionicons
-                      name={isStickerPanelActive ? "keypad-outline" : "happy-outline"}
-                      size={20}
-                      color={Colors.mutedText}
-                    />
-                  </Pressable>
-
-                  {hasComposerText || editingMessageId ? (
-                    <Pressable
-                      onPress={handleSend}
-                      style={({ pressed }) => [
-                        styles.composerInlineSendButton,
-                        pressed && styles.composerInlineSendButtonPressed,
-                        ((!hasComposerText && Boolean(editingMessageId)) ||
-                          isSending ||
-                          isComposerDisabled) &&
-                          styles.composerInlineSendButtonDisabled,
-                      ]}
-                      disabled={((!hasComposerText && Boolean(editingMessageId)) ||
-                        isSending ||
-                        isComposerDisabled)}
-                    >
-                      {isSending ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Ionicons
-                          name={editingMessageId ? "checkmark" : "send"}
-                          size={15}
-                          color="#fff"
-                        />
-                      )}
-                    </Pressable>
-                  ) : null}
-                </View>
-              </View>
-
-              {!hasComposerText && !editingMessageId ? (
-                <Pressable
-                  onPress={handleVoiceMessagePress}
-                  style={({ pressed }) => [
-                    styles.sendButton,
-                    pressed && styles.sendButtonPressed,
-                    (isSending || isComposerDisabled) && styles.sendButtonDisabled,
-                  ]}
-                  disabled={isSending || isComposerDisabled}
-                >
-                  {isSending ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Ionicons name="mic" size={18} color="#fff" />
-                  )}
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
+          {composerContent}
         </Animated.View>
         <Animated.View style={[styles.stickerPickerShell, { height: accessoryHeightAnim }]}>
           {stickerPickerVisible ? (
@@ -3328,98 +3496,12 @@ export function ChatScreen({ navigation, route }: Props) {
         </Animated.View>
         </View>
 
-        {messageMenuMounted && selectedMessage?.type === "message" && selectedMessageLayout ? (
-          <View style={styles.messageMenuLayer} pointerEvents="box-none">
-            <Pressable style={styles.messageMenuBackdropPressable} onPress={closeMessageMenu}>
-              <Animated.View
-                style={[
-                  styles.messageMenuBackdrop,
-                  { opacity: messageMenuOverlayOpacity },
-                ]}
-              />
-            </Pressable>
-
-            <Animated.View
-              pointerEvents="box-none"
-              style={[
-                styles.messageMenuPreview,
-                {
-                  top: selectedMessageLayout.y,
-                  left: selectedMessageLayout.x,
-                  width: selectedMessageLayout.width,
-                  transform: [
-                    { translateY: messageMenuBubbleLift },
-                    { scale: messageMenuBubbleScale },
-                  ],
-                },
-              ]}
-            >
-              <View
-                style={[
-                  styles.messageBubble,
-                  selectedMessageIsMine
-                    ? styles.messageBubbleMine
-                    : styles.messageBubbleTheirs,
-                  styles.messageMenuBubbleFixed,
-                  styles.messageMenuBubbleShadow,
-                ]}
-              >
-                <MessageBubbleBody
-                  message={selectedMessage.message}
-                  isMine={Boolean(selectedMessageIsMine)}
-                  isGroup={Boolean(currentChat?.isGroup)}
-                  onPressMention={handleMentionPress}
-                  selectable
-                />
-              </View>
-            </Animated.View>
-
-            {messageMenuPosition ? (
-              <Animated.View
-                style={[
-                  styles.messageMenuActionBar,
-                  {
-                    top: messageMenuPosition.actionsTop,
-                    left: messageMenuPosition.actionsLeft,
-                    opacity: messageMenuOverlayOpacity,
-                    transform: [
-                      { translateY: messageMenuActionsTranslateY },
-                      { scale: messageMenuActionsScale },
-                    ],
-                  },
-                ]}
-              >
-                {canReplySelectedMessage ? (
-                  <Pressable style={styles.messageMenuAction} onPress={handleReply}>
-                    <Reply size={17} color={Colors.text} />
-                    <Text style={styles.messageMenuActionText}>Javob</Text>
-                  </Pressable>
-                ) : null}
-                {canCopySelectedMessage ? (
-                  <Pressable style={styles.messageMenuAction} onPress={() => void handleCopyMessage()}>
-                    <Ionicons name="copy-outline" size={17} color={Colors.text} />
-                    <Text style={styles.messageMenuActionText}>Copy</Text>
-                  </Pressable>
-                ) : null}
-                {canEditSelectedMessage ? (
-                  <Pressable style={styles.messageMenuAction} onPress={handleEditMessage}>
-                    <Edit2 size={17} color={Colors.text} />
-                    <Text style={styles.messageMenuActionText}>Edit</Text>
-                  </Pressable>
-                ) : null}
-                {canDeleteSelectedMessage ? (
-                  <Pressable style={styles.messageMenuAction} onPress={handleDeleteMessage}>
-                    <Trash2 size={17} color={Colors.danger} />
-                    <Text style={[styles.messageMenuActionText, styles.messageMenuActionTextDanger]}>
-                      Delete
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </Animated.View>
-            ) : null}
-          </View>
+        {Platform.OS === "ios" && messageMenuOverlayContent ? (
+          <FullWindowOverlay>{messageMenuOverlayContent}</FullWindowOverlay>
         ) : null}
       </Animated.View>
+
+      {Platform.OS !== "ios" ? messageMenuOverlayContent : null}
 
       <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable style={styles.menuOverlay} onPress={() => setMenuOpen(false)}>
@@ -3931,6 +4013,7 @@ const styles = StyleSheet.create({
   chatBody: {
     flex: 1,
     position: "relative",
+    overflow: "hidden",
   },
   messagesListHidden: {
     opacity: 0,
@@ -4076,15 +4159,15 @@ const styles = StyleSheet.create({
   },
   messageMenuLayer: {
     ...StyleSheet.absoluteFillObject,
-    zIndex: 25,
-    elevation: 25,
+    zIndex: 999,
+    elevation: 999,
   },
   messageMenuBackdropPressable: {
     ...StyleSheet.absoluteFillObject,
   },
   messageMenuBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.48)",
+    backgroundColor: "rgba(0,0,0,0.7)",
   },
   messageMenuPreview: {
     position: "absolute",
@@ -4189,6 +4272,22 @@ const styles = StyleSheet.create({
   },
   composerStack: {
     gap: 8,
+  },
+  composerNoticeCard: {
+    alignSelf: "center",
+    maxWidth: "92%",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: "rgba(20, 22, 24, 0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  composerNoticeText: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "600",
+    textAlign: "center",
   },
   composerRow: {
     flexDirection: "row",
