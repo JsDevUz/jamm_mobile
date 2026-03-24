@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Easing,
   Keyboard,
   Modal,
   type NativeScrollEvent,
@@ -462,12 +463,15 @@ function MessageRichText({
       <TextInput
         style={[styles.messageText, styles.messageSelectableInput]}
         value={content}
+        readOnly
         editable={false}
         multiline
         scrollEnabled={false}
-        selectTextOnFocus
+        selectTextOnFocus={false}
         showSoftInputOnFocus={false}
         contextMenuHidden={false}
+        disableFullscreenUI
+        rejectResponderTermination={false}
       />
     );
   }
@@ -1967,11 +1971,10 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const closeMessageMenu = () => {
     setMessageMenuOpen(false);
-    Animated.spring(messageMenuAnim, {
+    Animated.timing(messageMenuAnim, {
       toValue: 0,
-      damping: 26,
-      stiffness: 240,
-      mass: 0.95,
+      duration: 170,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (!finished) {
@@ -2226,17 +2229,19 @@ export function ChatScreen({ navigation, route }: Props) {
           </View>
 
           <View style={styles.composerSideRight}>
-            <Pressable
-              style={styles.iconButton}
-              disabled={isComposerDisabled}
-              onPress={toggleStickerPicker}
-            >
-              <Ionicons
-                name={isStickerPanelActive ? "keypad-outline" : "happy-outline"}
-                size={20}
-                color={Colors.mutedText}
-              />
-            </Pressable>
+            {hasComposerText || editingMessageId || isStickerPanelActive ? (
+              <Pressable
+                style={styles.iconButton}
+                disabled={isComposerDisabled}
+                onPress={toggleStickerPicker}
+              >
+                <Ionicons
+                  name={isStickerPanelActive ? "keypad-outline" : "happy-outline"}
+                  size={20}
+                  color={Colors.mutedText}
+                />
+              </Pressable>
+            ) : null}
 
             {hasComposerText || editingMessageId ? (
               <Pressable
@@ -2398,7 +2403,7 @@ export function ChatScreen({ navigation, route }: Props) {
         </Pressable>
 
         <Animated.View
-          pointerEvents="box-none"
+          pointerEvents="auto"
           style={[
             styles.messageMenuPreview,
             {
@@ -2478,8 +2483,11 @@ export function ChatScreen({ navigation, route }: Props) {
       </View>
     ) : null;
   const shouldApplyStickerBottomOffset =
-    (!useNativeKeyboardLayout && (stickerPickerVisible || stickerToKeyboardTransition)) ||
-    (useNativeKeyboardLayout && stickerUsesAccessoryOffset);
+    !useNativeKeyboardLayout && (stickerPickerVisible || stickerToKeyboardTransition);
+  const dockedAccessoryOffset =
+    useNativeKeyboardLayout && stickerUsesAccessoryOffset
+      ? accessoryHeightAnim
+      : keyboardLayoutOffset;
   const typingMembers = useMemo(
     () =>
       typingUserIds
@@ -3358,8 +3366,7 @@ export function ChatScreen({ navigation, route }: Props) {
             styles.messagesViewport,
             useNativeKeyboardLayout
               ? {
-                  bottom: keyboardLayoutOffset,
-                  marginBottom: shouldApplyStickerBottomOffset ? accessoryHeightAnim : 0,
+                  bottom: dockedAccessoryOffset,
                 }
               : null,
           ]}
@@ -3498,7 +3505,7 @@ export function ChatScreen({ navigation, route }: Props) {
               position: useKeyboardAvoidingBody ? "relative" : "absolute",
               left: useKeyboardAvoidingBody ? undefined : 0,
               right: useKeyboardAvoidingBody ? undefined : 0,
-              bottom: useNativeKeyboardLayout ? keyboardLayoutOffset : 0,
+              bottom: useNativeKeyboardLayout ? dockedAccessoryOffset : 0,
               marginBottom: shouldApplyStickerBottomOffset ? accessoryHeightAnim : 0,
               paddingBottom:
                 keyboardInset > 0 ||
