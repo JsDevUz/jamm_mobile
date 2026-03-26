@@ -29,6 +29,7 @@ import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { Delete, Lock } from "lucide-react-native";
 import {
   SafeAreaView,
@@ -1778,24 +1779,26 @@ export default function App() {
   return (
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-        <QueryClientProvider client={queryClient}>
-          <GlobalScrollBehavior />
-          <AppServices />
-          <DeepLinkBridge navigationReady={navigationReady} />
-          <View style={styles.appShell}>
-            <NavigationContainer
-              ref={navigationRef}
-              theme={navTheme}
-              onReady={() => setNavigationReady(true)}
-            >
-              <StatusBar style="light" backgroundColor={Colors.background} />
-              <RootNavigator />
-            </NavigationContainer>
-            <IncomingCallOverlay />
-            <AppLockOverlay />
-            <GuidedTourOverlay />
-          </View>
-        </QueryClientProvider>
+        <KeyboardProvider>
+          <QueryClientProvider client={queryClient}>
+            <GlobalScrollBehavior />
+            <AppServices />
+            <DeepLinkBridge navigationReady={navigationReady} />
+            <View style={styles.appShell}>
+              <NavigationContainer
+                ref={navigationRef}
+                theme={navTheme}
+                onReady={() => setNavigationReady(true)}
+              >
+                <StatusBar style="light" backgroundColor={Colors.background} />
+                <RootNavigator />
+              </NavigationContainer>
+              <IncomingCallOverlay />
+              <AppLockOverlay />
+              <GuidedTourOverlay />
+            </View>
+          </QueryClientProvider>
+        </KeyboardProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

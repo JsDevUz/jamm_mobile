@@ -1,64 +1,38 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
   Alert,
   Animated,
   Easing,
-  Keyboard,
-  Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  type TextInputSelectionChangeEventData,
   PanResponder,
   Platform,
-  Pressable,
-  ScrollView,
-  Switch,
   StyleSheet,
-  Text,
   TextInput as NativeTextInput,
   useWindowDimensions,
   View,
 } from "react-native";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { InfiniteData } from "@tanstack/react-query";
+import {
+  useQueryClient,
+} from "@tanstack/react-query";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { FlashList } from "@shopify/flash-list";
 import type { FlashListRef, ViewToken } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
-import * as Clipboard from "expo-clipboard";
-import { Image } from "expo-image";
 import * as Notifications from "expo-notifications";
-import {
-  PanGestureHandler,
-  State,
-  type PanGestureHandlerStateChangeEvent,
-} from "react-native-gesture-handler";
 import { FullWindowOverlay } from "react-native-screens";
-import {
-  ChevronDown,
-  Check,
-  CheckCheck,
-  Edit2,
-  Info,
-  LogOut,
-  MoreVertical,
-  Phone,
-  Reply,
-  Timer,
-  Trash2,
-  Video,
-  X,
-} from "lucide-react-native";
 import * as Haptics from "expo-haptics";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Avatar } from "../../components/Avatar";
-import { TextInput } from "../../components/TextInput";
-import { UserDisplayName } from "../../components/UserDisplayName";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { EditGroupDialog } from "./GroupDialogs";
-import { CHAT_EMOJI_SECTIONS } from "./constants/emojis";
-import { APP_BASE_URL } from "../../config/env";
-import { chatsApi } from "../../lib/api";
 import {
   loadCachedChats,
   loadCachedMessages,
@@ -69,35 +43,50 @@ import {
 } from "../../lib/chat-cache";
 import {
   bootstrapPushNotifications,
-  setActiveNotificationChatId,
 } from "../../lib/notifications";
 import { realtime } from "../../lib/realtime";
 import type { RootStackParamList } from "../../navigation/types";
 import {
-  openJammAwareLink,
   openJammProfileMention,
 } from "../../navigation/internalLinks";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import type { ChatSummary, Message, User } from "../../types/entities";
 import {
-  buildMessageItems,
-  getChatAvatarUri,
-  getChatTitle,
   getEntityId,
-  getOtherMember,
-  getDirectChatUserLabel,
   normalizeReadByIds,
 } from "../../utils/chat";
 import type { MessageListItem, NormalizedMessage } from "../../utils/chat";
+import { AvatarPreviewModal } from "./components/AvatarPreviewModal";
+import { ChatBody } from "./components/ChatBody";
+import { ChatHeader } from "./components/ChatHeader";
+import { ChatInfoDrawer } from "./components/ChatInfoDrawer";
+import { ChatMenuModal } from "./components/ChatMenuModal";
+import { MessageContextMenuOverlay } from "./components/MessageContextMenuOverlay";
+import { OutgoingCallModal } from "./components/OutgoingCallModal";
+import { useChatConversationMeta } from "./hooks/useChatConversationMeta";
+import { useChatComposerController } from "./hooks/useChatComposerController";
+import { useChatDockController } from "./hooks/useChatDockController";
+import { useChatGroupActions } from "./hooks/useChatGroupActions";
+import { useChatInfoActions } from "./hooks/useChatInfoActions";
+import { useChatMessageActions } from "./hooks/useChatMessageActions";
+import { useChatMessageOverlay } from "./hooks/useChatMessageOverlay";
+import {
+  getMessageDeliveryStatus,
+  getMessageIdentity,
+  getNormalizedSenderId,
+  patchMessagesPages,
+  updateMessageByIdInPages,
+  upsertMessageInPages,
+  type MessagesInfiniteData,
+  useChatMessagesData,
+} from "./hooks/useChatMessagesData";
+import { useChatOutgoingCall } from "./hooks/useChatOutgoingCall";
+import { useChatPresenceLifecycle } from "./hooks/useChatPresenceLifecycle";
+import { useChatStatusMeta } from "./hooks/useChatStatusMeta";
+import { useMessageMenuState } from "./hooks/useMessageMenuState";
 
 type Props = NativeStackScreenProps<RootStackParamList, "ChatRoom">;
-type MessageMenuLayout = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
 
 const MESSAGE_MENU_SCREEN_PADDING = 12;
 const MESSAGE_MENU_GAP = 14;
@@ -105,759 +94,46 @@ const MESSAGE_MENU_WIDTH = 188;
 const MESSAGE_MENU_ITEM_HEIGHT = 46;
 const MESSAGE_MENU_ACTION_GAP = 4;
 const MESSAGE_MENU_ACTIONS_PADDING = 6;
-const DEFAULT_STICKER_PICKER_HEIGHT = 320;
 
-type MessagesInfiniteData = InfiniteData<{
-  data?: Message[];
-  nextCursor?: string | null;
-  hasMore?: boolean;
-}, string | null>;
-
-const ONLINE_PRESENCE_WINDOW_MS = 45_000;
 const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
 const NEW_MESSAGES_BOTTOM_THRESHOLD = 96;
-
-const getNormalizedSenderId = (senderId?: string | User | null) =>
-  typeof senderId === "string" ? senderId : getEntityId(senderId);
-
-const getMessageIdentity = (message?: { _id?: string; id?: string } | null) =>
-  getEntityId(message);
-
-const getMessageDeliveryStatus = (message: Message) => {
-  const explicitStatus = String(message.deliveryStatus || "").trim();
-  if (explicitStatus) {
-    return explicitStatus;
-  }
-
-  return normalizeReadByIds(message.readBy || []).length > 0 ? "read" : "sent";
-};
-
-const upsertChatSummary = (current: ChatSummary[], nextChat: ChatSummary) => {
-  const nextChatId = getEntityId(nextChat);
-  if (!nextChatId) {
-    return current;
-  }
-
-  const existingIndex = current.findIndex((chat) => getEntityId(chat) === nextChatId);
-  if (existingIndex === -1) {
-    return [nextChat, ...current];
-  }
-
-  const nextChats = [...current];
-  nextChats.splice(existingIndex, 1);
-  nextChats.unshift({
-    ...current[existingIndex],
-    ...nextChat,
-  });
-  return nextChats;
-};
-
-const updateChatPushNotificationsInList = (
-  current: ChatSummary[] | undefined,
-  chatId: string,
-  enabled: boolean,
-) =>
-  (current || []).map((chat) =>
-    getEntityId(chat) === chatId
-      ? {
-          ...chat,
-          pushNotificationsEnabled: enabled,
-        }
-      : chat,
-  );
-
-const isMatchingOptimisticMessage = (
-  message: Message,
-  nextMessage: Message,
-  currentUserId: string,
-) => {
-  if (getMessageDeliveryStatus(message) !== "pending") {
-    return false;
-  }
-
-  const messageSenderId = String(getNormalizedSenderId(message.senderId) || "");
-  const nextSenderId = String(getNormalizedSenderId(nextMessage.senderId) || "");
-
-  if (!currentUserId || messageSenderId !== currentUserId || nextSenderId !== currentUserId) {
-    return false;
-  }
-
-  if (String(message.content || "").trim() !== String(nextMessage.content || "").trim()) {
-    return false;
-  }
-
-  if (
-    String(getMessageIdentity(message.replayTo) || "") !==
-    String(getMessageIdentity(nextMessage.replayTo) || "")
-  ) {
-    return false;
-  }
-
-  const optimisticTime = new Date(message.createdAt || 0).getTime();
-  const nextTime = new Date(nextMessage.createdAt || Date.now()).getTime();
-  return Math.abs(nextTime - optimisticTime) < 120000;
-};
-
-const patchMessagesPages = (
-  previous: MessagesInfiniteData | undefined,
-  updater: (pages: Array<{ data?: Message[]; nextCursor?: string | null; hasMore?: boolean }>) => Array<{
-    data?: Message[];
-    nextCursor?: string | null;
-    hasMore?: boolean;
-  }>,
-): MessagesInfiniteData => {
-  const base =
-    previous ||
-    ({
-      pages: [{ data: [], nextCursor: null, hasMore: false }],
-      pageParams: [null],
-    } satisfies MessagesInfiniteData);
-
-  return {
-    ...base,
-    pages: updater(base.pages),
-  };
-};
-
-const upsertMessageInPages = (
-  previous: MessagesInfiniteData | undefined,
-  nextMessage: Message,
-  currentUserId: string,
-) =>
-  patchMessagesPages(previous, (pages) => {
-    let hasExactMessage = false;
-    let optimisticReplaced = false;
-
-    const nextPages = pages.map((page) => {
-      const pageData = page.data || [];
-
-      const exactIndex = pageData.findIndex(
-        (message) => getMessageIdentity(message) === getMessageIdentity(nextMessage),
-      );
-
-      if (exactIndex !== -1) {
-        hasExactMessage = true;
-        const updatedData = [...pageData];
-        updatedData[exactIndex] = {
-          ...updatedData[exactIndex],
-          ...nextMessage,
-          deliveryStatus: getMessageDeliveryStatus(nextMessage),
-        };
-        return {
-          ...page,
-          data: updatedData,
-        };
-      }
-
-      const optimisticIndex = pageData.findIndex((message) =>
-        isMatchingOptimisticMessage(message, nextMessage, currentUserId),
-      );
-
-      if (optimisticIndex !== -1) {
-        optimisticReplaced = true;
-        const updatedData = [...pageData];
-        updatedData[optimisticIndex] = {
-          ...nextMessage,
-          deliveryStatus: getMessageDeliveryStatus(nextMessage),
-          isLocalOnly: false,
-        };
-        return {
-          ...page,
-          data: updatedData,
-        };
-      }
-
-      return page;
-    });
-
-    if (hasExactMessage || optimisticReplaced) {
-      return nextPages;
-    }
-
-    const [latestPage, ...restPages] = nextPages;
-    return [
-      {
-        ...latestPage,
-        data: [...(latestPage?.data || []), nextMessage],
-      },
-      ...restPages,
-    ];
-  });
-
-const updateMessageByIdInPages = (
-  previous: MessagesInfiniteData | undefined,
-  messageId: string,
-  updater: (message: Message) => Message | null,
-) =>
-  patchMessagesPages(previous, (pages) =>
-    pages.map((page) => ({
-      ...page,
-      data: (page.data || []).flatMap((message) => {
-        if (getMessageIdentity(message) !== messageId) {
-          return [message];
-        }
-
-        const nextMessage = updater(message);
-        return nextMessage ? [nextMessage] : [];
-      }),
-    })),
-  );
-
-const createOptimisticMessage = ({
-  content,
-  replyToMessage,
-  currentUser,
-}: {
-  content: string;
-  replyToMessage: Message | null;
-  currentUser: User | null | undefined;
-}): Message => {
-  const createdAt = new Date().toISOString();
-  const userId = getEntityId(currentUser);
-
-  return {
-    id: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    senderId: {
-      ...currentUser,
-      id: userId,
-      _id: userId,
-    },
-    content,
-    createdAt,
-    updatedAt: createdAt,
-    timestamp: createdAt,
-    isEdited: false,
-    isDeleted: false,
-    readBy: [],
-    replayTo: replyToMessage,
-    deliveryStatus: "pending",
-    isLocalOnly: true,
-  };
-};
-
-function MessageReceiptIcon({
-  message,
-}: {
-  message: NormalizedMessage;
-}) {
-  if (message.isDeleted) {
-    return null;
-  }
-
-  if (message.deliveryStatus === "failed" || message.deliveryStatus === "cancelled") {
-    return <X size={13} color={Colors.danger} />;
-  }
-
-  if (message.deliveryStatus === "pending") {
-    return <Timer size={13} color={Colors.mutedText} />;
-  }
-
-  if (message.deliveryStatus === "read" || message.readBy.length > 0) {
-    return <CheckCheck size={13} color={Colors.primary} />;
-  }
-
-  return <Check size={13} color={Colors.mutedText} />;
-}
-
-type MessageContentPart =
-  | {
-      type: "text";
-      content: string;
-    }
-  | {
-      type: "mention";
-      content: string;
-      username: string;
-    }
-  | {
-      type: "url";
-      content: string;
-      url: string;
-    };
-
-function parseMessageContent(content: string): MessageContentPart[] {
-  const mentionRegex = /@(\w+)/g;
-  const urlRegex = /((?:https?:\/\/[^\s]+)|(?:(?:www\.)?jamm\.uz(?:\/[^\s]*)?))/gi;
-  const matches: Array<
-    | {
-        type: "mention";
-        index: number;
-        length: number;
-        username: string;
-        content: string;
-      }
-    | {
-        type: "url";
-        index: number;
-        length: number;
-        url: string;
-        content: string;
-      }
-  > = [];
-
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = mentionRegex.exec(content)) !== null) {
-    matches.push({
-      type: "mention",
-      index: match.index,
-      length: match[0].length,
-      username: match[1],
-      content: match[0],
-    });
-  }
-
-  while ((match = urlRegex.exec(content)) !== null) {
-    matches.push({
-      type: "url",
-      index: match.index,
-      length: match[0].length,
-      url: match[0],
-      content: match[0],
-    });
-  }
-
-  matches.sort((left, right) => left.index - right.index);
-
-  const parts: MessageContentPart[] = [];
-  for (const entry of matches) {
-    if (entry.index < lastIndex) {
-      continue;
-    }
-
-    if (entry.index > lastIndex) {
-      parts.push({
-        type: "text",
-        content: content.slice(lastIndex, entry.index),
-      });
-    }
-
-    parts.push(entry);
-    lastIndex = entry.index + entry.length;
-  }
-
-  if (lastIndex < content.length) {
-    parts.push({
-      type: "text",
-      content: content.slice(lastIndex),
-    });
-  }
-
-  return parts.length > 0 ? parts : [{ type: "text", content }];
-}
-
-function MessageRichText({
-  content,
-  onPressMention,
-  onLongPress,
-  selectable = false,
-}: {
-  content: string;
-  onPressMention: (username: string) => void;
-  onLongPress?: () => void;
-  selectable?: boolean;
-}) {
-  if (selectable) {
-    return (
-      <TextInput
-        style={[styles.messageText, styles.messageSelectableInput]}
-        value={content}
-        readOnly
-        editable={false}
-        multiline
-        scrollEnabled={false}
-        selectTextOnFocus={false}
-        showSoftInputOnFocus={false}
-        contextMenuHidden={false}
-        disableFullscreenUI
-        rejectResponderTermination={false}
-      />
-    );
-  }
-
-  const parts = parseMessageContent(content);
-
-  return (
-    <Text style={styles.messageText} onLongPress={onLongPress} selectable={selectable}>
-      {parts.map((part, index) => {
-        if (part.type === "url") {
-          return (
-            <Text
-              key={`${part.type}-${index}`}
-              style={styles.messageLink}
-              selectable={selectable}
-              onLongPress={onLongPress}
-              onPress={() => {
-                void openJammAwareLink(part.url).catch(() => {
-                  Alert.alert("Link ochilmadi", part.url);
-                });
-              }}
-            >
-              {part.content}
-            </Text>
-          );
-        }
-
-        if (part.type === "mention") {
-          return (
-            <Text
-              key={`${part.type}-${index}`}
-              style={styles.messageMention}
-              selectable={selectable}
-              onLongPress={onLongPress}
-              onPress={() => onPressMention(part.username)}
-            >
-              {part.content}
-            </Text>
-          );
-        }
-
-        return <Fragment key={`${part.type}-${index}`}>{part.content}</Fragment>;
-      })}
-    </Text>
-  );
-}
-
-function MessageBubbleBody({
-  message,
-  isMine,
-  isGroup,
-  onPressMention,
-  onPressReplyPreview,
-  onLongPress,
-  selectable = false,
-}: {
-  message: NormalizedMessage;
-  isMine: boolean;
-  isGroup: boolean;
-  onPressMention: (username: string) => void;
-  onPressReplyPreview?: (messageId: string) => void;
-  onLongPress?: () => void;
-  selectable?: boolean;
-}) {
-  return (
-    <>
-      {isGroup && !isMine ? (
-        <UserDisplayName
-          user={message.senderUser}
-          fallback={message.senderName}
-          size="sm"
-          textStyle={styles.senderLabel}
-        />
-      ) : null}
-
-      {message.replayTo ? (
-        <Pressable
-          disabled={!getMessageIdentity(message.replayTo)}
-          onPress={() => {
-            const targetMessageId = getMessageIdentity(message.replayTo);
-            if (targetMessageId) {
-              onPressReplyPreview?.(targetMessageId);
-            }
-          }}
-          style={[
-            styles.replyPreview,
-            isMine ? styles.replyPreviewMine : styles.replyPreviewTheirs,
-          ]}
-        >
-          <UserDisplayName
-            user={message.replayTo.senderUser}
-            fallback={message.replayTo.senderName}
-            size="sm"
-            textStyle={[
-              styles.replyPreviewAuthor,
-              isMine && styles.replyPreviewAuthorMine,
-            ]}
-          />
-          <Text style={styles.replyPreviewText} numberOfLines={1}>
-            {message.replayTo.content || "Bu xabar o'chirilgan"}
-          </Text>
-        </Pressable>
-      ) : null}
-
-      <MessageRichText
-        content={message.content}
-        onPressMention={onPressMention}
-        onLongPress={onLongPress}
-        selectable={selectable}
-      />
-
-      <View style={styles.messageFooter}>
-        {isGroup && message.isEdited ? (
-          <Text style={styles.messageEdited}>edited</Text>
-        ) : null}
-        <Text style={styles.messageTime}>{message.timeLabel}</Text>
-        {isMine ? (
-          <View style={styles.messageReceiptIcon}>
-            <MessageReceiptIcon message={message} />
-          </View>
-        ) : null}
-      </View>
-    </>
-  );
-}
-
-function ChatMessageRow({
-  message,
-  isMine,
-  isGroup,
-  onOpenMenu,
-  onPressMention,
-  onPressReplyPreview,
-  onSwipeReply,
-  highlightPulseKey = 0,
-  hidden = false,
-}: {
-  message: NormalizedMessage;
-  isMine: boolean;
-  isGroup: boolean;
-  onOpenMenu: (messageId: string, target: View | null) => void;
-  onPressMention: (username: string) => void;
-  onPressReplyPreview: (messageId: string) => void;
-  onSwipeReply: (message: NormalizedMessage) => void;
-  highlightPulseKey?: number;
-  hidden?: boolean;
-}) {
-  const swipeReplyDisabled = Boolean(message.isDeleted);
-  const gestureTranslateX = useRef(new Animated.Value(0)).current;
-  const highlightAnim = useRef(new Animated.Value(0)).current;
-  const bubbleRef = useRef<View | null>(null);
-  const shouldTriggerReplySwipe = (dx: number, vx: number) =>
-    dx < -28 || vx < -0.2;
-  const translateX = gestureTranslateX.interpolate({
-    inputRange: [-80, 0, 80],
-    outputRange: [-80, 0, 0],
-    extrapolate: "clamp",
-  });
-  const replyHintOpacity = translateX.interpolate({
-    inputRange: [-56, -18, 0],
-    outputRange: [1, 0.35, 0],
-    extrapolate: "clamp",
-  });
-  const replyHintTranslateX = translateX.interpolate({
-    inputRange: [-56, 0],
-    outputRange: [0, 10],
-    extrapolate: "clamp",
-  });
-
-  const animateBack = () => {
-    Animated.spring(gestureTranslateX, {
-      toValue: 0,
-      damping: 18,
-      stiffness: 240,
-      mass: 0.7,
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const handleSwipeReply = () => {
-    if (swipeReplyDisabled) {
-      animateBack();
-      return;
-    }
-
-    animateBack();
-    onSwipeReply(message);
-  };
-
-  const handleGestureStateChange = (event: PanGestureHandlerStateChangeEvent) => {
-    const { oldState, translationX, velocityX } = event.nativeEvent;
-    if (oldState !== State.ACTIVE) {
-      return;
-    }
-
-    const shouldReply = shouldTriggerReplySwipe(translationX, velocityX);
-    if (shouldReply) {
-      handleSwipeReply();
-      return;
-    }
-
-    animateBack();
-  };
-
-  const handleGestureEvent = Animated.event(
-    [{ nativeEvent: { translationX: gestureTranslateX } }],
-    { useNativeDriver: true },
-  );
-  const highlightedBubbleStyle = useMemo(
-    () => ({
-      backgroundColor: highlightAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [Colors.input, isMine ? "rgba(88,101,242,0.34)" : "rgba(88,101,242,0.22)"],
-      }),
-      transform: [
-        {
-          scale: highlightAnim.interpolate({
-            inputRange: [0, 1],
-            outputRange: [1, 1.018],
-          }),
-        },
-      ],
-      borderColor: highlightAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: ["transparent", "rgba(88,101,242,0.55)"],
-      }),
-      borderWidth: highlightAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, 1],
-      }),
-    }),
-    [highlightAnim, isMine],
-  );
-
-  useEffect(() => {
-    if (!highlightPulseKey) {
-      return;
-    }
-
-    highlightAnim.stopAnimation();
-    highlightAnim.setValue(0);
-    Animated.sequence([
-      Animated.timing(highlightAnim, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: false,
-      }),
-      Animated.delay(700),
-      Animated.timing(highlightAnim, {
-        toValue: 0,
-        duration: 360,
-        useNativeDriver: false,
-      }),
-    ]).start();
-  }, [highlightAnim, highlightPulseKey]);
-
-  return (
-    <View style={styles.messageRowSwipeContainer}>
-      {!swipeReplyDisabled ? (
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            styles.swipeReplyHint,
-            {
-              opacity: replyHintOpacity,
-              transform: [{ translateX: replyHintTranslateX }],
-            },
-          ]}
-        >
-          <Reply size={16} color={Colors.primary} />
-        </Animated.View>
-      ) : null}
-      <PanGestureHandler
-        enabled={!swipeReplyDisabled}
-        activeOffsetX={[-12, 9999]}
-        failOffsetY={[-12, 12]}
-        shouldCancelWhenOutside={false}
-        onGestureEvent={handleGestureEvent}
-        onHandlerStateChange={handleGestureStateChange}
-      >
-        <Animated.View
-          style={[
-            styles.messageRowAnimated,
-            {
-              transform: [{ translateX }],
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.messageRow,
-              isMine ? styles.messageRowMine : styles.messageRowTheirs,
-            ]}
-          >
-            <Animated.View
-              ref={bubbleRef}
-              style={[
-                styles.messageBubble,
-                isMine ? styles.messageBubbleMine : styles.messageBubbleTheirs,
-                highlightedBubbleStyle,
-                hidden && styles.messageBubbleHidden,
-              ]}
-            >
-              <Pressable
-                onLongPress={() => onOpenMenu(message.id, bubbleRef.current)}
-                delayLongPress={220}
-                style={styles.messageBubblePressable}
-              >
-                <MessageBubbleBody
-                  message={message}
-                  isMine={isMine}
-                  isGroup={isGroup}
-                  onPressMention={onPressMention}
-                  onPressReplyPreview={onPressReplyPreview}
-                  onLongPress={() => onOpenMenu(message.id, bubbleRef.current)}
-                />
-              </Pressable>
-            </Animated.View>
-          </View>
-        </Animated.View>
-      </PanGestureHandler>
-    </View>
-  );
-}
 
 export function ChatScreen({ navigation, route }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const isWeb = Platform.OS === "web";
-  const useKeyboardAvoidingBody = false;
-  const useNativeKeyboardLayout = Platform.OS === "ios" && !isWeb;
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
-  const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(66);
-  const [composerNotice, setComposerNotice] = useState<string | null>(null);
-  const [keyboardInset, setKeyboardInset] = useState(0);
-  const [keyboardLayoutOffset, setKeyboardLayoutOffset] = useState(0);
-  const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
-  const [stickerUsesAccessoryOffset, setStickerUsesAccessoryOffset] = useState(false);
-  const [stickerToKeyboardTransition, setStickerToKeyboardTransition] = useState(false);
-  const [closedToKeyboardTransition, setClosedToKeyboardTransition] = useState(false);
-  const [composerSoftInputEnabled, setComposerSoftInputEnabled] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editGroupOpen, setEditGroupOpen] = useState(false);
   const [infoDrawerOpen, setInfoDrawerOpen] = useState(false);
   const [infoDrawerUserId, setInfoDrawerUserId] = useState<string | null>(null);
   const [infoPageMounted, setInfoPageMounted] = useState(false);
   const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
-  const [messageMenuOpen, setMessageMenuOpen] = useState(false);
-  const [messageMenuMounted, setMessageMenuMounted] = useState(false);
   const [messageListVisible, setMessageListVisible] = useState(false);
   const [chatCacheHydrated, setChatCacheHydrated] = useState(false);
   const [messagesCacheHydrated, setMessagesCacheHydrated] = useState(false);
-  const [savedScrollOffset, setSavedScrollOffset] = useState<number | null>(null);
-  const [pendingNewMessageIds, setPendingNewMessageIds] = useState<string[]>([]);
-  const [visibleMessageIds, setVisibleMessageIds] = useState<string[]>([]);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const [highlightPulseKey, setHighlightPulseKey] = useState(0);
-  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
-  const [selectedMessageLayout, setSelectedMessageLayout] = useState<MessageMenuLayout | null>(
+  const [savedScrollOffset, setSavedScrollOffset] = useState<number | null>(
     null,
   );
+  const [pendingNewMessageIds, setPendingNewMessageIds] = useState<string[]>(
+    [],
+  );
+  const [visibleMessageIds, setVisibleMessageIds] = useState<string[]>([]);
   const [replyingToId, setReplyingToId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
-  const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() => realtime.getOnlineUserIds());
-  const [outgoingCall, setOutgoingCall] = useState<{
-    roomId: string;
-    remoteUser: User;
-    chatId: string;
-  } | null>(null);
-  const outgoingCallRef = useRef<{
-    roomId: string;
-    remoteUser: User;
-    chatId: string;
-  } | null>(null);
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() =>
+    realtime.getOnlineUserIds(),
+  );
   const listRef = useRef<FlashListRef<MessageListItem>>(null);
   const messageItemsRef = useRef<MessageListItem[]>([]);
   const hasNextPageRef = useRef(false);
-  const messageHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const composerInputRef = useRef<NativeTextInput>(null);
   const composerSelectionRef = useRef({ start: 0, end: 0 });
   const composerFocusedRef = useRef(false);
-  const composerNoticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMenuInfoRef = useRef<{
@@ -867,113 +143,67 @@ export function ChatScreen({ navigation, route }: Props) {
   const initialScrollDoneRef = useRef(false);
   const scrollOffsetRef = useRef(0);
   const scrollRestorePendingRef = useRef<number | null>(null);
-  const scrollPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const shouldStickToBottomRef = useRef(true);
   const previousLastMessageIdRef = useRef<string | null>(null);
   const previousMessageCountRef = useRef(0);
-  const messageMenuAnim = useRef(new Animated.Value(0)).current;
-  const accessoryHeightAnim = useRef(new Animated.Value(0)).current;
   const infoPageTranslateX = useRef(new Animated.Value(screenWidth)).current;
   const infoPageBackdropOpacity = useRef(new Animated.Value(0)).current;
   const infoPageStartXRef = useRef(screenWidth);
-  const lastKeyboardInsetRef = useRef(0);
   const isBackSwipeGesture = (dx: number, dy: number, vx: number) =>
     dx > 2 &&
     ((dx > 10 && Math.abs(dx) > Math.abs(dy) * 0.45) || (dx > 4 && vx > 0.08));
   const shouldFinishBackSwipe = (dx: number, vx: number) =>
     dx > screenWidth * 0.12 || vx > 0.2;
 
-  const chatsQuery = useQuery({
-    queryKey: ["chats"],
-    queryFn: chatsApi.fetchChats,
-    refetchOnMount: false,
-    refetchOnReconnect: false,
+  const {
+    chatsQuery,
+    currentChat,
+    hasChatsSnapshot,
+    messagesQuery,
+    hasMessagesSnapshot,
+    flatMessages,
+    messageItems,
+    stickyDateHeaderIndices,
+    initialMessageIndex,
+    sendMutation,
+    editMutation,
+    deleteMutation,
+    chatPushNotificationsMutation,
+  } = useChatMessagesData({
+    chatId: route.params.chatId,
+    routeIsGroup: Boolean(route.params.isGroup),
+    currentUserId,
+    savedScrollOffset,
+    initialScrollDone: initialScrollDoneRef.current,
   });
-
-  const currentChat = useMemo(
-    () =>
-      (chatsQuery.data || []).find(
-        (chat) =>
-          Boolean(chat.isGroup) === Boolean(route.params.isGroup) &&
-          (
-          getEntityId(chat) === route.params.chatId ||
-          chat.privateurl === route.params.chatId ||
-          chat.urlSlug === route.params.chatId
-          ),
-      ) || null,
-    [chatsQuery.data, route.params.chatId, route.params.isGroup],
-  );
-  const hasChatsSnapshot = Array.isArray(chatsQuery.data);
   const isGroupChat = Boolean(currentChat?.isGroup ?? route.params.isGroup);
-
-  const chatTitle = currentChat
-    ? getChatTitle(currentChat, currentUserId, user)
-    : route.params.title;
-  const chatAvatarUri = currentChat ? getChatAvatarUri(currentChat, currentUserId, user) : null;
-  const otherMember = currentChat ? getOtherMember(currentChat, currentUserId, user) : null;
-  const knownUsers = useMemo(() => {
-    const map = new Map<string, User>();
-    (chatsQuery.data || []).forEach((chat) => {
-      chat.members?.forEach((member) => {
-        const memberId = getEntityId(member);
-        if (memberId) {
-          map.set(memberId, member);
-        }
-      });
-    });
-    return Array.from(map.values());
-  }, [chatsQuery.data]);
-  const currentChatMemberIds = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (currentChat?.members || [])
-            .map((member) => getEntityId(member))
-            .filter((memberId) => memberId && memberId !== currentUserId),
-        ),
-      ),
-    [currentChat?.members, currentUserId],
-  );
-
-  const myAdminRecord = currentChat?.admins?.find(
-    (admin) => (admin.userId || admin.id || admin._id) === currentUserId,
-  );
-  const canEditGroup =
-    isGroupChat &&
-    (String(currentChat?.createdBy || "") === currentUserId ||
-      Boolean(myAdminRecord?.permissions?.length));
-  const groupLinkSlug = String(currentChat?.privateurl || currentChat?.urlSlug || "").trim();
-  const groupLinkUrl = groupLinkSlug
-    ? `${APP_BASE_URL}/${groupLinkSlug.replace(/^\/+/, "")}`
-    : "";
-  const canDeleteOthersMessages =
-    String(currentChat?.createdBy || "") === currentUserId ||
-    Boolean(myAdminRecord?.permissions?.includes("delete_others_messages"));
-  const isGroupOwnerLeaving =
-    isGroupChat &&
-    String(currentChat?.createdBy || "") !== currentUserId;
-  const infoDrawerUser = useMemo(() => {
-    if (!infoDrawerUserId) {
-      return null;
-    }
-
-    const currentChatUser = currentChat?.members?.find(
-      (member) => getEntityId(member) === infoDrawerUserId,
-    );
-    if (currentChatUser) {
-      return currentChatUser;
-    }
-
-    return knownUsers.find((member) => getEntityId(member) === infoDrawerUserId) || null;
-  }, [currentChat?.members, infoDrawerUserId, knownUsers]);
-  const isViewingGroupMemberInfo = Boolean(currentChat?.isGroup && infoDrawerUser);
-  const drawerUser = isGroupChat ? infoDrawerUser : otherMember;
-  const drawerAvatarUri = drawerUser?.avatar || chatAvatarUri || null;
-  const drawerTitle = drawerUser
-    ? "Foydalanuvchi ma'lumotlari"
-    : currentChat?.isSavedMessages
-      ? "Saved Messages"
-      : "Guruh ma'lumotlari";
+  const {
+    chatTitle,
+    chatAvatarUri,
+    otherMember,
+    knownUsers,
+    currentChatMemberIds,
+    canEditGroup,
+    canDeleteOthersMessages,
+    isGroupOwnerLeaving,
+    groupLinkUrl,
+    infoDrawerUser,
+    isViewingGroupMemberInfo,
+    drawerUser,
+    drawerAvatarUri,
+    drawerTitle,
+  } = useChatConversationMeta({
+    chats: chatsQuery.data,
+    currentChat,
+    currentUserId,
+    user,
+    isGroupChat,
+    infoDrawerUserId,
+    fallbackTitle: route.params.title,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1011,9 +241,11 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
-    void saveCachedChats(currentUserId, chatsQuery.data || []).catch((error) => {
-      console.warn("Failed to persist chats cache", error);
-    });
+    void saveCachedChats(currentUserId, chatsQuery.data || []).catch(
+      (error) => {
+        console.warn("Failed to persist chats cache", error);
+      },
+    );
   }, [currentUserId, chatsQuery.data, hasChatsSnapshot]);
 
   useEffect(() => {
@@ -1106,184 +338,15 @@ export function ChatScreen({ navigation, route }: Props) {
     return unsubscribe;
   }, [infoDrawerOpen, infoPageMounted, navigation]);
 
-  const messagesQuery = useInfiniteQuery({
-    queryKey: ["messages", route.params.chatId],
-    queryFn: ({ pageParam }) => chatsApi.fetchMessages(route.params.chatId, pageParam),
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
-  });
-  const hasMessagesSnapshot = Boolean(messagesQuery.data);
-
-  const messagesPages = messagesQuery.data?.pages || [];
-  const flatMessages = useMemo(
-    () => [...messagesPages].reverse().flatMap((page) => page.data || []),
-    [messagesPages],
-  );
-  const messageItems = useMemo(() => {
-    return buildMessageItems(flatMessages);
-  }, [flatMessages]);
   useEffect(() => {
     messageItemsRef.current = messageItems;
   }, [messageItems]);
   useEffect(() => {
     hasNextPageRef.current = Boolean(messagesQuery.hasNextPage);
   }, [messagesQuery.hasNextPage]);
-  useEffect(() => {
-    return () => {
-      if (messageHighlightTimeoutRef.current) {
-        clearTimeout(messageHighlightTimeoutRef.current);
-        messageHighlightTimeoutRef.current = null;
-      }
-    };
-  }, []);
-  const stickyDateHeaderIndices = useMemo(() => {
-    return messageItems.reduce<number[]>((indices, item, index) => {
-      if (item.type === "date") {
-        indices.push(index);
-      }
-      return indices;
-    }, []);
-  }, [messageItems]);
-  const initialMessageIndex =
-    !initialScrollDoneRef.current &&
-    savedScrollOffset === null &&
-    messageItems.length > 0
-      ? messageItems.length - 1
-      : undefined;
-
-  const selectedMessage =
-    messageItems.find(
-      (item) => item.type === "message" && item.message.id === selectedMessageId,
-    ) || null;
-  const replyingMessage =
-    messageItems.find(
-      (item) => item.type === "message" && item.message.id === replyingToId,
-    ) || null;
-  const editingMessage =
-    messageItems.find(
-      (item) => item.type === "message" && item.message.id === editingMessageId,
-    ) || null;
-  const selectedMessageIsMine =
-    selectedMessage?.type === "message" &&
-    selectedMessage.message.senderId === currentUserId;
-
-  const sendMutation = useMutation({
-    mutationFn: ({
-      content,
-      replayToId,
-      optimisticMessage,
-    }: {
-      content: string;
-      replayToId?: string | null;
-      optimisticMessage: Message;
-    }) =>
-      chatsApi.sendMessage({
-        chatId: route.params.chatId,
-        content,
-        replayToId,
-      }),
-    onMutate: async ({ optimisticMessage }) => {
-      await queryClient.cancelQueries({ queryKey: ["messages", route.params.chatId] });
-      queryClient.setQueryData<MessagesInfiniteData>(
-        ["messages", route.params.chatId],
-        (previous) =>
-          patchMessagesPages(previous, (pages) => {
-            const [latestPage, ...restPages] = pages;
-            return [
-              {
-                ...latestPage,
-                data: [...(latestPage?.data || []), optimisticMessage],
-              },
-              ...restPages,
-            ];
-          }),
-      );
-      return { optimisticMessageId: getMessageIdentity(optimisticMessage) };
-    },
-    onSuccess: (nextMessage) => {
-      queryClient.setQueryData<MessagesInfiniteData>(
-        ["messages", route.params.chatId],
-        (previous) => upsertMessageInPages(previous, nextMessage, currentUserId),
-      );
-    },
-    onError: (error, _variables, context) => {
-      if (context?.optimisticMessageId) {
-        queryClient.setQueryData<MessagesInfiniteData>(
-          ["messages", route.params.chatId],
-          (previous) =>
-            updateMessageByIdInPages(previous, context.optimisticMessageId, (message) => ({
-              ...message,
-              deliveryStatus: "failed",
-              isLocalOnly: true,
-            })),
-        );
-      }
-      Alert.alert(
-        "Xabar yuborilmadi",
-        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-      );
-    },
-  });
-
-  const editMutation = useMutation({
-    mutationFn: ({ messageId, content }: { messageId: string; content: string }) =>
-      chatsApi.editMessage(messageId, content),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["messages", route.params.chatId] });
-    },
-    onError: (error) => {
-      Alert.alert(
-        "Xabar tahrirlanmadi",
-        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-      );
-    },
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (messageId: string) => chatsApi.deleteMessage(messageId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["messages", route.params.chatId] });
-    },
-    onError: (error) => {
-      Alert.alert(
-        "Xabar o'chirilmadi",
-        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-      );
-    },
-  });
-
-  const chatPushNotificationsMutation = useMutation({
-    mutationFn: ({ chatId, enabled }: { chatId: string; enabled: boolean }) =>
-      chatsApi.updatePushNotifications(chatId, enabled),
-    onMutate: async ({ chatId, enabled }) => {
-      const previousChats = queryClient.getQueryData<ChatSummary[]>(["chats"]);
-      queryClient.setQueryData<ChatSummary[]>(
-        ["chats"],
-        updateChatPushNotificationsInList(previousChats, chatId, enabled),
-      );
-      return { previousChats };
-    },
-    onError: (error, _variables, context) => {
-      if (context?.previousChats) {
-        queryClient.setQueryData(["chats"], context.previousChats);
-      }
-      Alert.alert(
-        "Bildirishnoma sozlanmadi",
-        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-      );
-    },
-  });
 
   const isSending = sendMutation.isPending || editMutation.isPending;
   const isComposerDisabled = messagesQuery.isLoading;
-  const dismissKeyboard = (options?: { preserveStickerPicker?: boolean }) => {
-    composerFocusedRef.current = false;
-    composerInputRef.current?.blur();
-    Keyboard.dismiss();
-    if (!options?.preserveStickerPicker && stickerPickerVisible) {
-      hideStickerPicker(false);
-    }
-  };
   const flushSavedScrollOffset = useCallback(() => {
     if (!currentUserId) {
       return;
@@ -1316,14 +379,26 @@ export function ChatScreen({ navigation, route }: Props) {
       flushSavedScrollOffset();
     }, 180);
   };
-  const handleMessagesScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+  const handleMessagesScroll = (
+    event: NativeSyntheticEvent<NativeScrollEvent>,
+  ) => {
     const nextOffset = Math.max(0, event.nativeEvent.contentOffset?.y || 0);
     scrollOffsetRef.current = nextOffset;
 
-    const contentHeight = Math.max(0, event.nativeEvent.contentSize?.height || 0);
-    const viewportHeight = Math.max(0, event.nativeEvent.layoutMeasurement?.height || 0);
-    const distanceToBottom = Math.max(0, contentHeight - viewportHeight - nextOffset);
-    shouldStickToBottomRef.current = distanceToBottom <= NEW_MESSAGES_BOTTOM_THRESHOLD;
+    const contentHeight = Math.max(
+      0,
+      event.nativeEvent.contentSize?.height || 0,
+    );
+    const viewportHeight = Math.max(
+      0,
+      event.nativeEvent.layoutMeasurement?.height || 0,
+    );
+    const distanceToBottom = Math.max(
+      0,
+      contentHeight - viewportHeight - nextOffset,
+    );
+    shouldStickToBottomRef.current =
+      distanceToBottom <= NEW_MESSAGES_BOTTOM_THRESHOLD;
 
     if (shouldStickToBottomRef.current) {
       setPendingNewMessageIds([]);
@@ -1334,16 +409,34 @@ export function ChatScreen({ navigation, route }: Props) {
       listRef.current?.scrollToEnd({ animated });
     });
   };
+  const keepMessagesPinnedToBottom = useCallback(() => {
+    if (!shouldStickToBottomRef.current) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: false });
+      });
+    });
+  }, []);
   const handleJumpToLatestMessages = () => {
     shouldStickToBottomRef.current = true;
     setPendingNewMessageIds([]);
     scrollToLatestMessage(true);
   };
   const handleViewableItemsChanged = useRef(
-    ({ viewableItems }: { viewableItems: Array<ViewToken<MessageListItem>> }) => {
+    ({
+      viewableItems,
+    }: {
+      viewableItems: Array<ViewToken<MessageListItem>>;
+    }) => {
       const nextVisibleIds = viewableItems
         .map((token) => token.item)
-        .filter((item): item is Extract<MessageListItem, { type: "message" }> => item?.type === "message")
+        .filter(
+          (item): item is Extract<MessageListItem, { type: "message" }> =>
+            item?.type === "message",
+        )
         .map((item) => item.message.id)
         .filter(Boolean);
 
@@ -1358,376 +451,186 @@ export function ChatScreen({ navigation, route }: Props) {
       });
     },
   ).current;
-  const animateAccessoryHeight = useCallback(
-    (toValue: number, duration = 220) => {
-      accessoryHeightAnim.stopAnimation();
-      Animated.timing(accessoryHeightAnim, {
-        toValue,
-        duration,
-        useNativeDriver: false,
-      }).start();
-    },
-    [accessoryHeightAnim],
-  );
-  const getStickerPickerHeight = useCallback(() => {
-    const rememberedKeyboardHeight = Math.max(0, lastKeyboardInsetRef.current || 0);
-    if (rememberedKeyboardHeight > 0) {
-      return rememberedKeyboardHeight;
-    }
-
-    const estimatedKeyboardHeight = Math.round(
-      screenHeight * (Platform.OS === "ios" ? 0.42 : 0.38),
-    );
-    return Math.max(DEFAULT_STICKER_PICKER_HEIGHT, estimatedKeyboardHeight);
-  }, [screenHeight]);
-  const beginClosedToKeyboardTransition = useCallback(() => {
-    if (
-      Platform.OS !== "android" ||
-      isWeb ||
-      keyboardInset > 0 ||
-      stickerPickerVisible ||
-      stickerToKeyboardTransition
-    ) {
-      return;
-    }
-
-    setClosedToKeyboardTransition(true);
-    animateAccessoryHeight(getStickerPickerHeight(), 140);
-  }, [
-    animateAccessoryHeight,
-    getStickerPickerHeight,
-    isWeb,
-    keyboardInset,
-    stickerPickerVisible,
-    stickerToKeyboardTransition,
-  ]);
-  const hideStickerPicker = useCallback(
-    (focusInput = false) => {
-      setStickerPickerVisible(false);
-      setComposerSoftInputEnabled(true);
-
-      if (isWeb) {
-        setStickerUsesAccessoryOffset(false);
-        setStickerToKeyboardTransition(false);
-        setClosedToKeyboardTransition(false);
-        animateAccessoryHeight(0, 120);
-        if (focusInput) {
-          requestAnimationFrame(() => {
-            composerInputRef.current?.focus();
-          });
-        }
-        return;
-      }
-
-      if (Platform.OS === "android" && focusInput) {
-        setStickerUsesAccessoryOffset(false);
-        setStickerToKeyboardTransition(false);
-        setClosedToKeyboardTransition(false);
-        animateAccessoryHeight(0, 120);
-        requestAnimationFrame(() => {
-          composerInputRef.current?.blur();
-          composerInputRef.current?.focus();
-        });
-        return;
-      }
-
-      if (focusInput) {
-        setStickerToKeyboardTransition(true);
-        requestAnimationFrame(() => {
-          composerInputRef.current?.blur();
-          composerInputRef.current?.focus();
-        });
-        return;
-      }
-
-      setStickerToKeyboardTransition(false);
-      setClosedToKeyboardTransition(false);
-      setStickerUsesAccessoryOffset(false);
-      if (keyboardInset <= 0) {
-        setKeyboardLayoutOffset(0);
-        animateAccessoryHeight(0);
-      }
-    },
-    [animateAccessoryHeight, isWeb, keyboardInset],
-  );
-  const openStickerPicker = useCallback(() => {
-    const nextHeight = getStickerPickerHeight();
-    const transitioningFromKeyboard = keyboardInset > 0;
-    setStickerToKeyboardTransition(false);
-    setClosedToKeyboardTransition(false);
-    setStickerPickerVisible(true);
-    setStickerUsesAccessoryOffset(!transitioningFromKeyboard);
-    setComposerSoftInputEnabled(false);
-    composerFocusedRef.current = true;
-    accessoryHeightAnim.stopAnimation();
-    if (!transitioningFromKeyboard) {
-      setKeyboardLayoutOffset(0);
-      animateAccessoryHeight(nextHeight);
-    }
-    Keyboard.dismiss();
-  }, [
+  const {
     accessoryHeightAnim,
+    keyboardVisible,
+    keyboardVisibleRef,
+    stickerPickerVisible,
+    stickerOpeningFromKeyboard,
+    stickerToKeyboardTransition,
+    composerSoftInputEnabled,
+    openingStickerPickerRef,
     animateAccessoryHeight,
-    getStickerPickerHeight,
-    keyboardInset,
-  ]);
-  const toggleStickerPicker = useCallback(() => {
-    if (stickerPickerVisible) {
-      hideStickerPicker(true);
-      return;
-    }
-
-    openStickerPicker();
-  }, [hideStickerPicker, openStickerPicker, stickerPickerVisible]);
-  const showComposerNotice = useCallback(
-    (message: string) => {
-      setComposerNotice(message);
-      if (composerNoticeTimeoutRef.current) {
-        clearTimeout(composerNoticeTimeoutRef.current);
-      }
-      composerNoticeTimeoutRef.current = setTimeout(() => {
-        setComposerNotice(null);
-        composerNoticeTimeoutRef.current = null;
-      }, 1800);
-
-      if (composerFocusedRef.current || keyboardInset > 0) {
-        requestAnimationFrame(() => {
-          composerInputRef.current?.focus();
-        });
-      }
+    hideStickerPicker,
+    toggleStickerPicker,
+    dismissKeyboard,
+    setComposerSoftInputEnabled,
+    activeDockTranslateY,
+    messagesViewportTranslateY,
+    isStickerDockSettled,
+    shouldKeepMessagesAnchoredToBottom,
+    lockComposerShellHeight,
+    dockBottomSpacerHeight,
+    composerShellBottomPadding,
+  } = useChatDockController({
+    screenHeight,
+    bottomInset: insets.bottom,
+    isWeb,
+    composerInputRef,
+    composerFocusedRef,
+    scrollToLatestMessage,
+  });
+  const {
+    messageMenuAnim,
+    messageMenuMounted,
+    highlightedMessageId,
+    highlightPulseKey,
+    selectedMessageId,
+    selectedMessageLayout,
+    closeMessageMenu,
+    handleMessageMenu,
+    handleScrollToRepliedMessage,
+  } = useChatMessageOverlay({
+    screenWidth,
+    screenHeight,
+    insets,
+    keyboardVisibleRef,
+    stickerPickerVisible,
+    dismissKeyboard,
+    listRef,
+    messageItemsRef,
+    hasNextPageRef,
+    fetchNextPage: messagesQuery.fetchNextPage,
+  });
+  const selectedMessage =
+    (messageItems.find(
+      (item) =>
+        item.type === "message" && item.message.id === selectedMessageId,
+    ) as Extract<MessageListItem, { type: "message" }> | undefined) || null;
+  const replyingMessageItem =
+    (messageItems.find(
+      (item) => item.type === "message" && item.message.id === replyingToId,
+    ) as Extract<MessageListItem, { type: "message" }> | undefined) || null;
+  const replyingMessage = replyingMessageItem?.message || null;
+  const editingMessageItem =
+    (messageItems.find(
+      (item) => item.type === "message" && item.message.id === editingMessageId,
+    ) as Extract<MessageListItem, { type: "message" }> | undefined) || null;
+  const editingMessage = editingMessageItem?.message || null;
+  const sendMessage = useCallback(
+    ({
+      content,
+      replayToId,
+      optimisticMessage,
+    }: {
+      content: string;
+      replayToId?: string | null;
+      optimisticMessage: Message;
+    }) => {
+      sendMutation.mutate({
+        content,
+        replayToId,
+        optimisticMessage,
+      });
     },
-    [keyboardInset],
+    [sendMutation],
   );
 
-  const handleSendContent = async (content: string) => {
-    const trimmedContent = content.trim();
-    if (!trimmedContent || isSending || isComposerDisabled) {
-      return;
-    }
-
-    await Haptics.selectionAsync();
-
-    if (editingMessageId) {
+  const editMessageContent = useCallback(
+    ({
+      messageId,
+      content,
+      onSuccess,
+    }: {
+      messageId: string;
+      content: string;
+      onSuccess?: () => void;
+    }) => {
       editMutation.mutate(
-        { messageId: editingMessageId, content: trimmedContent },
+        { messageId, content },
         {
           onSuccess: () => {
-            setDraft("");
-            composerSelectionRef.current = { start: 0, end: 0 };
-            setEditingMessageId(null);
+            onSuccess?.();
           },
         },
       );
-      return;
-    }
-
-    const replyToMessage =
-      replyingMessage?.type === "message"
-        ? {
-            id: replyingMessage.message.id,
-            senderId: replyingMessage.message.senderUser
-              ? replyingMessage.message.senderUser
-              : replyingMessage.message.senderId,
-            content: replyingMessage.message.content,
-          }
-        : null;
-    const optimisticMessage = createOptimisticMessage({
-      content: trimmedContent,
-      replyToMessage,
-      currentUser: user,
-    });
-
-    setDraft("");
-    composerSelectionRef.current = { start: 0, end: 0 };
-    setReplyingToId(null);
-    sendMutation.mutate({
-      content: trimmedContent,
-      replayToId: replyingToId,
-      optimisticMessage,
-    });
-    scrollToLatestMessage(true);
-  };
-
-  const handleSend = async () => {
-    await handleSendContent(draft);
-  };
-  const handleAttachmentPress = async () => {
-    await Haptics.selectionAsync();
-    showComposerNotice("Rasm yuborish tez orada qo'shiladi.");
-  };
-  const handleVoiceMessagePress = async () => {
-    await Haptics.selectionAsync();
-    showComposerNotice("Ovozli xabar tez orada qo'shiladi.");
-  };
-  const handleStickerPress = async (sticker: string) => {
-    await Haptics.selectionAsync();
-    let nextCaret = 0;
-    setDraft((current) => {
-      const source = current || "";
-      const start = Math.max(0, Math.min(composerSelectionRef.current.start, source.length));
-      const end = Math.max(start, Math.min(composerSelectionRef.current.end, source.length));
-      const nextValue = `${source.slice(0, start)}${sticker}${source.slice(end)}`;
-      nextCaret = start + sticker.length;
-      return nextValue;
-    });
-    composerSelectionRef.current = { start: nextCaret, end: nextCaret };
-    shouldStickToBottomRef.current = true;
-    requestAnimationFrame(() => {
-      composerInputRef.current?.setNativeProps({
-        selection: { start: nextCaret, end: nextCaret },
-      });
-    });
-  };
-  const hasComposerText = Boolean(draft.trim());
-  const isComposerInputEditable = !isComposerDisabled && composerSoftInputEnabled;
-  const isStickerPanelActive = stickerPickerVisible;
-
-  const openInfoPage = (targetUser?: User | null) => {
-    if (!currentChat) return;
-    dismissKeyboard();
-    setAvatarPreviewOpen(false);
-    setInfoDrawerUserId(targetUser ? getEntityId(targetUser) : currentChat.isGroup ? null : getEntityId(otherMember));
-    setInfoDrawerOpen(true);
-  };
-
-  const handleOpenInfo = (targetUser?: User | null) => {
-    setMenuOpen(false);
-    openInfoPage(targetUser);
-  };
-
-  const handleOpenInfoFromMenu = (targetUser?: User | null) => {
-    dismissKeyboard();
-    pendingMenuInfoRef.current = {
-      queued: true,
-      targetUser,
-    };
-    setMenuOpen(false);
-  };
-
-  const handleCloseInfoDrawer = () => {
-    dismissKeyboard();
-    setAvatarPreviewOpen(false);
-    setInfoDrawerOpen(false);
-  };
-
-  const handleOpenMemberInfo = (member: User) => {
-    dismissKeyboard();
-    setInfoDrawerUserId(getEntityId(member));
-  };
-
-  const handleOpenPrivateChatWithMember = useCallback(
-    async (member: User) => {
-      const memberId = getEntityId(member);
-      if (!memberId) {
-        return;
-      }
-
-      if (memberId === currentUserId) {
-        handleOpenMemberInfo(member);
-        return;
-      }
-
-      try {
-        await Haptics.selectionAsync();
-        const privateChat = await chatsApi.createChat({
-          isGroup: false,
-          memberIds: [memberId],
-        });
-
-        queryClient.setQueryData<ChatSummary[]>(["chats"], (current) =>
-          upsertChatSummary(Array.isArray(current) ? current : [], privateChat),
-        );
-        await queryClient.invalidateQueries({ queryKey: ["chats"] });
-
-        dismissKeyboard();
-        setAvatarPreviewOpen(false);
-        setInfoDrawerOpen(false);
-        setInfoDrawerUserId(null);
-
-        navigation.push("ChatRoom", {
-          chatId: getEntityId(privateChat),
-          title: getChatTitle(privateChat, currentUserId, user),
-          isGroup: false,
-        });
-      } catch (error) {
-        Alert.alert(
-          "Private chat ochilmadi",
-          error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-        );
-      }
     },
-    [currentUserId, navigation, queryClient, user],
+    [editMutation],
   );
 
-  const handleBackToGroupInfo = () => {
-    dismissKeyboard();
-    setInfoDrawerUserId(null);
-  };
+  const {
+    draft,
+    setDraft,
+    composerNotice,
+    composerContentMessage,
+    hasComposerText,
+    isStickerPanelActive,
+    handleSend,
+    handleAttachmentPress,
+    handleVoiceMessagePress,
+    handleStickerPress,
+    handleComposerSelectionChange,
+    handleComposerPressIn,
+    handleComposerFocus,
+    handleComposerBlur,
+    clearComposerMode,
+    enterReplyMode,
+    enterEditMode,
+  } = useChatComposerController({
+    user,
+    replyingToId,
+    replyingMessage,
+    editingMessageId,
+    editingMessage,
+    isSending,
+    isComposerDisabled,
+    composerSoftInputEnabled,
+    stickerPickerVisible,
+    composerInputRef,
+    composerSelectionRef,
+    composerFocusedRef,
+    keyboardVisibleRef,
+    openingStickerPickerRef,
+    shouldStickToBottomRef,
+    animateAccessoryHeight,
+    hideStickerPicker,
+    setReplyingToId,
+    setEditingMessageId,
+    setComposerSoftInputEnabled,
+    onSendMessage: sendMessage,
+    onEditMessage: editMessageContent,
+    onScrollToLatestMessage: scrollToLatestMessage,
+  });
 
-  useEffect(() => {
-    outgoingCallRef.current = outgoingCall;
-  }, [outgoingCall]);
+  const {
+    openInfoPage,
+    handleOpenInfo,
+    handleOpenInfoFromMenu,
+    handleCloseInfoDrawer,
+    handleOpenPrivateChatWithMember,
+    handleBackToGroupInfo,
+  } = useChatInfoActions({
+    currentChat,
+    otherMember,
+    currentUserId,
+    user,
+    navigation,
+    queryClient,
+    dismissKeyboard,
+    pendingMenuInfoRef,
+    setMenuOpen,
+    setAvatarPreviewOpen,
+    setInfoDrawerUserId,
+    setInfoDrawerOpen,
+  });
 
-  useEffect(() => {
-    if (!outgoingCall) {
-      return;
-    }
-
-    const subscriptions = [
-      realtime.onPresenceEvent("call:accepted", (payload) => {
-        if (String(payload?.roomId || "") !== outgoingCall.roomId) {
-          return;
-        }
-
-        const remoteUser = outgoingCall.remoteUser;
-        outgoingCallRef.current = null;
-        setOutgoingCall(null);
-        navigation.navigate("PrivateMeet", {
-          chatId: outgoingCall.chatId,
-          roomId: outgoingCall.roomId,
-          title: getDirectChatUserLabel(remoteUser),
-          isCaller: true,
-          remoteUser,
-          requestAlreadySent: true,
-        });
-      }),
-      realtime.onPresenceEvent("call:rejected", (payload) => {
-        if (String(payload?.roomId || "") !== outgoingCall.roomId) {
-          return;
-        }
-
-        outgoingCallRef.current = null;
-        setOutgoingCall(null);
-        Alert.alert("Private meet", "Qo'ng'iroq rad etildi");
-      }),
-      realtime.onPresenceEvent("call:cancelled", (payload) => {
-        if (String(payload?.roomId || "") !== outgoingCall.roomId) {
-          return;
-        }
-
-        outgoingCallRef.current = null;
-        setOutgoingCall(null);
-      }),
-    ];
-
-    return () => {
-      subscriptions.forEach((unsubscribe) => unsubscribe?.());
-    };
-  }, [navigation, outgoingCall]);
-
-  useEffect(() => {
-    return () => {
-      const activeOutgoingCall = outgoingCallRef.current;
-      if (!activeOutgoingCall) {
-        return;
-      }
-
-      const remoteUserId = getEntityId(activeOutgoingCall.remoteUser);
-      if (remoteUserId) {
-        realtime.emitCallCancel(remoteUserId, activeOutgoingCall.roomId);
-      }
-    };
-  }, []);
+  const { handleDeleteOrLeave, handleEditGroup } = useChatGroupActions({
+    currentChat,
+    isGroupOwnerLeaving,
+    queryClient,
+    navigation,
+    setEditGroupOpen,
+  });
 
   const infoPagePanResponder = useMemo(
     () =>
@@ -1770,7 +673,10 @@ export function ChatScreen({ navigation, route }: Props) {
           infoPageBackdropOpacity.setValue(1 - nextValue / screenWidth);
         },
         onPanResponderRelease: (_event, gestureState) => {
-          const shouldClose = shouldFinishBackSwipe(gestureState.dx, gestureState.vx);
+          const shouldClose = shouldFinishBackSwipe(
+            gestureState.dx,
+            gestureState.vx,
+          );
 
           if (shouldClose) {
             setInfoDrawerOpen(false);
@@ -1813,826 +719,253 @@ export function ChatScreen({ navigation, route }: Props) {
     ],
   );
 
-  const handleStartVideoCall = async () => {
-    if ((!currentChat?._id && !currentChat?.id) || !otherMember) {
-      return;
-    }
-
-    if (!isOtherMemberOnline) {
-      Alert.alert("Private meet", "Qo'ng'iroq qilish uchun foydalanuvchi online bo'lishini kuting.");
-      return;
-    }
-
-    try {
-      const chatId = getEntityId(currentChat);
-      const activeCall = await chatsApi.getCallStatus(chatId);
-      const canReuseOwnActiveCall =
-        Boolean(activeCall.active && activeCall.roomId) &&
-        String(activeCall.creatorId || "") === currentUserId;
-      const result = canReuseOwnActiveCall
-        ? { roomId: String(activeCall.roomId || "") }
-        : await chatsApi.startVideoCall(chatId);
-
-      realtime.emitCallRequest(getEntityId(otherMember), result.roomId, "video");
-      const nextOutgoingCall = {
-        roomId: result.roomId,
-        remoteUser: otherMember,
-        chatId,
-      };
-      outgoingCallRef.current = nextOutgoingCall;
-      setOutgoingCall(nextOutgoingCall);
-    } catch (error) {
-      Alert.alert(
-        "Private meet ochilmadi",
-        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
-      );
-    }
-  };
-
-  const handleCancelOutgoingCall = useCallback(async () => {
-    if (!outgoingCall) {
-      return;
-    }
-
-    const remoteUserId = getEntityId(outgoingCall.remoteUser);
-    if (remoteUserId) {
-      realtime.emitCallCancel(remoteUserId, outgoingCall.roomId);
-    }
-    try {
-      await chatsApi.endVideoCall(outgoingCall.chatId);
-    } catch {
-      // noop
-    }
-    outgoingCallRef.current = null;
-    setOutgoingCall(null);
-  }, [outgoingCall]);
-
-  const handleDeleteOrLeave = () => {
-    if (!currentChat) return;
-
-    const title = isGroupOwnerLeaving ? "Guruhdan chiqish" : "Suhbatni o'chirish";
-    const message = isGroupOwnerLeaving
-      ? "Haqiqatan ham guruhdan chiqmoqchimisiz?"
-      : "Haqiqatan ham suhbatni o'chirmoqchimisiz?";
-
-    Alert.alert(title, message, [
-      { text: "Bekor qilish", style: "cancel" },
-      {
-        text: isGroupOwnerLeaving ? "Chiqish" : "O'chirish",
-        style: "destructive",
-        onPress: async () => {
-          const chatId = getEntityId(currentChat);
-          if (isGroupOwnerLeaving) {
-            await chatsApi.leaveChat(chatId);
-          } else {
-            await chatsApi.deleteChat(chatId);
-          }
-          await queryClient.invalidateQueries({ queryKey: ["chats"] });
-          navigation.goBack();
-        },
-      },
-    ]);
-  };
-
-  const handleEditGroup = async (draftData: {
-    name: string;
-    description: string;
-    avatarUri?: string | null;
-    memberIds: string[];
-    admins?: any[];
-  }) => {
-    if (!currentChat) return;
-
-    let nextAvatar = draftData.avatarUri || currentChat.avatar || "";
-    if (nextAvatar && !nextAvatar.startsWith("http")) {
-      nextAvatar = await chatsApi.updateGroupAvatar(getEntityId(currentChat), nextAvatar);
-    }
-
-    await chatsApi.editChat(getEntityId(currentChat), {
-      name: draftData.name,
-      description: draftData.description,
-      avatar: nextAvatar,
-      members: draftData.memberIds,
-      admins: draftData.admins,
-    });
-
-    await queryClient.invalidateQueries({ queryKey: ["chats"] });
-    setEditGroupOpen(false);
-  };
-
-  const openMessageMenu = (messageId: string, layout: MessageMenuLayout) => {
-    void Haptics.selectionAsync();
-    const keepKeyboardOpen = composerFocusedRef.current && keyboardInset > 0;
-    setSelectedMessageId(messageId);
-    setSelectedMessageLayout(layout);
-    setMessageMenuMounted(true);
-    setMessageMenuOpen(true);
-    messageMenuAnim.setValue(0);
-    Animated.spring(messageMenuAnim, {
-      toValue: 1,
-      damping: 24,
-      stiffness: 220,
-      mass: 0.9,
-      useNativeDriver: true,
-    }).start();
-    if (keepKeyboardOpen) {
-      requestAnimationFrame(() => {
-        composerInputRef.current?.focus();
-      });
-    }
-  };
-
-  const handleMessageMenu = (messageId: string, target: View | null) => {
-    if (!target) {
-      openMessageMenu(messageId, {
-        x: 16,
-        y: 120,
-        width: screenWidth - 32,
-        height: 54,
-      });
-      return;
-    }
-
-    target.measureInWindow((x, y, width, height) => {
-      const maxWidth = screenWidth - 24;
-      const clampedWidth = Math.min(width || maxWidth, maxWidth);
-      const localY = y - insets.top;
-      const availableHeight =
-        screenHeight - insets.top - Math.max(insets.bottom, keyboardInset);
-
-      openMessageMenu(messageId, {
-        x: Math.max(12, Math.min(screenWidth - clampedWidth - 12, x)),
-        y: Math.max(8, Math.min(availableHeight - height - 8, localY)),
-        width: clampedWidth,
-        height: Math.max(44, height),
-      });
-    });
-  };
-
-  const closeMessageMenu = () => {
-    setMessageMenuOpen(false);
-    Animated.timing(messageMenuAnim, {
-      toValue: 0,
-      duration: 170,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (!finished) {
-        return;
-      }
-      setMessageMenuMounted(false);
-      setSelectedMessageId(null);
-      setSelectedMessageLayout(null);
-    });
-  };
-
-  const handleReply = () => {
-    if (!selectedMessage || selectedMessage.type !== "message") return;
-    closeMessageMenu();
-    void Haptics.selectionAsync();
-    setEditingMessageId(null);
-    setReplyingToId(selectedMessage.message.id);
-    setComposerSoftInputEnabled(true);
-    requestAnimationFrame(() => {
-      composerInputRef.current?.focus();
-    });
-  };
-
-  const handleSwipeReply = (message: NormalizedMessage) => {
-    if (message.isDeleted) {
-      return;
-    }
-
-    void Haptics.selectionAsync();
-    setEditingMessageId(null);
-    setReplyingToId(message.id);
-    setComposerSoftInputEnabled(true);
-    requestAnimationFrame(() => {
-      composerInputRef.current?.focus();
-    });
-  };
-
-  const handleScrollToRepliedMessage = useCallback(
-    async (targetMessageId: string) => {
-      if (!targetMessageId) {
-        return;
-      }
-
-      const findTargetIndex = () =>
-        messageItemsRef.current.findIndex(
-          (item) => item.type === "message" && item.message.id === targetMessageId,
-        );
-
-      let targetIndex = findTargetIndex();
-      let attempts = 0;
-
-      while (targetIndex === -1 && hasNextPageRef.current && attempts < 8) {
-        await messagesQuery.fetchNextPage();
-        attempts += 1;
-        targetIndex = findTargetIndex();
-      }
-
-      if (targetIndex === -1) {
-        return;
-      }
-
-      requestAnimationFrame(() => {
-        listRef.current?.scrollToIndex({
-          index: targetIndex,
-          animated: true,
-          viewPosition: 0.35,
-        });
-      });
-
-      setHighlightedMessageId(targetMessageId);
-      setHighlightPulseKey((current) => current + 1);
-      if (messageHighlightTimeoutRef.current) {
-        clearTimeout(messageHighlightTimeoutRef.current);
-      }
-      messageHighlightTimeoutRef.current = setTimeout(() => {
-        setHighlightedMessageId((current) =>
-          current === targetMessageId ? null : current,
-        );
-        messageHighlightTimeoutRef.current = null;
-      }, 1800);
+  const {
+    handleReply,
+    handleSwipeReply,
+    handleEditMessage,
+    handleCopyMessage,
+    handleCopyGroupLink,
+    handleDeleteMessage,
+    handleOpenMessageLink,
+  } = useChatMessageActions({
+    selectedMessage,
+    groupLinkUrl,
+    closeMessageMenu,
+    enterReplyMode,
+    enterEditMode,
+    onDeleteMessage: (messageId: string) => {
+      deleteMutation.mutate(messageId);
     },
-    [messagesQuery],
-  );
-
-  const handleEditMessage = () => {
-    if (!selectedMessage || selectedMessage.type !== "message") return;
-    closeMessageMenu();
-    setReplyingToId(null);
-    setEditingMessageId(selectedMessage.message.id);
-    setDraft(selectedMessage.message.content);
-    setComposerSoftInputEnabled(true);
-  };
-
-  const handleCopyMessage = async () => {
-    if (!selectedMessage || selectedMessage.type !== "message" || !selectedMessage.message.content) {
-      return;
-    }
-
-    await Clipboard.setStringAsync(selectedMessage.message.content);
-    void Haptics.selectionAsync();
-    closeMessageMenu();
-  };
-
-  const handleCopyGroupLink = async () => {
-    if (!groupLinkUrl) {
-      return;
-    }
-
-    await Clipboard.setStringAsync(groupLinkUrl);
-    void Haptics.selectionAsync();
-  };
-
-  const handleDeleteMessage = () => {
-    if (!selectedMessage || selectedMessage.type !== "message") return;
-    const targetId = selectedMessage.message.id;
-    closeMessageMenu();
-    Alert.alert("Xabarni o'chirish", "Haqiqatan ham xabarni o'chirmoqchimisiz?", [
-      { text: "Bekor qilish", style: "cancel" },
-      {
-        text: "O'chirish",
-        style: "destructive",
-        onPress: () => {
-          deleteMutation.mutate(targetId);
-        },
-      },
-    ]);
-  };
+  });
 
   const handleMentionPress = (username: string) => {
     void openJammProfileMention(username).catch(() => {
       Alert.alert("Profil ochilmadi", `@${username}`);
     });
   };
-
-  const clearComposerMode = () => {
-    setReplyingToId(null);
-    setEditingMessageId(null);
-    setDraft("");
-  };
-
-  const composerContextMessage =
-    editingMessage?.type === "message"
-      ? editingMessage.message
-      : replyingMessage?.type === "message"
-        ? replyingMessage.message
-        : null;
-  const composerContent = (
-    <View style={styles.composerStack}>
-      {composerNotice ? (
-        <View style={styles.composerNoticeCard}>
-          <Text style={styles.composerNoticeText}>{composerNotice}</Text>
-        </View>
-      ) : null}
-      {composerContextMessage ? (
-        <Pressable
-          style={styles.composerContextCard}
-          onPress={() => {
-            listRef.current?.scrollToEnd({ animated: true });
-          }}
-        >
-          <View style={styles.composerContextTextWrap}>
-            <Text style={styles.composerContextLabel}>
-              {editingMessageId ? "Tahrirlanmoqda" : composerContextMessage.senderName}
-            </Text>
-            <Text style={styles.composerContextText} numberOfLines={1}>
-              {composerContextMessage.content}
-            </Text>
-          </View>
-          <Pressable onPress={clearComposerMode} style={styles.composerContextClose}>
-            <Ionicons name="close" size={16} color={Colors.mutedText} />
-          </Pressable>
-        </Pressable>
-      ) : null}
-
-      <View style={styles.composerRow}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.composerActionButton,
-            pressed && styles.composerActionButtonPressed,
-            isComposerDisabled && styles.composerActionButtonDisabled,
-          ]}
-          disabled={isComposerDisabled}
-          onPress={handleAttachmentPress}
-        >
-          <Ionicons name="image-outline" size={20} color={Colors.mutedText} />
-        </Pressable>
-
-        <View style={styles.composerField}>
-          <View style={styles.composerInputWrap}>
-            <TextInput
-              ref={composerInputRef}
-              style={styles.composerInput}
-              value={draft}
-              onChangeText={setDraft}
-              onSelectionChange={(
-                event: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
-              ) => {
-                composerSelectionRef.current = event.nativeEvent.selection;
-              }}
-              placeholder={
-                isComposerDisabled
-                  ? "Suhbat yuklanmoqda..."
-                  : editingMessageId
-                    ? "Xabarni tahrirlash..."
-                    : "Xabar..."
-              }
-              placeholderTextColor={Colors.mutedText}
-              multiline
-              maxLength={3000}
-              editable={!isComposerDisabled}
-              showSoftInputOnFocus={composerSoftInputEnabled}
-              caretHidden={!composerSoftInputEnabled && !stickerPickerVisible}
-              onPressIn={() => {
-                if (stickerPickerVisible) {
-                  hideStickerPicker(true);
-                }
-              }}
-              onFocus={() => {
-                if (!composerSoftInputEnabled && !stickerPickerVisible) {
-                  composerInputRef.current?.blur();
-                  return;
-                }
-                composerFocusedRef.current = true;
-                shouldStickToBottomRef.current = true;
-                if (stickerPickerVisible) {
-                  if (isWeb) {
-                    setStickerPickerVisible(false);
-                    setStickerToKeyboardTransition(false);
-                    setClosedToKeyboardTransition(false);
-                    animateAccessoryHeight(0, 120);
-                  } else if (Platform.OS === "android") {
-                    setStickerPickerVisible(false);
-                    setStickerToKeyboardTransition(false);
-                    setClosedToKeyboardTransition(false);
-                    animateAccessoryHeight(0, 120);
-                  } else {
-                    setStickerPickerVisible(false);
-                    setStickerToKeyboardTransition(true);
-                  }
-                } else {
-                  beginClosedToKeyboardTransition();
-                }
-              }}
-              onBlur={() => {
-                composerFocusedRef.current = false;
-                if (!stickerPickerVisible && keyboardInset <= 0) {
-                  setClosedToKeyboardTransition(false);
-                  animateAccessoryHeight(0, 160);
-                }
-              }}
-            />
-          </View>
-
-          <View style={styles.composerSideRight}>
-            {hasComposerText || editingMessageId || isStickerPanelActive ? (
-              <Pressable
-                style={styles.iconButton}
-                disabled={isComposerDisabled}
-                onPress={toggleStickerPicker}
-              >
-                <Ionicons
-                  name={isStickerPanelActive ? "keypad-outline" : "happy-outline"}
-                  size={20}
-                  color={Colors.mutedText}
-                />
-              </Pressable>
-            ) : null}
-
-            {hasComposerText || editingMessageId ? (
-              <Pressable
-                onPress={handleSend}
-                style={({ pressed }) => [
-                  styles.composerInlineSendButton,
-                  pressed && styles.composerInlineSendButtonPressed,
-                  ((!hasComposerText && Boolean(editingMessageId)) ||
-                    isSending ||
-                    isComposerDisabled) &&
-                    styles.composerInlineSendButtonDisabled,
-                ]}
-                disabled={
-                  (!hasComposerText && Boolean(editingMessageId)) || isSending || isComposerDisabled
-                }
-              >
-                {isSending ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Ionicons
-                    name={editingMessageId ? "checkmark" : "send"}
-                    size={15}
-                    color="#fff"
-                  />
-                )}
-              </Pressable>
-            ) : null}
-          </View>
-        </View>
-
-        {!hasComposerText && !editingMessageId ? (
-          <Pressable
-            onPress={handleVoiceMessagePress}
-            style={({ pressed }) => [
-              styles.sendButton,
-              pressed && styles.sendButtonPressed,
-              (isSending || isComposerDisabled) && styles.sendButtonDisabled,
-            ]}
-            disabled={isSending || isComposerDisabled}
-          >
-            {isSending ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="mic" size={18} color="#fff" />
-            )}
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-
-  const canEditSelectedMessage = Boolean(
-    selectedMessage?.type === "message" &&
-      selectedMessage.message.senderId === currentUserId &&
-      !selectedMessage.message.isDeleted,
-  );
-  const canDeleteSelectedMessage = Boolean(
-    selectedMessage?.type === "message" &&
-      !selectedMessage.message.isDeleted &&
-      (selectedMessage.message.senderId === currentUserId || canDeleteOthersMessages),
-  );
-  const canCopySelectedMessage = Boolean(
-    selectedMessage?.type === "message" &&
-      !selectedMessage.message.isDeleted &&
-      selectedMessage.message.content,
-  );
-  const canReplySelectedMessage = Boolean(
-    selectedMessage?.type === "message" && !selectedMessage.message.isDeleted,
-  );
-  const messageMenuActionCount = [
-    canReplySelectedMessage,
-    canCopySelectedMessage,
-    canEditSelectedMessage,
-    canDeleteSelectedMessage,
-  ].filter(Boolean).length;
-  const messageMenuPosition = useMemo(() => {
-    if (!selectedMessageLayout || messageMenuActionCount === 0) {
-      return null;
-    }
-
-    const overlayHeight =
-      screenHeight - insets.top - Math.max(insets.bottom, keyboardInset);
-    const menuHeight =
-      MESSAGE_MENU_ACTIONS_PADDING * 2 +
-      messageMenuActionCount * MESSAGE_MENU_ITEM_HEIGHT +
-      Math.max(0, messageMenuActionCount - 1) * MESSAGE_MENU_ACTION_GAP;
-    const maxPreviewTop =
-      overlayHeight -
-      MESSAGE_MENU_SCREEN_PADDING -
-      menuHeight -
-      MESSAGE_MENU_GAP -
-      selectedMessageLayout.height;
-    const previewTop = Math.max(
-      MESSAGE_MENU_SCREEN_PADDING,
-      Math.min(selectedMessageLayout.y, maxPreviewTop),
-    );
-    const idealLeft = selectedMessageIsMine
-      ? selectedMessageLayout.x + selectedMessageLayout.width - MESSAGE_MENU_WIDTH
-      : selectedMessageLayout.x;
-    const actionsLeft = Math.max(
-      MESSAGE_MENU_SCREEN_PADDING,
-      Math.min(screenWidth - MESSAGE_MENU_WIDTH - MESSAGE_MENU_SCREEN_PADDING, idealLeft),
-    );
-
-    return {
-      previewTop,
-      actionsTop: previewTop + selectedMessageLayout.height + MESSAGE_MENU_GAP,
-      actionsLeft,
-    };
-  }, [
-    keyboardInset,
-    insets.bottom,
-    insets.top,
-    messageMenuActionCount,
-    screenHeight,
-    screenWidth,
-    selectedMessageIsMine,
-    selectedMessageLayout,
-  ]);
-  const messageMenuPreviewTranslateTo =
-    selectedMessageLayout && messageMenuPosition
-      ? messageMenuPosition.previewTop - selectedMessageLayout.y
-      : 0;
-  const messageMenuBubbleLift = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, messageMenuPreviewTranslateTo],
-    extrapolate: "clamp",
-  });
-  const messageMenuBubbleScale = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.96, 1],
-    extrapolate: "clamp",
-  });
-  const messageMenuActionsTranslateY = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [10, 0],
-    extrapolate: "clamp",
-  });
-  const messageMenuActionsScale = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.96, 1],
-    extrapolate: "clamp",
-  });
-  const messageMenuOverlayOpacity = messageMenuAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 1],
-    extrapolate: "clamp",
-  });
-  const messageMenuOverlayContent =
-    messageMenuMounted && selectedMessage?.type === "message" && selectedMessageLayout ? (
-      <View style={styles.messageMenuLayer} pointerEvents="box-none">
-        <Pressable style={styles.messageMenuBackdropPressable} onPress={closeMessageMenu}>
-          <Animated.View
-            style={[
-              styles.messageMenuBackdrop,
-              { opacity: messageMenuOverlayOpacity },
-            ]}
-          />
-        </Pressable>
-
-        <Animated.View
-          pointerEvents="auto"
-          style={[
-            styles.messageMenuPreview,
-            {
-              top: selectedMessageLayout.y,
-              left: selectedMessageLayout.x,
-              width: selectedMessageLayout.width,
-              transform: [
-                { translateY: messageMenuBubbleLift },
-                { scale: messageMenuBubbleScale },
-              ],
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.messageBubble,
-              selectedMessageIsMine
-                ? styles.messageBubbleMine
-                : styles.messageBubbleTheirs,
-              styles.messageMenuBubbleFixed,
-              styles.messageMenuBubbleShadow,
-            ]}
-          >
-            <MessageBubbleBody
-              message={selectedMessage.message}
-              isMine={Boolean(selectedMessageIsMine)}
-              isGroup={Boolean(currentChat?.isGroup)}
-              onPressMention={handleMentionPress}
-              selectable
-            />
-          </View>
-        </Animated.View>
-
-        {messageMenuPosition ? (
-          <Animated.View
-            style={[
-              styles.messageMenuActionBar,
-              {
-                top: messageMenuPosition.actionsTop,
-                left: messageMenuPosition.actionsLeft,
-                opacity: messageMenuOverlayOpacity,
-                transform: [
-                  { translateY: messageMenuActionsTranslateY },
-                  { scale: messageMenuActionsScale },
-                ],
-              },
-            ]}
-          >
-            {canReplySelectedMessage ? (
-              <Pressable style={styles.messageMenuAction} onPress={handleReply}>
-                <Reply size={17} color={Colors.text} />
-                <Text style={styles.messageMenuActionText}>Javob</Text>
-              </Pressable>
-            ) : null}
-            {canCopySelectedMessage ? (
-              <Pressable style={styles.messageMenuAction} onPress={() => void handleCopyMessage()}>
-                <Ionicons name="copy-outline" size={17} color={Colors.text} />
-                <Text style={styles.messageMenuActionText}>Copy</Text>
-              </Pressable>
-            ) : null}
-            {canEditSelectedMessage ? (
-              <Pressable style={styles.messageMenuAction} onPress={handleEditMessage}>
-                <Edit2 size={17} color={Colors.text} />
-                <Text style={styles.messageMenuActionText}>Edit</Text>
-              </Pressable>
-            ) : null}
-            {canDeleteSelectedMessage ? (
-              <Pressable style={styles.messageMenuAction} onPress={handleDeleteMessage}>
-                <Trash2 size={17} color={Colors.danger} />
-                <Text style={[styles.messageMenuActionText, styles.messageMenuActionTextDanger]}>
-                  Delete
-                </Text>
-              </Pressable>
-            ) : null}
-          </Animated.View>
-        ) : null}
-      </View>
-    ) : null;
-  const shouldApplyStickerBottomOffset =
-    !useNativeKeyboardLayout && (stickerPickerVisible || stickerToKeyboardTransition);
-  const dockedAccessoryOffset =
-    useNativeKeyboardLayout && stickerUsesAccessoryOffset
-      ? accessoryHeightAnim
-      : keyboardLayoutOffset;
-  const typingMembers = useMemo(
-    () =>
-      typingUserIds
-        .map((userId) =>
-          currentChat?.members?.find((member) => getEntityId(member) === userId) || null,
-        )
-        .filter(Boolean) as User[],
-    [currentChat?.members, typingUserIds],
-  );
-  const typingSubtitle = useMemo(() => {
-    if (!typingMembers.length) {
-      return null;
-    }
-
-    const labels = typingMembers
-      .map((member) => member.nickname || member.username || "User")
-      .slice(0, 2);
-
-    return `${labels.join(", ")} yozmoqda...`;
-  }, [typingMembers]);
-  const typingUserIdSet = useMemo(() => new Set(typingUserIds), [typingUserIds]);
-  const onlineUserIdSet = useMemo(() => new Set(onlineUserIds), [onlineUserIds]);
-  const isUserCurrentlyOnline = (targetUser?: User | null) => {
-    const targetUserId = getEntityId(targetUser);
-    if (!targetUserId) {
-      return false;
-    }
-
-    if (onlineUserIdSet.has(targetUserId) || typingUserIdSet.has(targetUserId)) {
-      return true;
-    }
-
-    const lastSeenValue = targetUser?.lastSeen;
-    if (!lastSeenValue) {
-      return false;
-    }
-
-    const lastSeenDate = new Date(lastSeenValue);
-    if (Number.isNaN(lastSeenDate.getTime())) {
-      return false;
-    }
-
-    return Date.now() - lastSeenDate.getTime() <= ONLINE_PRESENCE_WINDOW_MS;
-  };
-  const isOtherMemberOnline = isUserCurrentlyOnline(otherMember);
-  const isDrawerUserOnline = isUserCurrentlyOnline(drawerUser);
-  const groupOnlineCount = useMemo(() => {
-    if (!currentChat?.isGroup) {
-      return 0;
-    }
-
-    return (
-      currentChat.members?.filter((member) => {
-        const memberId = getEntityId(member);
-        return memberId && memberId !== currentUserId && isUserCurrentlyOnline(member);
-      }).length || 0
-    );
-  }, [currentChat?.isGroup, currentChat?.members, currentUserId, onlineUserIdSet, typingUserIdSet]);
-  const headerStatusLabel = useMemo(() => {
-    if (typingSubtitle) {
-      return typingSubtitle;
-    }
-
-    if (isGroupChat) {
-      const membersCount = currentChat?.members?.length || 0;
-      return groupOnlineCount > 0
-        ? `${membersCount} a'zo, ${groupOnlineCount} online`
-        : `${membersCount} a'zo`;
-    }
-
-    if (currentChat?.isSavedMessages) {
-      return "o'zim";
-    }
-
-    if (otherMember?.isOfficialProfile) {
-      return otherMember.officialBadgeLabel || "Rasmiy";
-    }
-
-    return isOtherMemberOnline ? "Online" : "Offline";
-  }, [
-    currentChat?.isGroup,
-    currentChat?.isSavedMessages,
-    currentChat?.members,
-    groupOnlineCount,
-    isGroupChat,
-    isOtherMemberOnline,
-    otherMember?.isOfficialProfile,
-    otherMember?.officialBadgeLabel,
-    typingSubtitle,
-  ]);
-  const showHeaderStatusDot = Boolean(
-    !typingSubtitle &&
-      !isGroupChat &&
-      !currentChat?.isSavedMessages &&
-      !otherMember?.isOfficialProfile,
-  );
-  const drawerStatusLabel = useMemo(() => {
-    if (drawerUser?.isOfficialProfile) {
-      return drawerUser.officialBadgeLabel || "Rasmiy";
-    }
-
-    if (drawerUser && isDrawerUserOnline) {
-      return "Online";
-    }
-
-    if (drawerUser?.lastSeen) {
-      const date = new Date(drawerUser.lastSeen);
-      if (!Number.isNaN(date.getTime())) {
-        return `Oxirgi marta: ${date.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}`;
+  const handleComposerLayout = useCallback(
+    (nextHeight: number) => {
+      if (lockComposerShellHeight) {
+        return;
       }
 
-      return drawerUser.lastSeen;
-    }
-
-    if (drawerUser) {
-      return "Offline";
-    }
-
-    if (currentChat?.isSavedMessages) {
-      return "Faqat siz ko'radigan chat";
-    }
-
-    return `${currentChat?.members?.length || 0} a'zo`;
-  }, [
-    currentChat?.isSavedMessages,
-    currentChat?.members?.length,
-    drawerUser,
-    isDrawerUserOnline,
-  ]);
-  const drawerProfileMeta = useMemo(() => {
-    if (drawerUser && !currentChat?.isGroup) {
-      return drawerUser.bio?.trim() || drawerStatusLabel;
-    }
-
-    return drawerStatusLabel;
-  }, [currentChat?.isGroup, drawerStatusLabel, drawerUser]);
-  const chatPushNotificationsEnabled = currentChat?.pushNotificationsEnabled !== false;
-  const showChatPushNotificationsToggle = Boolean(
-    currentChat &&
-      !currentChat.isSavedMessages &&
-      (!drawerUser || !currentChat.isGroup),
+      if (nextHeight > 0 && nextHeight !== composerHeight) {
+        setComposerHeight(nextHeight);
+      }
+    },
+    [composerHeight, lockComposerShellHeight],
   );
+
+  const {
+    selectedMessageIsMine,
+    canEditSelectedMessage,
+    canDeleteSelectedMessage,
+    canCopySelectedMessage,
+    canReplySelectedMessage,
+    messageMenuPosition,
+    messageMenuBubbleLift,
+    messageMenuBubbleScale,
+    messageMenuActionsTranslateY,
+    messageMenuActionsScale,
+    messageMenuOverlayOpacity,
+  } = useMessageMenuState({
+    selectedMessage,
+    currentUserId,
+    canDeleteOthersMessages,
+    selectedMessageLayout,
+    screenHeight,
+    screenWidth,
+    insetTop: insets.top,
+    insetBottom: insets.bottom,
+    messageMenuAnim,
+    screenPadding: MESSAGE_MENU_SCREEN_PADDING,
+    gap: MESSAGE_MENU_GAP,
+    width: MESSAGE_MENU_WIDTH,
+    itemHeight: MESSAGE_MENU_ITEM_HEIGHT,
+    actionGap: MESSAGE_MENU_ACTION_GAP,
+    actionsPadding: MESSAGE_MENU_ACTIONS_PADDING,
+  });
+  const messageMenuOverlayContent = (
+    <MessageContextMenuOverlay
+      styles={styles}
+      mounted={messageMenuMounted}
+      selectedMessage={selectedMessage}
+      selectedMessageLayout={selectedMessageLayout}
+      selectedMessageIsMine={selectedMessageIsMine}
+      currentChatIsGroup={Boolean(currentChat?.isGroup)}
+      messageMenuPosition={messageMenuPosition}
+      overlayOpacity={messageMenuOverlayOpacity}
+      bubbleLift={messageMenuBubbleLift}
+      bubbleScale={messageMenuBubbleScale}
+      actionsTranslateY={messageMenuActionsTranslateY}
+      actionsScale={messageMenuActionsScale}
+      canReply={canReplySelectedMessage}
+      canCopy={canCopySelectedMessage}
+      canEdit={canEditSelectedMessage}
+      canDelete={canDeleteSelectedMessage}
+      onClose={closeMessageMenu}
+      onReply={handleReply}
+      onCopy={() => {
+        void handleCopyMessage();
+      }}
+      onEdit={handleEditMessage}
+      onDelete={handleDeleteMessage}
+      onPressMention={handleMentionPress}
+      onOpenLink={handleOpenMessageLink}
+    />
+  );
+  const chatBodyContent = (
+    <ChatBody
+      styles={styles}
+      listProps={{
+        listRef,
+        messageItems,
+        initialMessageIndex,
+        shouldKeepMessagesAnchoredToBottom,
+        stickyDateHeaderIndices,
+        composerHeight,
+        dockBottomSpacerHeight,
+        messageListVisible,
+        initialScrollDoneRef,
+        scrollRestorePendingRef,
+        scrollOffsetRef,
+        shouldStickToBottomRef,
+        messagesQuery,
+        hasMessagesSnapshot,
+        chatCacheHydrated,
+        messagesCacheHydrated,
+        currentUserId,
+        currentChatIsGroup: Boolean(currentChat?.isGroup),
+        highlightedMessageId,
+        highlightPulseKey,
+        messageMenuMounted,
+        selectedMessageId,
+        pendingNewMessageIds,
+        onMessagesTouchStart: () => {
+          if (stickerPickerVisible) {
+            hideStickerPicker(false);
+          }
+        },
+        onMessagesScroll: handleMessagesScroll,
+        onMessagesScrollBeginDrag: () => {
+          if (stickerPickerVisible) {
+            hideStickerPicker(false);
+          }
+        },
+        onMessagesScrollEndDrag: scheduleScrollOffsetPersist,
+        onMessagesMomentumScrollEnd: scheduleScrollOffsetPersist,
+        onViewableItemsChanged: handleViewableItemsChanged,
+        onFetchOlder: () => {
+          if (
+            messagesQuery.hasNextPage &&
+            !messagesQuery.isFetchingNextPage
+          ) {
+            void messagesQuery.fetchNextPage();
+          }
+        },
+        onOpenMenu: handleMessageMenu,
+        onPressMention: handleMentionPress,
+        onOpenLink: handleOpenMessageLink,
+        onPressReplyPreview: handleScrollToRepliedMessage,
+        onSwipeReply: handleSwipeReply,
+        onJumpToLatestMessages: handleJumpToLatestMessages,
+        onLoadComplete: () => {
+          setMessageListVisible(true);
+        },
+      }}
+      stickerProps={{
+        accessoryHeightAnim,
+        stickerPickerVisible,
+        composerHeight,
+        bottomInset: insets.bottom,
+        onPressSticker: (emoji: string) => {
+          void handleStickerPress(emoji);
+        },
+      }}
+      composerProps={{
+        composerInputRef,
+        composerHeight,
+        lockComposerShellHeight,
+        composerShellBottomPadding,
+        dockBottomSpacerHeight,
+        composerContentMessage,
+        composerNotice,
+        editingMessageId,
+        draft,
+        isComposerDisabled,
+        composerSoftInputEnabled,
+        stickerPickerVisible: isStickerPanelActive,
+        hasComposerText,
+        isSending,
+        onChangeDraft: setDraft,
+        onSelectionChange: handleComposerSelectionChange,
+        onPressIn: handleComposerPressIn,
+        onFocus: handleComposerFocus,
+        onBlur: handleComposerBlur,
+        onAttach: () => {
+          void handleAttachmentPress();
+        },
+        onToggleSticker: toggleStickerPicker,
+        onSend: () => {
+          void handleSend();
+        },
+        onVoice: () => {
+          void handleVoiceMessagePress();
+        },
+        onClearComposerMode: clearComposerMode,
+        onContextPress: () => {
+          listRef.current?.scrollToEnd({ animated: true });
+        },
+        onComposerLayout: handleComposerLayout,
+      }}
+      messagesViewportTransformStyle={
+        !isWeb
+          ? {
+              transform: [{ translateY: messagesViewportTranslateY }],
+            }
+          : undefined
+      }
+      composerTranslateStyle={
+        !isWeb
+          ? {
+              transform: [{ translateY: activeDockTranslateY }],
+            }
+          : undefined
+      }
+    />
+  );
+  const {
+    isOtherMemberOnline,
+    headerStatusLabel,
+    showHeaderStatusDot,
+    drawerStatusLabel,
+    drawerProfileMeta,
+    chatPushNotificationsEnabled,
+    showChatPushNotificationsToggle,
+  } = useChatStatusMeta({
+    currentChat,
+    currentUserId,
+    isGroupChat,
+    otherMember,
+    drawerUser,
+    onlineUserIds,
+    typingUserIds,
+  });
+  const { outgoingCall, handleStartVideoCall, handleCancelOutgoingCall } =
+    useChatOutgoingCall({
+      currentChat,
+      otherMember,
+      isOtherMemberOnline,
+      currentUserId,
+      navigation,
+    });
+  useChatPresenceLifecycle({
+    navigation,
+    chatId: route.params.chatId,
+    currentChatMemberIds,
+    presenceResyncIntervalMs: PRESENCE_RESYNC_INTERVAL_MS,
+    setOnlineUserIds,
+  });
   const handleToggleChatPushNotifications = useCallback(
     async (nextEnabled: boolean) => {
       if (chatPushNotificationsMutation.isPending || !currentChat) {
@@ -2670,11 +1003,6 @@ export function ChatScreen({ navigation, route }: Props) {
         clearTimeout(openInfoTimeoutRef.current);
       }
 
-      if (composerNoticeTimeoutRef.current) {
-        clearTimeout(composerNoticeTimeoutRef.current);
-        composerNoticeTimeoutRef.current = null;
-      }
-
       if (scrollPersistTimeoutRef.current) {
         clearTimeout(scrollPersistTimeoutRef.current);
         scrollPersistTimeoutRef.current = null;
@@ -2700,219 +1028,6 @@ export function ChatScreen({ navigation, route }: Props) {
   }, [menuOpen]);
 
   useEffect(() => {
-    if (isWeb) {
-      return;
-    }
-
-    if (Platform.OS === "ios") {
-      const applyIosKeyboardLayout = (event: { endCoordinates: { screenY?: number; height?: number }; duration?: number }) => {
-        const overlapFromScreenY =
-          typeof event.endCoordinates?.screenY === "number"
-            ? Math.max(0, screenHeight - event.endCoordinates.screenY)
-            : 0;
-        const overlapFromHeight = Math.max(0, event.endCoordinates?.height || 0);
-        const nextInset = Math.max(overlapFromScreenY, overlapFromHeight);
-        const duration = typeof event.duration === "number" ? event.duration : 220;
-        const stickerHeight =
-          stickerPickerVisible || stickerToKeyboardTransition
-            ? getStickerPickerHeight()
-            : 0;
-        Keyboard.scheduleLayoutAnimation?.(event as never);
-        setKeyboardInset(nextInset);
-        setKeyboardLayoutOffset(nextInset);
-        if (nextInset > 0) {
-          lastKeyboardInsetRef.current = nextInset;
-          setClosedToKeyboardTransition(false);
-          setStickerUsesAccessoryOffset(false);
-        }
-        if (stickerToKeyboardTransition) {
-          animateAccessoryHeight(0, duration);
-          return;
-        }
-        if (stickerPickerVisible && nextInset <= 0) {
-          animateAccessoryHeight(stickerHeight, duration);
-        } else {
-          animateAccessoryHeight(0, Math.min(duration, 70));
-        }
-      };
-      const willShowSubscription = Keyboard.addListener("keyboardWillShow", (event) => {
-        applyIosKeyboardLayout(event);
-      });
-      const frameChangeSubscription = Keyboard.addListener(
-        "keyboardWillChangeFrame",
-        (event) => {
-          applyIosKeyboardLayout(event);
-        },
-      );
-      const showSubscription = Keyboard.addListener("keyboardDidShow", (event) => {
-        const nextInset = Math.max(0, event.endCoordinates?.height || 0);
-        setKeyboardInset(nextInset);
-        setKeyboardLayoutOffset(nextInset);
-        if (nextInset > 0) {
-          lastKeyboardInsetRef.current = nextInset;
-        }
-        setStickerToKeyboardTransition(false);
-        setClosedToKeyboardTransition(false);
-        animateAccessoryHeight(0, 64);
-      });
-      const hideSubscription = Keyboard.addListener("keyboardWillHide", (event) => {
-        const duration = typeof event.duration === "number" ? event.duration : 220;
-        const stickerHeight =
-          stickerPickerVisible || stickerToKeyboardTransition
-            ? getStickerPickerHeight()
-            : 0;
-        Keyboard.scheduleLayoutAnimation?.(event);
-        setKeyboardInset(0);
-        setKeyboardLayoutOffset(
-          stickerPickerVisible && !stickerUsesAccessoryOffset ? stickerHeight : 0,
-        );
-        if (!stickerPickerVisible && !stickerToKeyboardTransition) {
-          setStickerToKeyboardTransition(false);
-        }
-        if (!composerFocusedRef.current) {
-          setClosedToKeyboardTransition(false);
-        }
-        animateAccessoryHeight(
-          stickerPickerVisible || stickerToKeyboardTransition
-            ? stickerHeight
-            : 0,
-          stickerPickerVisible || stickerToKeyboardTransition ? duration : 70,
-        );
-      });
-
-      return () => {
-        willShowSubscription.remove();
-        frameChangeSubscription.remove();
-        showSubscription.remove();
-        hideSubscription.remove();
-      };
-    }
-
-    const showSubscription = Keyboard.addListener("keyboardDidShow", (event) => {
-      const nextInset = Math.max(0, event.endCoordinates?.height || 0);
-      setKeyboardInset(nextInset);
-      setKeyboardLayoutOffset(0);
-      if (nextInset > 0) {
-        lastKeyboardInsetRef.current = nextInset;
-      }
-      setStickerToKeyboardTransition(false);
-      setClosedToKeyboardTransition(false);
-      animateAccessoryHeight(0, 0);
-      if (composerFocusedRef.current) {
-        requestAnimationFrame(() => {
-          scrollToLatestMessage(false);
-        });
-      }
-    });
-    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
-      setKeyboardInset(0);
-      setKeyboardLayoutOffset(0);
-      if (!stickerPickerVisible && !stickerToKeyboardTransition) {
-        setStickerToKeyboardTransition(false);
-      }
-      if (!composerFocusedRef.current) {
-        setClosedToKeyboardTransition(false);
-      }
-      animateAccessoryHeight(
-        stickerPickerVisible || stickerToKeyboardTransition
-          ? getStickerPickerHeight()
-          : 0,
-        180,
-      );
-    });
-
-    return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
-    };
-  }, [
-    animateAccessoryHeight,
-    getStickerPickerHeight,
-    insets.bottom,
-    isWeb,
-    screenHeight,
-    scrollToLatestMessage,
-    stickerUsesAccessoryOffset,
-    stickerToKeyboardTransition,
-    stickerPickerVisible,
-  ]);
-
-  useEffect(() => {
-    const subscriptions = [
-      realtime.onPresenceEvent("user_online", (payload) => {
-        const onlineUserId = String(payload?.userId || "");
-        if (!onlineUserId) {
-          return;
-        }
-
-        setOnlineUserIds((previous) =>
-          previous.includes(onlineUserId) ? previous : [...previous, onlineUserId],
-        );
-      }),
-      realtime.onPresenceEvent("user_offline", (payload) => {
-        const offlineUserId = String(payload?.userId || "");
-        if (!offlineUserId) {
-          return;
-        }
-
-        setOnlineUserIds((previous) => previous.filter((userId) => userId !== offlineUserId));
-      }),
-    ];
-
-    return () => {
-      subscriptions.forEach((unsubscribe) => unsubscribe?.());
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!currentChatMemberIds.length) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const syncPresenceSnapshot = async () => {
-      try {
-        const nextOnlineUserIds = await realtime.syncOnlineUsers(currentChatMemberIds);
-        if (!cancelled) {
-          setOnlineUserIds(nextOnlineUserIds);
-        }
-      } catch (error) {
-        console.warn("Failed to sync presence statuses", error);
-      }
-    };
-
-    void syncPresenceSnapshot();
-    const interval = setInterval(() => {
-      void syncPresenceSnapshot();
-    }, PRESENCE_RESYNC_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [currentChatMemberIds]);
-
-  useEffect(() => {
-    if (navigation.isFocused()) {
-      setActiveNotificationChatId(route.params.chatId);
-    }
-
-    const unsubscribeFocus = navigation.addListener("focus", () => {
-      setActiveNotificationChatId(route.params.chatId);
-    });
-    const unsubscribeBlur = navigation.addListener("blur", () => {
-      setActiveNotificationChatId(null);
-    });
-
-    return () => {
-      unsubscribeFocus();
-      unsubscribeBlur();
-      setActiveNotificationChatId(null);
-    };
-  }, [navigation, route.params.chatId]);
-
-  useEffect(() => {
     let cancelled = false;
     setMessagesCacheHydrated(false);
     setSavedScrollOffset(null);
@@ -2931,8 +1046,15 @@ export function ChatScreen({ navigation, route }: Props) {
           loadChatScrollPosition(currentUserId, route.params.chatId),
         ]);
 
-        if (!cancelled && cachedMessages && !queryClient.getQueryData(["messages", route.params.chatId])) {
-          queryClient.setQueryData(["messages", route.params.chatId], cachedMessages);
+        if (
+          !cancelled &&
+          cachedMessages &&
+          !queryClient.getQueryData(["messages", route.params.chatId])
+        ) {
+          queryClient.setQueryData(
+            ["messages", route.params.chatId],
+            cachedMessages,
+          );
         }
 
         if (!cancelled) {
@@ -2964,12 +1086,19 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
-    void saveCachedMessages(currentUserId, route.params.chatId, messagesSnapshot).catch(
-      (error) => {
-        console.warn("Failed to persist messages cache", error);
-      },
-    );
-  }, [currentUserId, hasMessagesSnapshot, messagesQuery.data, route.params.chatId]);
+    void saveCachedMessages(
+      currentUserId,
+      route.params.chatId,
+      messagesSnapshot,
+    ).catch((error) => {
+      console.warn("Failed to persist messages cache", error);
+    });
+  }, [
+    currentUserId,
+    hasMessagesSnapshot,
+    messagesQuery.data,
+    route.params.chatId,
+  ]);
 
   useEffect(() => {
     const chatId = route.params.chatId;
@@ -2980,8 +1109,9 @@ export function ChatScreen({ navigation, route }: Props) {
         if (String(payload?.chatId || "") !== String(chatId)) {
           return;
         }
-        queryClient.setQueryData<MessagesInfiniteData>(["messages", chatId], (previous) =>
-          upsertMessageInPages(previous, payload, currentUserId),
+        queryClient.setQueryData<MessagesInfiniteData>(
+          ["messages", chatId],
+          (previous) => upsertMessageInPages(previous, payload, currentUserId),
         );
       }),
       realtime.onChatEvent("message_updated", (payload) => {
@@ -2992,12 +1122,14 @@ export function ChatScreen({ navigation, route }: Props) {
         if (!messageId) {
           return;
         }
-        queryClient.setQueryData<MessagesInfiniteData>(["messages", chatId], (previous) =>
-          updateMessageByIdInPages(previous, messageId, (message) => ({
-            ...message,
-            ...payload,
-            isEdited: true,
-          })),
+        queryClient.setQueryData<MessagesInfiniteData>(
+          ["messages", chatId],
+          (previous) =>
+            updateMessageByIdInPages(previous, messageId, (message) => ({
+              ...message,
+              ...payload,
+              isEdited: true,
+            })),
         );
       }),
       realtime.onChatEvent("message_deleted", (payload) => {
@@ -3008,8 +1140,10 @@ export function ChatScreen({ navigation, route }: Props) {
         if (!messageId) {
           return;
         }
-        queryClient.setQueryData<MessagesInfiniteData>(["messages", chatId], (previous) =>
-          updateMessageByIdInPages(previous, messageId, () => null),
+        queryClient.setQueryData<MessagesInfiniteData>(
+          ["messages", chatId],
+          (previous) =>
+            updateMessageByIdInPages(previous, messageId, () => null),
         );
       }),
       realtime.onChatEvent("messages_read", (payload) => {
@@ -3025,34 +1159,40 @@ export function ChatScreen({ navigation, route }: Props) {
           return;
         }
 
-        queryClient.setQueryData<MessagesInfiniteData>(["messages", chatId], (previous) =>
-          patchMessagesPages(previous, (pages) =>
-            pages.map((page) => ({
-              ...page,
-              data: (page.data || []).map((message) => {
-                const messageId = getMessageIdentity(message);
-                if (!messageIds.includes(messageId)) {
-                  return message;
-                }
+        queryClient.setQueryData<MessagesInfiniteData>(
+          ["messages", chatId],
+          (previous) =>
+            patchMessagesPages(previous, (pages) =>
+              pages.map((page) => ({
+                ...page,
+                data: (page.data || []).map((message) => {
+                  const messageId = getMessageIdentity(message);
+                  if (!messageIds.includes(messageId)) {
+                    return message;
+                  }
 
-                if (getNormalizedSenderId(message.senderId) === readByUserId) {
-                  return message;
-                }
+                  if (
+                    getNormalizedSenderId(message.senderId) === readByUserId
+                  ) {
+                    return message;
+                  }
 
-                const nextReadBy = normalizeReadByIds(message.readBy || []);
-                if (nextReadBy.includes(readByUserId)) {
-                  return message;
-                }
+                  const nextReadBy = normalizeReadByIds(message.readBy || []);
+                  if (nextReadBy.includes(readByUserId)) {
+                    return message;
+                  }
 
-                return {
-                  ...message,
-                  readBy: [...nextReadBy, readByUserId],
-                  deliveryStatus:
-                    getMessageDeliveryStatus(message) === "failed" ? "failed" : "read",
-                };
-              }),
-            })),
-          ),
+                  return {
+                    ...message,
+                    readBy: [...nextReadBy, readByUserId],
+                    deliveryStatus:
+                      getMessageDeliveryStatus(message) === "failed"
+                        ? "failed"
+                        : "read",
+                  };
+                }),
+              })),
+            ),
         );
       }),
       realtime.onChatEvent("user_typing", (payload) => {
@@ -3066,7 +1206,9 @@ export function ChatScreen({ navigation, route }: Props) {
         const typingUserId = String(payload?.userId || "");
         if (payload?.isTyping && typingUserId) {
           setOnlineUserIds((previous) =>
-            previous.includes(typingUserId) ? previous : [...previous, typingUserId],
+            previous.includes(typingUserId)
+              ? previous
+              : [...previous, typingUserId],
           );
         }
 
@@ -3116,33 +1258,43 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
-    queryClient.setQueryData<MessagesInfiniteData>(["messages", route.params.chatId], (previous) =>
-      patchMessagesPages(previous, (pages) =>
-        pages.map((page) => ({
-          ...page,
-          data: (page.data || []).map((message) => {
-            const messageId = getMessageIdentity(message);
-            if (!visibleIncomingMessageIds.includes(messageId)) {
-              return message;
-            }
+    queryClient.setQueryData<MessagesInfiniteData>(
+      ["messages", route.params.chatId],
+      (previous) =>
+        patchMessagesPages(previous, (pages) =>
+          pages.map((page) => ({
+            ...page,
+            data: (page.data || []).map((message) => {
+              const messageId = getMessageIdentity(message);
+              if (!visibleIncomingMessageIds.includes(messageId)) {
+                return message;
+              }
 
-            const nextReadBy = normalizeReadByIds(message.readBy || []);
-            if (nextReadBy.includes(String(currentUserId || ""))) {
-              return message;
-            }
+              const nextReadBy = normalizeReadByIds(message.readBy || []);
+              if (nextReadBy.includes(String(currentUserId || ""))) {
+                return message;
+              }
 
-            return {
-              ...message,
-              readBy: [...nextReadBy, String(currentUserId || "")],
-              deliveryStatus:
-                getMessageDeliveryStatus(message) === "failed" ? "failed" : "read",
-            };
-          }),
-        })),
-      ),
+              return {
+                ...message,
+                readBy: [...nextReadBy, String(currentUserId || "")],
+                deliveryStatus:
+                  getMessageDeliveryStatus(message) === "failed"
+                    ? "failed"
+                    : "read",
+              };
+            }),
+          })),
+        ),
     );
     realtime.emitReadMessages(route.params.chatId, visibleIncomingMessageIds);
-  }, [currentUserId, flatMessages, queryClient, route.params.chatId, visibleMessageIds]);
+  }, [
+    currentUserId,
+    flatMessages,
+    queryClient,
+    route.params.chatId,
+    visibleMessageIds,
+  ]);
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
@@ -3179,15 +1331,19 @@ export function ChatScreen({ navigation, route }: Props) {
       String(lastMessageId) !== String(previousLastMessageId);
 
     if (appendedAtBottom) {
-      const appendedMessages = flatMessages.slice(previousMessageCount).filter((message) => {
-        const senderId = String(getNormalizedSenderId(message.senderId) || "");
+      const appendedMessages = flatMessages
+        .slice(previousMessageCount)
+        .filter((message) => {
+          const senderId = String(
+            getNormalizedSenderId(message.senderId) || "",
+          );
 
-        return (
-          senderId &&
-          senderId !== currentUserId &&
-          getMessageDeliveryStatus(message) !== "failed"
-        );
-      });
+          return (
+            senderId &&
+            senderId !== currentUserId &&
+            getMessageDeliveryStatus(message) !== "failed"
+          );
+        });
 
       if (appendedMessages.length > 0) {
         if (shouldStickToBottomRef.current) {
@@ -3215,7 +1371,9 @@ export function ChatScreen({ navigation, route }: Props) {
     const unreadMessageIds = new Set(
       flatMessages
         .filter((message) => {
-          const senderId = String(getNormalizedSenderId(message.senderId) || "");
+          const senderId = String(
+            getNormalizedSenderId(message.senderId) || "",
+          );
           const readBy = normalizeReadByIds(message.readBy || []);
 
           return (
@@ -3279,683 +1437,119 @@ export function ChatScreen({ navigation, route }: Props) {
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <Animated.View style={styles.container}>
         <View style={styles.container}>
-        <View style={styles.header}>
-          <Pressable
-            style={styles.headerButton}
-            onPress={() => {
+          <ChatHeader
+            styles={styles}
+            chatTitle={chatTitle}
+            chatAvatarUri={chatAvatarUri}
+            currentChat={currentChat}
+            isGroupChat={isGroupChat}
+            otherMember={otherMember}
+            showHeaderStatusDot={showHeaderStatusDot}
+            isOtherMemberOnline={isOtherMemberOnline}
+            headerStatusLabel={headerStatusLabel}
+            onBack={() => {
               dismissKeyboard();
               navigation.goBack();
             }}
-          >
-            <Ionicons name="arrow-back" size={20} color={Colors.mutedText} />
-          </Pressable>
-
-          <Pressable
-            style={styles.headerInfo}
-            onPress={() => {
+            onOpenInfo={() => {
               dismissKeyboard();
               handleOpenInfo();
             }}
-          >
-            <Avatar
-              label={chatTitle}
-              uri={chatAvatarUri}
-              size={40}
-              isSavedMessages={Boolean(currentChat?.isSavedMessages)}
-              isGroup={isGroupChat}
-              shape="circle"
-            />
-            <View style={styles.headerTextWrap}>
-              {otherMember && !isGroupChat ? (
-                <UserDisplayName
-                  user={otherMember}
-                  fallback={getDirectChatUserLabel(otherMember)}
-                  size="md"
-                  numberOfLines={1}
-                  textStyle={styles.headerTitle}
-                />
-              ) : (
-                <Text style={styles.headerTitle} numberOfLines={1}>
-                  {chatTitle}
-                </Text>
-              )}
-              <View style={styles.headerStatusRow}>
-                {showHeaderStatusDot ? (
-                  <View
-                    style={[
-                      styles.headerStatusDot,
-                      isOtherMemberOnline
-                        ? styles.headerStatusDotOnline
-                        : styles.headerStatusDotOffline,
-                    ]}
-                  />
-                ) : null}
-                <Text style={styles.headerSubtitle} numberOfLines={1}>
-                  {headerStatusLabel}
-                </Text>
-              </View>
-            </View>
-          </Pressable>
-
-          <View style={styles.headerActions}>
-            {!isGroupChat && !currentChat?.isSavedMessages ? (
-              <Pressable style={styles.headerButton} onPress={handleStartVideoCall}>
-                <Phone size={18} color={Colors.mutedText} />
-              </Pressable>
-            ) : null}
-
-            <Pressable
-              style={styles.headerButton}
-              onPress={() => {
-                dismissKeyboard();
-                setMenuOpen(true);
-              }}
-            >
-              <MoreVertical size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-        </View>
-
-        <Animated.View
-          style={[
-            styles.chatBody,
-          ]}
-        >
-        <Animated.View
-          style={[
-            styles.messagesViewport,
-            useNativeKeyboardLayout
-              ? {
-                  bottom: dockedAccessoryOffset,
-                }
-              : null,
-          ]}
-        >
-          {messagesQuery.isFetchingNextPage ? (
-            <View style={styles.historyLoader}>
-              <ActivityIndicator size="small" color={Colors.mutedText} />
-              <Text style={styles.historyLoaderText}>Oldingi xabarlar yuklanmoqda...</Text>
-            </View>
-          ) : null}
-          {!chatCacheHydrated || !messagesCacheHydrated || (messagesQuery.isLoading && !hasMessagesSnapshot) ? (
-            <View style={styles.centerState}>
-              <ActivityIndicator color={Colors.primary} />
-              <Text style={styles.helperText}>Xabarlar yuklanmoqda...</Text>
-            </View>
-          ) : messagesQuery.isError && !hasMessagesSnapshot ? (
-            <View style={styles.centerState}>
-              <Ionicons name="alert-circle-outline" size={28} color={Colors.warning} />
-              <Text style={styles.helperText}>
-                {messagesQuery.error instanceof Error
-                  ? messagesQuery.error.message
-                  : "Xabarlarni olishda xatolik yuz berdi."}
-              </Text>
-            </View>
-          ) : (
-            <FlashList
-              ref={listRef}
-              data={messageItems}
-              keyExtractor={(item) => item.id}
-              initialScrollIndex={initialMessageIndex}
-              drawDistance={280}
-              stickyHeaderIndices={stickyDateHeaderIndices}
-              contentContainerStyle={[
-                styles.messagesContent,
-                { paddingBottom: composerHeight + 20 },
-              ]}
-              style={!messageListVisible ? styles.messagesListHidden : undefined}
-              onLoad={() => {
-                if (initialScrollDoneRef.current) {
-                  return;
-                }
-
-                initialScrollDoneRef.current = true;
-                requestAnimationFrame(() => {
-                  const nextScrollOffset = scrollRestorePendingRef.current;
-                  if (nextScrollOffset !== null) {
-                    scrollOffsetRef.current = nextScrollOffset;
-                    shouldStickToBottomRef.current = nextScrollOffset <= NEW_MESSAGES_BOTTOM_THRESHOLD;
-                    listRef.current?.scrollToOffset({
-                      offset: nextScrollOffset,
-                      animated: false,
-                    });
-                  } else {
-                    shouldStickToBottomRef.current = true;
-                    listRef.current?.scrollToEnd({ animated: false });
-                  }
-                  scrollRestorePendingRef.current = null;
-
-                  requestAnimationFrame(() => {
-                    setMessageListVisible(true);
-                  });
-                });
-              }}
-              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-              keyboardShouldPersistTaps="handled"
-              onScroll={handleMessagesScroll}
-              onScrollEndDrag={scheduleScrollOffsetPersist}
-              onMomentumScrollEnd={scheduleScrollOffsetPersist}
-              onViewableItemsChanged={handleViewableItemsChanged}
-              viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
-              scrollEventThrottle={16}
-              onStartReached={() => {
-                if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
-                  void messagesQuery.fetchNextPage();
-                }
-              }}
-              onStartReachedThreshold={0.15}
-              renderItem={({ item }) => {
-                if (item.type === "date") {
-                  return (
-                    <View style={styles.dateDivider}>
-                      <Text style={styles.dateDividerText}>{item.label}</Text>
-                    </View>
-                  );
-                }
-
-                const isMine = item.message.senderId === currentUserId;
-                return (
-                  <ChatMessageRow
-                    message={item.message}
-                    isMine={isMine}
-                    isGroup={Boolean(currentChat?.isGroup)}
-                    onOpenMenu={handleMessageMenu}
-                    onPressMention={handleMentionPress}
-                    onPressReplyPreview={handleScrollToRepliedMessage}
-                    onSwipeReply={handleSwipeReply}
-                    highlightPulseKey={
-                      highlightedMessageId === item.message.id ? highlightPulseKey : 0
-                    }
-                    hidden={messageMenuMounted && selectedMessageId === item.message.id}
-                  />
-                );
-              }}
-            />
-          )}
-
-          {pendingNewMessageIds.length > 0 ? (
-            <Pressable style={styles.newMessagesButton} onPress={handleJumpToLatestMessages}>
-              <ChevronDown size={18} color="#fff" />
-              <View style={styles.newMessagesChip}>
-                <Text style={styles.newMessagesChipText}>
-                  {pendingNewMessageIds.length > 99 ? "99+" : pendingNewMessageIds.length}
-                </Text>
-              </View>
-            </Pressable>
-          ) : null}
-        </Animated.View>
-
-        {stickerPickerVisible ? (
-          <Pressable
-            style={styles.stickerDismissBackdrop}
-            onPress={() => hideStickerPicker(false)}
+            onOpenCall={() => {
+              void handleStartVideoCall();
+            }}
+            onOpenMenu={() => {
+              dismissKeyboard();
+              setMenuOpen(true);
+            }}
           />
-        ) : null}
 
-        <Animated.View
-          onLayout={(event) => {
-            const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
-            if (nextHeight > 0 && nextHeight !== composerHeight) {
-              setComposerHeight(nextHeight);
-            }
-          }}
-          style={[
-            styles.composerShell,
-            {
-              position: useKeyboardAvoidingBody ? "relative" : "absolute",
-              left: useKeyboardAvoidingBody ? undefined : 0,
-              right: useKeyboardAvoidingBody ? undefined : 0,
-              bottom: useNativeKeyboardLayout ? dockedAccessoryOffset : 0,
-              marginBottom: shouldApplyStickerBottomOffset ? accessoryHeightAnim : 0,
-              paddingBottom:
-                keyboardInset > 0 ||
-                stickerPickerVisible ||
-                stickerToKeyboardTransition
-                  ? 12
-                  : Math.max(insets.bottom, 12),
-            },
-          ]}
-        >
-          {composerContent}
-        </Animated.View>
-        <Animated.View style={[styles.stickerPickerShell, { height: accessoryHeightAnim }]}>
-          {stickerPickerVisible ? (
-            <ScrollView
-              contentContainerStyle={[
-                styles.stickerPickerContent,
-                { paddingBottom: Math.max(insets.bottom, 16) },
-              ]}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {CHAT_EMOJI_SECTIONS.map((section) => (
-                <View key={section.label} style={styles.emojiSection}>
-                  <Text style={styles.emojiSectionLabel}>{section.label}</Text>
-                  <View style={styles.emojiGrid}>
-                    {section.emojis.map((emoji, index) => (
-                      <Pressable
-                        key={`${section.label}-${emoji}-${index}`}
-                        style={({ pressed }) => [
-                          styles.emojiButton,
-                          pressed && styles.emojiButtonPressed,
-                        ]}
-                        onPress={() => void handleStickerPress(emoji)}
-                      >
-                        <Text style={styles.emojiButtonText}>{emoji}</Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                </View>
-              ))}
-            </ScrollView>
-          ) : null}
-        </Animated.View>
-        </Animated.View>
+          <View style={styles.chatBodyHost}>{chatBodyContent}</View>
         </View>
 
-        {Platform.OS === "ios" && messageMenuOverlayContent ? (
+        {Platform.OS === "ios" ? (
           <FullWindowOverlay>{messageMenuOverlayContent}</FullWindowOverlay>
         ) : null}
       </Animated.View>
 
       {Platform.OS !== "ios" ? messageMenuOverlayContent : null}
 
-      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
-        <Pressable style={styles.menuOverlay} onPress={() => setMenuOpen(false)}>
-          <View style={styles.menuDropdown} onStartShouldSetResponder={() => true}>
-            <Pressable style={styles.menuItem} onPress={() => handleOpenInfoFromMenu()}>
-              <Info size={18} color={Colors.text} />
-              <Text style={styles.menuItemText}>
-                {currentChat?.isGroup ? "Guruh ma'lumotlari" : "Foydalanuvchi ma'lumotlari"}
-              </Text>
-            </Pressable>
+      <ChatMenuModal
+        styles={styles}
+        visible={menuOpen}
+        currentChatIsGroup={Boolean(currentChat?.isGroup)}
+        canEditGroup={canEditGroup}
+        isGroupOwnerLeaving={isGroupOwnerLeaving}
+        onClose={() => setMenuOpen(false)}
+        onOpenInfo={() => {
+          handleOpenInfoFromMenu();
+        }}
+        onEditGroup={() => {
+          setMenuOpen(false);
+          setEditGroupOpen(true);
+        }}
+        onDeleteOrLeave={handleDeleteOrLeave}
+      />
 
-            {canEditGroup ? (
-              <Pressable
-                style={styles.menuItem}
-                onPress={() => {
-                  setMenuOpen(false);
-                  setEditGroupOpen(true);
-                }}
-              >
-                <Edit2 size={18} color={Colors.text} />
-                <Text style={styles.menuItemText}>Guruhni tahrirlash</Text>
-              </Pressable>
-            ) : null}
+      <ChatInfoDrawer
+        styles={styles}
+        mounted={infoPageMounted}
+        infoPageBackdropOpacity={infoPageBackdropOpacity}
+        infoPageTranslateX={infoPageTranslateX}
+        insetsTop={insets.top}
+        insetsBottom={insets.bottom}
+        panHandlers={infoPagePanResponder.panHandlers}
+        isViewingGroupMemberInfo={isViewingGroupMemberInfo}
+        drawerTitle={drawerTitle}
+        canEditGroup={canEditGroup}
+        drawerAvatarUri={drawerAvatarUri}
+        currentChat={currentChat}
+        drawerUser={drawerUser}
+        chatTitle={chatTitle}
+        drawerProfileMeta={drawerProfileMeta}
+        showChatPushNotificationsToggle={showChatPushNotificationsToggle}
+        chatPushNotificationsEnabled={chatPushNotificationsEnabled}
+        chatPushNotificationsPending={chatPushNotificationsMutation.isPending}
+        drawerStatusLabel={drawerStatusLabel}
+        groupLinkUrl={groupLinkUrl}
+        onBack={handleBackToGroupInfo}
+        onClose={handleCloseInfoDrawer}
+        onOpenEditGroup={() => {
+          handleCloseInfoDrawer();
+          setEditGroupOpen(true);
+        }}
+        onOpenAvatarPreview={() => {
+          if (drawerAvatarUri) {
+            setAvatarPreviewOpen(true);
+          }
+        }}
+        onToggleChatPushNotifications={(value) => {
+          void handleToggleChatPushNotifications(value);
+        }}
+        onCopyGroupLink={() => {
+          void handleCopyGroupLink();
+        }}
+        onPressMention={handleMentionPress}
+        onOpenLink={handleOpenMessageLink}
+        onOpenPrivateChatWithMember={(member) => {
+          void handleOpenPrivateChatWithMember(member);
+        }}
+      />
 
-            <View style={styles.menuDivider} />
-
-            <Pressable style={styles.menuItem} onPress={handleDeleteOrLeave}>
-              {isGroupOwnerLeaving ? (
-                <LogOut size={18} color={Colors.danger} />
-              ) : (
-                <Trash2 size={18} color={Colors.danger} />
-              )}
-              <Text style={[styles.menuItemText, { color: Colors.danger }]}>
-                {isGroupOwnerLeaving ? "Guruhni tark etish" : "Suhbatni o'chirish"}
-              </Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Modal>
-
-      {infoPageMounted ? (
-        <View style={styles.infoPageRoot} pointerEvents="box-none">
-          <Animated.View
-            pointerEvents="none"
-            style={[styles.infoPageBackdrop, { opacity: infoPageBackdropOpacity }]}
-          />
-
-          <Animated.View
-            style={[
-              styles.infoPagePanel,
-              {
-                paddingTop: insets.top,
-                paddingBottom: insets.bottom,
-                transform: [{ translateX: infoPageTranslateX }],
-              },
-            ]}
-            {...infoPagePanResponder.panHandlers}
-          >
-            <View
-              style={styles.infoPageSafeArea}
-              {...infoPagePanResponder.panHandlers}
-            >
-                <View style={styles.infoPageHeader}>
-                  <Pressable
-                    style={styles.headerButton}
-                    onPress={
-                      isViewingGroupMemberInfo ? handleBackToGroupInfo : handleCloseInfoDrawer
-                    }
-                  >
-                    <Ionicons
-                      name={isViewingGroupMemberInfo ? "chevron-back" : "chevron-back"}
-                      size={20}
-                      color={Colors.mutedText}
-                    />
-                  </Pressable>
-
-                  <Text style={styles.infoPageTitle} numberOfLines={1}>
-                    {drawerTitle}
-                  </Text>
-
-                  {!drawerUser && canEditGroup ? (
-                    <Pressable
-                      style={styles.headerButton}
-                      onPress={() => {
-                        handleCloseInfoDrawer();
-                        setEditGroupOpen(true);
-                      }}
-                    >
-                      <Edit2 size={18} color={Colors.mutedText} />
-                    </Pressable>
-                  ) : (
-                    <View style={styles.infoPageSpacer} />
-                  )}
-                </View>
-
-              <ScrollView
-                style={styles.infoPageScroll}
-                contentContainerStyle={styles.infoPageContent}
-                showsVerticalScrollIndicator={false}
-                bounces={false}
-                alwaysBounceVertical={false}
-                overScrollMode="never"
-                {...infoPagePanResponder.panHandlers}
-              >
-                  <View style={styles.infoProfileBlock}>
-                    <Pressable
-                      style={styles.infoAvatarButton}
-                      disabled={!drawerAvatarUri}
-                      onPress={() => {
-                        if (drawerAvatarUri) {
-                          setAvatarPreviewOpen(true);
-                        }
-                      }}
-                    >
-                      <Avatar
-                        label={getDirectChatUserLabel(drawerUser) || chatTitle}
-                        uri={drawerAvatarUri}
-                        size={96}
-                        isSavedMessages={Boolean(currentChat?.isSavedMessages && !drawerUser)}
-                        isGroup={Boolean(currentChat?.isGroup && !drawerUser)}
-                        shape="circle"
-                      />
-                    </Pressable>
-                    {drawerUser ? (
-                      <View style={styles.infoProfileNameWrap}>
-                        <UserDisplayName
-                          user={drawerUser}
-                          fallback={getDirectChatUserLabel(drawerUser)}
-                          size="lg"
-                          numberOfLines={2}
-                          textStyle={styles.infoProfileName}
-                          containerStyle={styles.infoProfileNameContainer}
-                        />
-                      </View>
-                    ) : (
-                      <Text style={styles.infoProfileName}>{chatTitle}</Text>
-                    )}
-                    <Text style={styles.infoProfileMeta}>{drawerProfileMeta}</Text>
-                  </View>
-
-                  {drawerUser ? (
-                    <View style={styles.infoCard}>
-                      {showChatPushNotificationsToggle ? (
-                        <>
-                          <View style={styles.infoSwitchRow}>
-                            <View style={styles.infoSwitchCopy}>
-                              <Text style={styles.infoLabel}>BILDIRISHNOMALAR</Text>
-                              <Text style={styles.infoValue}>
-                                Bildirishnoma yuborilsin
-                              </Text>
-                            </View>
-                            <Switch
-                              value={chatPushNotificationsEnabled}
-                              onValueChange={(value) => {
-                                void handleToggleChatPushNotifications(value);
-                              }}
-                              disabled={chatPushNotificationsMutation.isPending}
-                              trackColor={{
-                                false: Colors.border,
-                                true: Colors.primary,
-                              }}
-                              thumbColor={Colors.background}
-                            />
-                          </View>
-                          <View style={styles.infoDivider} />
-                        </>
-                      ) : null}
-
-                      {drawerUser.username ? (
-                        <>
-                          <View style={styles.infoItem}>
-                            <Text style={styles.infoLabel}>FOYDALANUVCHI NOMI</Text>
-                            <Text style={styles.infoValue}>@{drawerUser.username}</Text>
-                          </View>
-                          <View style={styles.infoDivider} />
-                        </>
-                      ) : null}
-
-                      {currentChat?.isGroup && drawerUser.bio ? (
-                        <>
-                          <View style={styles.infoItem}>
-                            <Text style={styles.infoLabel}>TARJIMAYI HOL</Text>
-                            <MessageRichText
-                              content={drawerUser.bio}
-                              onPressMention={handleMentionPress}
-                            />
-                          </View>
-                          <View style={styles.infoDivider} />
-                        </>
-                      ) : null}
-
-                      {drawerUser.jammId ? (
-                        <>
-                          <View style={styles.infoItem}>
-                            <Text style={styles.infoLabel}>JAMM ID</Text>
-                            <Text style={styles.infoValue}>#{drawerUser.jammId}</Text>
-                          </View>
-                          <View style={styles.infoDivider} />
-                        </>
-                      ) : null}
-
-                      {currentChat?.isGroup ? (
-                        <View style={styles.infoItem}>
-                          <Text style={styles.infoLabel}>HOLAT</Text>
-                          <Text style={styles.infoValue}>{drawerStatusLabel}</Text>
-                        </View>
-                      ) : !drawerUser.bio ? (
-                        <View style={styles.infoItem}>
-                          <Text style={styles.infoLabel}>BIO</Text>
-                          <Text style={styles.infoValue}>Bio yo'q</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                  ) : (
-                    <>
-                      <View style={styles.infoCard}>
-                        {showChatPushNotificationsToggle ? (
-                          <>
-                            <View style={styles.infoSwitchRow}>
-                              <View style={styles.infoSwitchCopy}>
-                                <Text style={styles.infoLabel}>PUSH BILDIRISHNOMALARI</Text>
-                                <Text style={styles.infoValue}>
-                                  Shu guruhga yangi xabar kelsa bildirishnoma yuborilsin
-                                </Text>
-                              </View>
-                              <Switch
-                                value={chatPushNotificationsEnabled}
-                                onValueChange={(value) => {
-                                  void handleToggleChatPushNotifications(value);
-                                }}
-                                disabled={chatPushNotificationsMutation.isPending}
-                                trackColor={{
-                                  false: Colors.border,
-                                  true: Colors.primary,
-                                }}
-                                thumbColor={Colors.background}
-                              />
-                            </View>
-                            {(groupLinkUrl || currentChat?.description) ? (
-                              <View style={styles.infoDivider} />
-                            ) : null}
-                          </>
-                        ) : null}
-
-                        {groupLinkUrl ? (
-                          <>
-                            <View style={styles.infoItem}>
-                              <Text style={styles.infoLabel}>HAVOLANI ULASHISH</Text>
-                              <View style={styles.infoLinkRow}>
-                                <Text style={styles.infoLinkValue}>{groupLinkUrl}</Text>
-                                <Pressable
-                                  onPress={() => void handleCopyGroupLink()}
-                                  style={styles.infoCopyButton}
-                                  hitSlop={8}
-                                >
-                                  <Ionicons name="copy-outline" size={18} color={Colors.text} />
-                                </Pressable>
-                              </View>
-                            </View>
-                          </>
-                        ) : null}
-
-                        {currentChat?.description ? (
-                          <>
-                            <View style={styles.infoDivider} />
-                            <View style={styles.infoItem}>
-                              <Text style={styles.infoLabel}>TASNIF</Text>
-                              <MessageRichText
-                                content={currentChat.description}
-                                onPressMention={handleMentionPress}
-                              />
-                            </View>
-                          </>
-                        ) : null}
-                      </View>
-
-                      <View style={styles.infoSection}>
-                        <Text style={styles.infoSectionTitle}>A'zolar</Text>
-                        <View style={styles.infoMembersList}>
-                          {currentChat?.members?.map((member) => {
-                            const memberId = getEntityId(member);
-                            const isOwner = String(currentChat.createdBy || "") === memberId;
-                            const isAdmin = Boolean(
-                              currentChat.admins?.some(
-                                (admin) => (admin.userId || admin.id || admin._id) === memberId,
-                              ),
-                            );
-
-                            return (
-                              <Pressable
-                                key={memberId}
-                                style={styles.memberRow}
-                                onPress={() => void handleOpenPrivateChatWithMember(member)}
-                              >
-                                <View style={styles.memberRowMain}>
-                                  <Avatar
-                                    label={member.nickname || member.username || "User"}
-                                    uri={member.avatar}
-                                    size={42}
-                                    shape="circle"
-                                  />
-                                  <View style={styles.memberTextWrap}>
-                                    <UserDisplayName
-                                      user={member}
-                                      fallback={member.nickname || member.username || "User"}
-                                      size="sm"
-                                      textStyle={styles.memberName}
-                                    />
-                                    <Text style={styles.memberMetaText}>
-                                      {member.isOfficialProfile
-                                        ? member.officialBadgeLabel || "Rasmiy"
-                                        : member.username
-                                          ? `@${member.username}`
-                                          : "Foydalanuvchi"}
-                                    </Text>
-                                  </View>
-                                </View>
-                                {isOwner ? (
-                                  <Text style={styles.memberRoleBadge}>Ega</Text>
-                                ) : isAdmin ? (
-                                  <Text style={styles.memberRoleBadge}>Admin</Text>
-                                ) : (
-                                  <Ionicons
-                                    name="chevron-forward"
-                                    size={16}
-                                    color={Colors.subtleText}
-                                  />
-                                )}
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      </View>
-                    </>
-                  )}
-              </ScrollView>
-            </View>
-          </Animated.View>
-        </View>
-      ) : null}
-
-      <Modal
-        visible={Boolean(outgoingCall)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
+      <OutgoingCallModal
+        styles={styles}
+        outgoingCall={outgoingCall}
+        onCancel={() => {
           void handleCancelOutgoingCall();
         }}
-      >
-        <View style={styles.callingOverlay}>
-          <View style={styles.callingCard}>
-            <Avatar
-              label={getDirectChatUserLabel(outgoingCall?.remoteUser) || "User"}
-              uri={outgoingCall?.remoteUser?.avatar}
-              size={72}
-              shape="circle"
-            />
-            <Text style={styles.callingTitle}>
-              {getDirectChatUserLabel(outgoingCall?.remoteUser) || "User"}
-            </Text>
-            <Text style={styles.callingSubtitle}>Calling...</Text>
-            <View style={styles.callingDotsRow}>
-              <View style={styles.callingDot} />
-              <View style={styles.callingDot} />
-              <View style={styles.callingDot} />
-            </View>
-            <Pressable
-              style={styles.callingCancelButton}
-              onPress={() => {
-                void handleCancelOutgoingCall();
-              }}
-            >
-              <Text style={styles.callingCancelButtonText}>Bekor qilish</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+      />
 
-      <Modal
+      <AvatarPreviewModal
+        styles={styles}
         visible={avatarPreviewOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setAvatarPreviewOpen(false)}
-      >
-        <Pressable
-          style={styles.avatarPreviewOverlay}
-          onPress={() => setAvatarPreviewOpen(false)}
-        >
-          {drawerAvatarUri ? (
-            <Image
-              source={{ uri: drawerAvatarUri }}
-              style={styles.avatarPreviewImage}
-              contentFit="contain"
-            />
-          ) : null}
-        </Pressable>
-      </Modal>
+        avatarUri={drawerAvatarUri}
+        onClose={() => setAvatarPreviewOpen(false)}
+      />
 
       <EditGroupDialog
         visible={editGroupOpen}
@@ -3982,6 +1576,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
+    zIndex: 12,
+    elevation: 12,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
@@ -4063,6 +1659,10 @@ const styles = StyleSheet.create({
     color: Colors.mutedText,
     fontSize: 12,
   },
+  chatBodyHost: {
+    flex: 1,
+    overflow: "hidden",
+  },
   messagesViewport: {
     flex: 1,
     position: "relative",
@@ -4082,9 +1682,12 @@ const styles = StyleSheet.create({
   },
   dateDivider: {
     alignItems: "center",
+    marginHorizontal: -8,
+    paddingHorizontal: 8,
     paddingVertical: 12,
     backgroundColor: "transparent",
-    zIndex: 2,
+    zIndex: 6,
+    elevation: 6,
   },
   dateDividerText: {
     color: Colors.mutedText,
@@ -4324,11 +1927,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
-  composerShell: {
+  composerStickyHost: {
     position: "absolute",
     left: 0,
     right: 0,
-    zIndex: 4,
+    bottom: 0,
+    zIndex: 6,
+    elevation: 6,
+  },
+  stickerPickerDock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 5,
+    elevation: 5,
+    overflow: "hidden",
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  composerShell: {
     paddingHorizontal: 16,
     paddingTop: 12,
     backgroundColor: "transparent",
@@ -4479,17 +2098,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "transparent",
     zIndex: 3,
-  },
-  stickerPickerShell: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 5,
-    overflow: "hidden",
-    backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
   },
   stickerPickerContent: {
     gap: 12,

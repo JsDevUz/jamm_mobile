@@ -1,0 +1,210 @@
+import type { RefObject } from "react";
+import { ActivityIndicator, Animated, Pressable, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { TextInput } from "../../../components/TextInput";
+import { Colors } from "../../../theme/colors";
+import type { NormalizedMessage } from "../../../utils/chat";
+
+export function ChatComposer({
+  styles,
+  composerInputRef,
+  composerHeight,
+  lockComposerShellHeight,
+  composerShellBottomPadding,
+  dockBottomSpacerHeight,
+  composerContentMessage,
+  composerNotice,
+  editingMessageId,
+  draft,
+  isComposerDisabled,
+  composerSoftInputEnabled,
+  stickerPickerVisible,
+  hasComposerText,
+  isSending,
+  onChangeDraft,
+  onSelectionChange,
+  onPressIn,
+  onFocus,
+  onBlur,
+  onAttach,
+  onToggleSticker,
+  onSend,
+  onVoice,
+  onClearComposerMode,
+  onContextPress,
+  onComposerLayout,
+}: {
+  styles: Record<string, any>;
+  composerInputRef: RefObject<any>;
+  composerHeight: number;
+  lockComposerShellHeight: boolean;
+  composerShellBottomPadding: number;
+  dockBottomSpacerHeight: number;
+  composerContentMessage: NormalizedMessage | null;
+  composerNotice: string | null;
+  editingMessageId: string | null;
+  draft: string;
+  isComposerDisabled: boolean;
+  composerSoftInputEnabled: boolean;
+  stickerPickerVisible: boolean;
+  hasComposerText: boolean;
+  isSending: boolean;
+  onChangeDraft: (value: string) => void;
+  onSelectionChange: (event: any) => void;
+  onPressIn: () => void;
+  onFocus: () => void;
+  onBlur: () => void;
+  onAttach: () => void;
+  onToggleSticker: () => void;
+  onSend: () => void;
+  onVoice: () => void;
+  onClearComposerMode: () => void;
+  onContextPress: () => void;
+  onComposerLayout: (height: number) => void;
+}) {
+  return (
+    <Animated.View
+      onLayout={(event) => {
+        const nextHeight = Math.ceil(event.nativeEvent.layout.height || 0);
+        onComposerLayout(nextHeight);
+      }}
+      style={[
+        styles.composerShell,
+        {
+          height: lockComposerShellHeight ? composerHeight : undefined,
+          paddingBottom: composerShellBottomPadding,
+        },
+      ]}
+    >
+      <View style={styles.composerStack}>
+        {composerNotice ? (
+          <View style={styles.composerNoticeCard}>
+            <Text style={styles.composerNoticeText}>{composerNotice}</Text>
+          </View>
+        ) : null}
+
+        {composerContentMessage ? (
+          <Pressable style={styles.composerContextCard} onPress={onContextPress}>
+            <View style={styles.composerContextTextWrap}>
+              <Text style={styles.composerContextLabel}>
+                {editingMessageId ? "Tahrirlanmoqda" : composerContentMessage.senderName}
+              </Text>
+              <Text style={styles.composerContextText} numberOfLines={1}>
+                {composerContentMessage.content}
+              </Text>
+            </View>
+            <Pressable onPress={onClearComposerMode} style={styles.composerContextClose}>
+              <Ionicons name="close" size={16} color={Colors.mutedText} />
+            </Pressable>
+          </Pressable>
+        ) : null}
+
+        <View style={styles.composerRow}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.composerActionButton,
+              pressed && styles.composerActionButtonPressed,
+              isComposerDisabled && styles.composerActionButtonDisabled,
+            ]}
+            disabled={isComposerDisabled}
+            onPress={onAttach}
+          >
+            <Ionicons name="image-outline" size={20} color={Colors.mutedText} />
+          </Pressable>
+
+          <View style={styles.composerField}>
+            <View style={styles.composerInputWrap}>
+              <TextInput
+                ref={composerInputRef}
+                style={styles.composerInput}
+                value={draft}
+                onChangeText={onChangeDraft}
+                onSelectionChange={onSelectionChange}
+                placeholder={
+                  isComposerDisabled
+                    ? "Suhbat yuklanmoqda..."
+                    : editingMessageId
+                      ? "Xabarni tahrirlash..."
+                      : "Xabar..."
+                }
+                placeholderTextColor={Colors.mutedText}
+                multiline
+                maxLength={3000}
+                editable={!isComposerDisabled}
+                showSoftInputOnFocus={composerSoftInputEnabled}
+                caretHidden={!composerSoftInputEnabled && !stickerPickerVisible}
+                onPressIn={onPressIn}
+                onFocus={onFocus}
+                onBlur={onBlur}
+              />
+            </View>
+
+            <View style={styles.composerSideRight}>
+              {hasComposerText || editingMessageId || stickerPickerVisible ? (
+                <Pressable
+                  style={styles.iconButton}
+                  disabled={isComposerDisabled}
+                  onPress={onToggleSticker}
+                >
+                  <Ionicons
+                    name={stickerPickerVisible ? "keypad-outline" : "happy-outline"}
+                    size={20}
+                    color={Colors.mutedText}
+                  />
+                </Pressable>
+              ) : null}
+
+              {hasComposerText || editingMessageId ? (
+                <Pressable
+                  onPress={onSend}
+                  style={({ pressed }) => [
+                    styles.composerInlineSendButton,
+                    pressed && styles.composerInlineSendButtonPressed,
+                    ((!hasComposerText && Boolean(editingMessageId)) ||
+                      isSending ||
+                      isComposerDisabled) &&
+                      styles.composerInlineSendButtonDisabled,
+                  ]}
+                  disabled={
+                    (!hasComposerText && Boolean(editingMessageId)) ||
+                    isSending ||
+                    isComposerDisabled
+                  }
+                >
+                  {isSending ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Ionicons
+                      name={editingMessageId ? "checkmark" : "send"}
+                      size={15}
+                      color="#fff"
+                    />
+                  )}
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+
+          {!hasComposerText && !editingMessageId ? (
+            <Pressable
+              onPress={onVoice}
+              style={({ pressed }) => [
+                styles.sendButton,
+                pressed && styles.sendButtonPressed,
+                (isSending || isComposerDisabled) && styles.sendButtonDisabled,
+              ]}
+              disabled={isSending || isComposerDisabled}
+            >
+              {isSending ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="mic" size={18} color="#fff" />
+              )}
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+      <View style={{ height: dockBottomSpacerHeight }} />
+    </Animated.View>
+  );
+}

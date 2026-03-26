@@ -8,6 +8,17 @@ import { getPushToken, setPushToken } from "./session";
 
 let activeNotificationChatId: string | null = null;
 
+function isExpoGoAndroidRemotePushError(error: unknown) {
+  const message =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+
+  return (
+    Platform.OS === "android" &&
+    (message.includes("removed from Expo Go") ||
+      message.includes("Android Push notifications (remote notifications) functionality provided by expo-notifications"))
+  );
+}
+
 function getNotificationChatId(notification: Notifications.Notification) {
   const data = notification.request.content.data as { chatId?: string; type?: string } | undefined;
   if (String(data?.type || "") !== "chat_message") {
@@ -62,34 +73,42 @@ export async function registerForPushNotifications() {
     return null;
   }
 
-  await ensureAndroidChannel();
+  try {
+    await ensureAndroidChannel();
 
-  // Emulatorda ham test qilish uchun ruxsat qoldirildi
-  // if (!Device.isDevice) {
-  //   return null;
-  // }
+    // Emulatorda ham test qilish uchun ruxsat qoldirildi
+    // if (!Device.isDevice) {
+    //   return null;
+    // }
 
-  const existingPermission = await Notifications.getPermissionsAsync();
-  let finalStatus = existingPermission.status;
+    const existingPermission = await Notifications.getPermissionsAsync();
+    let finalStatus = existingPermission.status;
 
-  if (finalStatus !== "granted") {
-    const requestedPermission = await Notifications.requestPermissionsAsync();
-    finalStatus = requestedPermission.status;
+    if (finalStatus !== "granted") {
+      const requestedPermission = await Notifications.requestPermissionsAsync();
+      finalStatus = requestedPermission.status;
+    }
+
+    if (finalStatus !== "granted") {
+      return null;
+    }
+
+    const projectId =
+      Constants.easConfig?.projectId ??
+      (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId;
+
+    const tokenResponse = projectId
+      ? await Notifications.getExpoPushTokenAsync({ projectId })
+      : await Notifications.getExpoPushTokenAsync();
+
+    return tokenResponse.data || null;
+  } catch (error) {
+    if (isExpoGoAndroidRemotePushError(error)) {
+      return null;
+    }
+
+    throw error;
   }
-
-  if (finalStatus !== "granted") {
-    return null;
-  }
-
-  const projectId =
-    Constants.easConfig?.projectId ??
-    (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId;
-
-  const tokenResponse = projectId
-    ? await Notifications.getExpoPushTokenAsync({ projectId })
-    : await Notifications.getExpoPushTokenAsync();
-
-  return tokenResponse.data || null;
 }
 
 export async function bootstrapPushNotifications() {
