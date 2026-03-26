@@ -9,6 +9,7 @@ import {
   Alert,
   Animated,
   Easing,
+  LayoutAnimation,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   PanResponder,
@@ -452,8 +453,7 @@ export function ChatScreen({ navigation, route }: Props) {
     },
   ).current;
   const {
-    accessoryHeightAnim,
-    keyboardVisible,
+    pickerHeightSharedValue,
     keyboardVisibleRef,
     stickerPickerVisible,
     stickerOpeningFromKeyboard,
@@ -467,7 +467,6 @@ export function ChatScreen({ navigation, route }: Props) {
     setComposerSoftInputEnabled,
     activeDockTranslateY,
     messagesViewportTranslateY,
-    isStickerDockSettled,
     shouldKeepMessagesAnchoredToBottom,
     lockComposerShellHeight,
     dockBottomSpacerHeight,
@@ -750,6 +749,7 @@ export function ChatScreen({ navigation, route }: Props) {
       }
 
       if (nextHeight > 0 && nextHeight !== composerHeight) {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         setComposerHeight(nextHeight);
       }
     },
@@ -874,7 +874,7 @@ export function ChatScreen({ navigation, route }: Props) {
         },
       }}
       stickerProps={{
-        accessoryHeightAnim,
+        pickerHeightSharedValue,
         stickerPickerVisible,
         composerHeight,
         bottomInset: insets.bottom,
@@ -1348,6 +1348,7 @@ export function ChatScreen({ navigation, route }: Props) {
       if (appendedMessages.length > 0) {
         if (shouldStickToBottomRef.current) {
           setPendingNewMessageIds([]);
+          keepMessagesPinnedToBottom();
         } else {
           setPendingNewMessageIds((previous) => {
             const nextIds = appendedMessages
@@ -1361,7 +1362,7 @@ export function ChatScreen({ navigation, route }: Props) {
 
     previousLastMessageIdRef.current = lastMessageId;
     previousMessageCountRef.current = flatMessages.length;
-  }, [currentUserId, flatMessages]);
+  }, [currentUserId, flatMessages, keepMessagesPinnedToBottom]);
 
   useEffect(() => {
     if (!pendingNewMessageIds.length) {

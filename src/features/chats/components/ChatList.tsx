@@ -175,7 +175,7 @@ export function ChatList({
   }, [contentHeight, viewportHeight]);
   const shouldUseStickyDates = shouldEnableScroll;
   const shouldMaintainVisibleContent =
-    shouldKeepMessagesAnchoredToBottom && shouldEnableScroll;
+    shouldKeepMessagesAnchoredToBottom && shouldEnableScroll && false;
   const topFillHeight = !shouldEnableScroll
     ? Math.max(0, viewportHeight - contentHeight)
     : 0;

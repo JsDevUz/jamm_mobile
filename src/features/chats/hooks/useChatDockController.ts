@@ -1,19 +1,21 @@
 import {
   Animated,
   Keyboard,
+  LayoutAnimation,
   Platform,
+  UIManager,
   type TextInput as NativeTextInput,
 } from "react-native";
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type MutableRefObject,
   type RefObject,
 } from "react";
-import { useKeyboardAnimation } from "react-native-keyboard-controller";
+import { Easing, useSharedValue, withTiming } from "react-native-reanimated";
+import { useKeyboardHeight } from "./useKeyboardHeight";
 
 const DEFAULT_STICKER_PICKER_HEIGHT = 320;
 
@@ -32,8 +34,14 @@ export function useChatDockController({
   composerFocusedRef: MutableRefObject<boolean>;
   scrollToLatestMessage: (animated?: boolean) => void;
 }) {
-  const { height: keyboardHeightAnim, progress: keyboardProgressAnim } =
-    useKeyboardAnimation();
+  const {
+    keyboardHeightAnim,
+    keyboardProgressAnim,
+    keyboardTranslateYRef,
+    keyboardHeightRef,
+    keyboardProgressRef,
+    lastOpenedKeyboardHeightRef,
+  } = useKeyboardHeight();
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
   const [stickerOpeningFromKeyboard, setStickerOpeningFromKeyboard] =
@@ -46,9 +54,6 @@ export function useChatDockController({
   const openingStickerPickerRef = useRef(false);
   const closingStickerPickerRef = useRef(false);
   const pendingStickerOpenRef = useRef(false);
-  const stickerKeyboardHandoffTimeoutRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
   const accessoryHeightAnim = useRef(new Animated.Value(0)).current;
   const accessoryDockTranslateAnim = useRef(new Animated.Value(0)).current;
   const frozenDockTranslateAnim = useRef(new Animated.Value(0)).current;
@@ -59,15 +64,82 @@ export function useChatDockController({
   const dockTranslateValueRef = useRef(0);
   const stickerTransitionDockRef = useRef(0);
   const lastKeyboardInsetRef = useRef(0);
-  const keyboardHeightValueRef = useRef(0);
-  const keyboardProgressValueRef = useRef(0);
   const keyboardDockOffsetRef = useRef(0);
   const keyboardVisibleRef = useRef(false);
+  const pickerHeightSharedValue = useSharedValue(0);
+
+  const animateNextLayout = useCallback(() => {
+    if (isWeb) {
+      return;
+    }
+
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+  }, [isWeb]);
+
+  const setKeyboardVisibleAnimated = useCallback(
+    (nextVisible: boolean) => {
+      setKeyboardVisible((previous) => {
+        if (previous === nextVisible) {
+          return previous;
+        }
+
+        animateNextLayout();
+        return nextVisible;
+      });
+    },
+    [animateNextLayout],
+  );
+
+  const setStickerPickerVisibleAnimated = useCallback(
+    (nextVisible: boolean) => {
+      setStickerPickerVisible((previous) => {
+        if (previous === nextVisible) {
+          return previous;
+        }
+
+        animateNextLayout();
+        return nextVisible;
+      });
+    },
+    [animateNextLayout],
+  );
+
+  const setStickerOpeningFromKeyboardAnimated = useCallback(
+    (nextVisible: boolean) => {
+      setStickerOpeningFromKeyboard((previous) => {
+        if (previous === nextVisible) {
+          return previous;
+        }
+
+        animateNextLayout();
+        return nextVisible;
+      });
+    },
+    [animateNextLayout],
+  );
+
+  const setStickerToKeyboardTransitionAnimated = useCallback(
+    (nextVisible: boolean) => {
+      setStickerToKeyboardTransition((previous) => {
+        if (previous === nextVisible) {
+          return previous;
+        }
+
+        animateNextLayout();
+        return nextVisible;
+      });
+    },
+    [animateNextLayout],
+  );
 
   const animateAccessoryHeight = useCallback(
     (toValue: number, duration = 220, onComplete?: () => void) => {
       accessoryHeightAnim.stopAnimation();
       accessoryHeightValueRef.current = toValue;
+      pickerHeightSharedValue.value = withTiming(toValue, {
+        duration: Math.max(0, duration || 300),
+        easing: Easing.out(Easing.ease),
+      });
       Animated.timing(accessoryHeightAnim, {
         toValue,
         duration,
@@ -78,16 +150,17 @@ export function useChatDockController({
         }
       });
     },
-    [accessoryHeightAnim],
+    [accessoryHeightAnim, pickerHeightSharedValue],
   );
 
   const setAccessoryHeightPosition = useCallback(
     (toValue: number) => {
       accessoryHeightAnim.stopAnimation();
       accessoryHeightValueRef.current = toValue;
+      pickerHeightSharedValue.value = toValue;
       accessoryHeightAnim.setValue(toValue);
     },
-    [accessoryHeightAnim],
+    [accessoryHeightAnim, pickerHeightSharedValue],
   );
 
   const animateAccessoryDockPosition = useCallback(
@@ -152,35 +225,36 @@ export function useChatDockController({
     [dockTranslateAnim],
   );
 
-  const syncKeyboardVisibility = useCallback((nextInset: number) => {
-    const clampedInset = Math.max(0, nextInset);
-    const nextVisible = clampedInset > 0;
-    keyboardVisibleRef.current = nextVisible;
-    setKeyboardVisible((previous) =>
-      previous === nextVisible ? previous : nextVisible,
-    );
-    if (clampedInset > 0) {
-      lastKeyboardInsetRef.current = clampedInset;
+  const syncKeyboardVisibility = useCallback(
+    (nextInset: number) => {
+      const clampedInset = Math.max(0, nextInset);
+      const nextVisible = clampedInset > 0;
+      keyboardVisibleRef.current = nextVisible;
+      setKeyboardVisibleAnimated(nextVisible);
+      if (clampedInset > 0) {
+        lastKeyboardInsetRef.current = clampedInset;
+        lastOpenedKeyboardHeightRef.current = clampedInset;
+      }
+    },
+    [lastOpenedKeyboardHeightRef, setKeyboardVisibleAnimated],
+  );
+
+  useEffect(() => {
+    if (
+      Platform.OS === "android" &&
+      UIManager.setLayoutAnimationEnabledExperimental
+    ) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
     }
   }, []);
-
-  const composerClosedBottomInset = Math.max(bottomInset, 12);
-  // When keyboard or sticker is active we do not want to preserve closed-state
-  // safe-area spacing. The closed safe-area is handled by the bottom spacer only.
-  const composerOpenedOffset = 0;
 
   useEffect(() => {
     const updateKeyboardDockOffset = () => {
       const nextAnimatedVisible =
-        keyboardHeightValueRef.current > 1 ||
-        keyboardProgressValueRef.current > 0.01;
+        keyboardHeightRef.current > 1 || keyboardProgressRef.current > 0.01;
       keyboardVisibleRef.current = nextAnimatedVisible;
-      setKeyboardVisible((previous) =>
-        previous === nextAnimatedVisible ? previous : nextAnimatedVisible,
-      );
-      keyboardDockOffsetRef.current =
-        keyboardHeightValueRef.current +
-        keyboardProgressValueRef.current * -composerOpenedOffset;
+      setKeyboardVisibleAnimated(nextAnimatedVisible);
+      keyboardDockOffsetRef.current = keyboardTranslateYRef.current || 0;
 
       if (
         !pendingStickerOpenRef.current &&
@@ -193,11 +267,17 @@ export function useChatDockController({
     };
 
     const heightListenerId = keyboardHeightAnim.addListener(({ value }) => {
-      keyboardHeightValueRef.current = value;
+      const nextTranslateY = value || 0;
+      const nextHeight = Math.max(0, Math.abs(nextTranslateY));
+      keyboardTranslateYRef.current = nextTranslateY;
+      keyboardHeightRef.current = nextHeight;
+      if (nextHeight > 0) {
+        lastOpenedKeyboardHeightRef.current = nextHeight;
+      }
       updateKeyboardDockOffset();
     });
     const progressListenerId = keyboardProgressAnim.addListener(({ value }) => {
-      keyboardProgressValueRef.current = value;
+      keyboardProgressRef.current = Math.max(0, value || 0);
       updateKeyboardDockOffset();
     });
 
@@ -208,10 +288,14 @@ export function useChatDockController({
       keyboardProgressAnim.removeListener(progressListenerId);
     };
   }, [
-    composerOpenedOffset,
     keyboardHeightAnim,
     keyboardProgressAnim,
+    keyboardHeightRef,
+    keyboardProgressRef,
+    keyboardTranslateYRef,
+    lastOpenedKeyboardHeightRef,
     setDockPosition,
+    setKeyboardVisibleAnimated,
     stickerOpeningFromKeyboard,
     stickerPickerVisible,
     stickerToKeyboardTransition,
@@ -220,7 +304,7 @@ export function useChatDockController({
   const getStickerPickerHeight = useCallback(() => {
     const rememberedKeyboardHeight = Math.max(
       0,
-      lastKeyboardInsetRef.current || 0,
+      lastOpenedKeyboardHeightRef.current || lastKeyboardInsetRef.current || 0,
     );
     if (rememberedKeyboardHeight > 0) {
       return rememberedKeyboardHeight;
@@ -230,15 +314,15 @@ export function useChatDockController({
       screenHeight * (Platform.OS === "ios" ? 0.42 : 0.38),
     );
     return Math.max(DEFAULT_STICKER_PICKER_HEIGHT, estimatedKeyboardHeight);
-  }, [screenHeight]);
+  }, [lastOpenedKeyboardHeightRef, screenHeight]);
 
   const getStickerDockHeight = useCallback(() => {
     const rememberedKeyboardHeight = Math.max(
       0,
-      lastKeyboardInsetRef.current || 0,
+      lastOpenedKeyboardHeightRef.current || lastKeyboardInsetRef.current || 0,
     );
     if (rememberedKeyboardHeight > 0) {
-      return Math.max(DEFAULT_STICKER_PICKER_HEIGHT, rememberedKeyboardHeight);
+      return rememberedKeyboardHeight;
     }
 
     const rememberedDockHeight = Math.max(
@@ -246,11 +330,11 @@ export function useChatDockController({
       Math.abs(keyboardDockOffsetRef.current || 0),
     );
     if (rememberedDockHeight > 0) {
-      return Math.max(DEFAULT_STICKER_PICKER_HEIGHT, rememberedDockHeight);
+      return rememberedDockHeight;
     }
 
     return Math.max(0, getStickerPickerHeight());
-  }, [getStickerPickerHeight]);
+  }, [getStickerPickerHeight, lastOpenedKeyboardHeightRef]);
 
   const getKeyboardDockOffset = useCallback(() => {
     return keyboardDockOffsetRef.current || 0;
@@ -261,15 +345,16 @@ export function useChatDockController({
       if (closingStickerPickerRef.current && !focusInput) {
         return;
       }
+
       pendingStickerOpenRef.current = false;
-      setStickerOpeningFromKeyboard(false);
+      setStickerOpeningFromKeyboardAnimated(false);
       setComposerSoftInputEnabled(true);
 
       if (isWeb) {
         closingStickerPickerRef.current = false;
-        setStickerPickerVisible(false);
-        setStickerOpeningFromKeyboard(false);
-        setStickerToKeyboardTransition(false);
+        setStickerPickerVisibleAnimated(false);
+        setStickerOpeningFromKeyboardAnimated(false);
+        setStickerToKeyboardTransitionAnimated(false);
         animateAccessoryHeight(0, 120);
         animateAccessoryDockPosition(0, 120);
         animateDockPosition(0, 120);
@@ -281,53 +366,45 @@ export function useChatDockController({
         return;
       }
 
-      if (Platform.OS === "android" && focusInput) {
-        closingStickerPickerRef.current = false;
-        stickerTransitionDockRef.current =
-          accessoryDockValueRef.current || -getStickerDockHeight();
-        setStickerOpeningFromKeyboard(false);
-        setStickerToKeyboardTransition(true);
-        requestAnimationFrame(() => {
-          composerInputRef.current?.focus();
-        });
-        return;
-      }
-
       if (focusInput) {
         closingStickerPickerRef.current = false;
         stickerTransitionDockRef.current =
           accessoryDockValueRef.current || -getStickerDockHeight();
-        setStickerOpeningFromKeyboard(false);
-        setStickerToKeyboardTransition(true);
+        setStickerOpeningFromKeyboardAnimated(false);
+        setStickerToKeyboardTransitionAnimated(true);
         requestAnimationFrame(() => {
           composerInputRef.current?.focus();
         });
         return;
       }
 
-      setStickerToKeyboardTransition(false);
+      setStickerToKeyboardTransitionAnimated(false);
       if (!keyboardVisibleRef.current) {
         closingStickerPickerRef.current = true;
         animateAccessoryHeight(0, 240, () => {
           closingStickerPickerRef.current = false;
-          setStickerPickerVisible(false);
-          setStickerOpeningFromKeyboard(false);
+          setStickerPickerVisibleAnimated(false);
+          setStickerOpeningFromKeyboardAnimated(false);
         });
         animateAccessoryDockPosition(0, 240);
         animateDockPosition(0, 240);
         return;
       }
+
       closingStickerPickerRef.current = false;
-      setStickerPickerVisible(false);
-      setStickerOpeningFromKeyboard(false);
+      setStickerPickerVisibleAnimated(false);
+      setStickerOpeningFromKeyboardAnimated(false);
     },
     [
-      animateDockPosition,
       animateAccessoryDockPosition,
       animateAccessoryHeight,
+      animateDockPosition,
       composerInputRef,
       getStickerDockHeight,
       isWeb,
+      setStickerOpeningFromKeyboardAnimated,
+      setStickerPickerVisibleAnimated,
+      setStickerToKeyboardTransitionAnimated,
     ],
   );
 
@@ -346,45 +423,47 @@ export function useChatDockController({
   const openStickerPicker = useCallback(() => {
     const nextHeight = getStickerDockHeight();
     const nextDock = -nextHeight;
-    const transitioningFromKeyboard = keyboardVisibleRef.current;
+    const closedBottomInset = Math.max(bottomInset, 0);
+    const currentDockOffset =
+      dockTranslateValueRef.current || getKeyboardDockOffset();
+    const transitioningFromKeyboard =
+      keyboardVisibleRef.current || currentDockOffset < -1;
+
     closingStickerPickerRef.current = false;
-    setStickerToKeyboardTransition(false);
+    setStickerToKeyboardTransitionAnimated(false);
     setComposerSoftInputEnabled(false);
     openingStickerPickerRef.current = true;
     composerFocusedRef.current = false;
     accessoryHeightAnim.stopAnimation();
     stickerTransitionDockRef.current = nextDock;
+
     if (transitioningFromKeyboard) {
-      const currentDockOffset = dockTranslateValueRef.current || getKeyboardDockOffset();
       const transitionDock = currentDockOffset || nextDock;
       const transitionHeight = Math.max(
-        DEFAULT_STICKER_PICKER_HEIGHT,
-        Math.abs(transitionDock) || nextHeight,
+        Math.abs(transitionDock) || 0,
+        nextHeight,
       );
-      stickerTransitionDockRef.current = transitionDock;
+
       pendingStickerOpenRef.current = true;
+      stickerTransitionDockRef.current = transitionDock;
       setAccessoryHeightPosition(transitionHeight);
       setAccessoryDockPosition(transitionDock);
       setFrozenDockPosition(transitionDock);
       setDockPosition(transitionDock);
-      setStickerOpeningFromKeyboard(true);
-      setStickerPickerVisible(true);
-      if (stickerKeyboardHandoffTimeoutRef.current) {
-        clearTimeout(stickerKeyboardHandoffTimeoutRef.current);
-      }
-      stickerKeyboardHandoffTimeoutRef.current = setTimeout(() => {
-        stickerKeyboardHandoffTimeoutRef.current = null;
+      setStickerOpeningFromKeyboardAnimated(true);
+      setStickerPickerVisibleAnimated(true);
+      requestAnimationFrame(() => {
         composerInputRef.current?.blur();
         Keyboard.dismiss();
-      }, 48);
+      });
       return;
     }
 
     pendingStickerOpenRef.current = false;
-    setStickerOpeningFromKeyboard(false);
-    setStickerPickerVisible(true);
-    setDockPosition(0);
-    setAccessoryDockPosition(0);
+    setStickerOpeningFromKeyboardAnimated(false);
+    setDockPosition(-closedBottomInset);
+    setAccessoryDockPosition(-closedBottomInset);
+    setStickerPickerVisibleAnimated(true);
     setAccessoryHeightPosition(0);
     animateAccessoryHeight(nextHeight);
     animateAccessoryDockPosition(nextDock);
@@ -393,17 +472,21 @@ export function useChatDockController({
     Keyboard.dismiss();
   }, [
     accessoryHeightAnim,
-    animateDockPosition,
     animateAccessoryDockPosition,
     animateAccessoryHeight,
+    animateDockPosition,
+    bottomInset,
     composerFocusedRef,
     composerInputRef,
     getKeyboardDockOffset,
     getStickerDockHeight,
-    setAccessoryHeightPosition,
     setAccessoryDockPosition,
+    setAccessoryHeightPosition,
     setDockPosition,
     setFrozenDockPosition,
+    setStickerOpeningFromKeyboardAnimated,
+    setStickerPickerVisibleAnimated,
+    setStickerToKeyboardTransitionAnimated,
   ]);
 
   const toggleStickerPicker = useCallback(() => {
@@ -415,25 +498,6 @@ export function useChatDockController({
     openStickerPicker();
   }, [hideStickerPicker, openStickerPicker, stickerPickerVisible]);
 
-  const keyboardOpenedOffsetAnim = useMemo(
-    () =>
-      keyboardProgressAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, -composerOpenedOffset],
-        extrapolate: "clamp",
-      }),
-    [composerOpenedOffset, keyboardProgressAnim],
-  );
-
-  const keyboardDockTranslateY = useMemo(
-    () => Animated.add(keyboardHeightAnim, keyboardOpenedOffsetAnim),
-    [keyboardHeightAnim, keyboardOpenedOffsetAnim],
-  );
-  const stickerDockTranslateY = useMemo(
-    () => Animated.multiply(accessoryHeightAnim, -1),
-    [accessoryHeightAnim],
-  );
-
   const isStickerDockSettled =
     stickerPickerVisible &&
     !keyboardVisible &&
@@ -443,12 +507,6 @@ export function useChatDockController({
     stickerPickerVisible ||
     stickerOpeningFromKeyboard ||
     stickerToKeyboardTransition;
-  const activeDockTranslateY = stickerDockActive
-    ? stickerDockTranslateY
-    : keyboardDockTranslateY;
-  const messagesViewportTranslateY = stickerDockActive
-    ? stickerDockTranslateY
-    : keyboardDockTranslateY;
   const shouldKeepMessagesAnchoredToBottom = !stickerToKeyboardTransition;
   const lockComposerShellHeight =
     stickerOpeningFromKeyboard || stickerToKeyboardTransition;
@@ -492,6 +550,7 @@ export function useChatDockController({
           stickerPickerVisible || stickerToKeyboardTransition
             ? getStickerDockHeight()
             : 0;
+
         syncKeyboardVisibility(nextInset);
         if (pendingStickerOpenRef.current) {
           return;
@@ -533,12 +592,12 @@ export function useChatDockController({
           const nextInset = Math.max(0, event.endCoordinates?.height || 0);
           syncKeyboardVisibility(nextInset);
           if (stickerToKeyboardTransition) {
-            setStickerOpeningFromKeyboard(false);
+            setStickerOpeningFromKeyboardAnimated(false);
             setDockPosition(keyboardDockOffsetRef.current || -nextInset);
             setAccessoryDockPosition(-nextInset);
             closingStickerPickerRef.current = false;
-            setStickerPickerVisible(false);
-            setStickerToKeyboardTransition(false);
+            setStickerPickerVisibleAnimated(false);
+            setStickerToKeyboardTransitionAnimated(false);
           }
           animateAccessoryHeight(0, 64);
         },
@@ -552,15 +611,12 @@ export function useChatDockController({
             stickerPickerVisible || stickerToKeyboardTransition
               ? getStickerDockHeight()
               : 0;
-          if (pendingStickerOpenRef.current) {
-            return;
-          }
-          if (stickerToKeyboardTransition) {
+          if (pendingStickerOpenRef.current || stickerToKeyboardTransition) {
             return;
           }
           if (!stickerPickerVisible && !stickerToKeyboardTransition) {
             syncKeyboardVisibility(0);
-            setStickerToKeyboardTransition(false);
+            setStickerToKeyboardTransitionAnimated(false);
           }
           animateAccessoryHeight(
             stickerPickerVisible || stickerToKeyboardTransition
@@ -577,11 +633,11 @@ export function useChatDockController({
           if (pendingStickerOpenRef.current) {
             pendingStickerOpenRef.current = false;
             closingStickerPickerRef.current = false;
-            setStickerPickerVisible(true);
+            setStickerPickerVisibleAnimated(true);
             animateDockPosition(stickerTransitionDockRef.current, 140, () => {
               setFrozenDockPosition(stickerTransitionDockRef.current);
               setAccessoryDockPosition(stickerTransitionDockRef.current);
-              setStickerOpeningFromKeyboard(false);
+              setStickerOpeningFromKeyboardAnimated(false);
             });
             setAccessoryHeightPosition(getStickerDockHeight());
           }
@@ -603,19 +659,14 @@ export function useChatDockController({
         const nextInset = Math.max(0, event.endCoordinates?.height || 0);
         syncKeyboardVisibility(nextInset);
         if (stickerToKeyboardTransition) {
-          setStickerOpeningFromKeyboard(false);
+          setStickerOpeningFromKeyboardAnimated(false);
           setDockPosition(keyboardDockOffsetRef.current || -nextInset);
           setAccessoryDockPosition(-nextInset);
           closingStickerPickerRef.current = false;
-          setStickerPickerVisible(false);
-          setStickerToKeyboardTransition(false);
+          setStickerPickerVisibleAnimated(false);
+          setStickerToKeyboardTransitionAnimated(false);
         }
         animateAccessoryHeight(0, 0);
-        if (composerFocusedRef.current) {
-          requestAnimationFrame(() => {
-            scrollToLatestMessage(false);
-          });
-        }
       },
     );
     const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
@@ -623,17 +674,17 @@ export function useChatDockController({
       if (pendingStickerOpenRef.current) {
         pendingStickerOpenRef.current = false;
         closingStickerPickerRef.current = false;
-        setStickerPickerVisible(true);
+        setStickerPickerVisibleAnimated(true);
         animateDockPosition(stickerTransitionDockRef.current, 140, () => {
           setFrozenDockPosition(stickerTransitionDockRef.current);
           setAccessoryDockPosition(stickerTransitionDockRef.current);
-          setStickerOpeningFromKeyboard(false);
+          setStickerOpeningFromKeyboardAnimated(false);
         });
         setAccessoryHeightPosition(getStickerDockHeight());
         return;
       }
       if (!stickerPickerVisible && !stickerToKeyboardTransition) {
-        setStickerToKeyboardTransition(false);
+        setStickerToKeyboardTransitionAnimated(false);
       }
       animateAccessoryHeight(
         stickerPickerVisible || stickerToKeyboardTransition
@@ -648,35 +699,26 @@ export function useChatDockController({
       hideSubscription.remove();
     };
   }, [
-    animateDockPosition,
     animateAccessoryDockPosition,
     animateAccessoryHeight,
-    composerFocusedRef,
-    composerOpenedOffset,
+    animateDockPosition,
     getStickerDockHeight,
     isWeb,
-    scrollToLatestMessage,
     screenHeight,
-    setDockPosition,
-    setAccessoryHeightPosition,
     setAccessoryDockPosition,
+    setAccessoryHeightPosition,
+    setDockPosition,
     setFrozenDockPosition,
+    setStickerOpeningFromKeyboardAnimated,
+    setStickerPickerVisibleAnimated,
+    setStickerToKeyboardTransitionAnimated,
     stickerPickerVisible,
     stickerToKeyboardTransition,
     syncKeyboardVisibility,
   ]);
 
-  useEffect(() => {
-    return () => {
-      if (stickerKeyboardHandoffTimeoutRef.current) {
-        clearTimeout(stickerKeyboardHandoffTimeoutRef.current);
-        stickerKeyboardHandoffTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
   return {
-    accessoryHeightAnim,
+    pickerHeightSharedValue,
     keyboardVisible,
     keyboardVisibleRef,
     stickerPickerVisible,
@@ -689,8 +731,12 @@ export function useChatDockController({
     toggleStickerPicker,
     dismissKeyboard,
     setComposerSoftInputEnabled,
-    activeDockTranslateY,
-    messagesViewportTranslateY,
+    activeDockTranslateY: stickerDockActive
+      ? dockTranslateAnim
+      : keyboardHeightAnim,
+    messagesViewportTranslateY: stickerDockActive
+      ? dockTranslateAnim
+      : keyboardHeightAnim,
     isStickerDockSettled,
     shouldKeepMessagesAnchoredToBottom,
     lockComposerShellHeight,

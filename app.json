@@ -36,6 +36,7 @@
       "bundleIdentifier": "com.jsdevuz.jammmobile"
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "CAMERA",

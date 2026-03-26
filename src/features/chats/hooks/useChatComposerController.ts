@@ -305,12 +305,10 @@ export function useChatComposerController({
     }
 
     composerFocusedRef.current = true;
-    shouldStickToBottomRef.current = true;
   }, [
     composerFocusedRef,
     composerInputRef,
     composerSoftInputEnabled,
-    shouldStickToBottomRef,
     stickerPickerVisible,
   ]);
 

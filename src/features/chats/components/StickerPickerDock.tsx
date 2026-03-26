@@ -1,23 +1,31 @@
-import { Animated, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import Animated, {
+  type SharedValue,
+  useAnimatedStyle,
+} from "react-native-reanimated";
 import { CHAT_EMOJI_SECTIONS } from "../constants/emojis";
 
 export function StickerPickerDock({
   styles,
-  accessoryHeightAnim,
+  pickerHeightSharedValue,
   stickerPickerVisible,
   composerHeight,
   bottomInset,
   onPressSticker,
 }: {
   styles: Record<string, any>;
-  accessoryHeightAnim: Animated.Value;
+  pickerHeightSharedValue: SharedValue<number>;
   stickerPickerVisible: boolean;
   composerHeight: number;
   bottomInset: number;
   onPressSticker: (sticker: string) => void;
 }) {
+  const animatedHeightStyle = useAnimatedStyle(() => ({
+    height: pickerHeightSharedValue.value,
+  }));
+
   return (
-    <Animated.View style={[styles.stickerPickerDock, { height: accessoryHeightAnim }]}>
+    <Animated.View style={[styles.stickerPickerDock, animatedHeightStyle]}>
       {stickerPickerVisible ? (
         <ScrollView
           contentContainerStyle={[
