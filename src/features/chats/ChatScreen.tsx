@@ -485,8 +485,15 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
+    hideComposerDock();
     dismissKeyboard();
-  }, [composerDockVisible, dismissKeyboard, hideVoiceDock, voiceDockVisible]);
+  }, [
+    composerDockVisible,
+    dismissKeyboard,
+    hideComposerDock,
+    hideVoiceDock,
+    voiceDockVisible,
+  ]);
   const controlledDockVisible = voiceDockVisible || composerDockVisible;
   useEffect(() => {
     navigation.setOptions({

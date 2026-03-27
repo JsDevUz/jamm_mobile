@@ -244,7 +244,6 @@ export function useChatDockController({
 
     clearPendingDockHideFrame();
     setVoiceDockOpenedFromKeyboard(shouldKeepKeyboardVisualPosition);
-    setComposerDockVisible(false);
     setVoiceDockVisible(true);
     voiceDockHeightAnim.setValue(
       shouldKeepKeyboardVisualPosition ? Math.max(keyboardHeightRef.current, targetHeight) : 0,
@@ -311,7 +310,6 @@ export function useChatDockController({
         clearPendingDockHideFrame();
         dockHideFrameRef.current = requestAnimationFrame(() => {
           dockHideFrameRef.current = null;
-          setComposerDockVisible(false);
           setVoiceDockVisible(false);
           setVoiceDockOpenedFromKeyboard(false);
           if (enableSoftInput) {

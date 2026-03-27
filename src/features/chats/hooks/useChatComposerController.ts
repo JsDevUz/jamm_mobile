@@ -221,13 +221,11 @@ export function useChatComposerController({
       await Haptics.selectionAsync();
       setEditingMessageId(null);
       setReplyingToId(messageId);
-      hideComposerDock();
       hideVoiceDock();
       enableComposerSoftInput();
       focusComposerInput();
     },
     [
-      hideComposerDock,
       hideVoiceDock,
       enableComposerSoftInput,
       focusComposerInput,
@@ -241,7 +239,6 @@ export function useChatComposerController({
       setReplyingToId(null);
       setEditingMessageId(messageId);
       setDraft(content);
-      hideComposerDock();
       hideVoiceDock();
       enableComposerSoftInput();
       const nextSelection = { start: content.length, end: content.length };
@@ -254,7 +251,6 @@ export function useChatComposerController({
       });
     },
     [
-      hideComposerDock,
       hideVoiceDock,
       enableComposerSoftInput,
       composerInputRef,
