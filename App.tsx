@@ -37,6 +37,7 @@ import {
   initialWindowMetrics,
 } from "react-native-safe-area-context";
 import { BottomNav } from "./src/components/BottomNav";
+import { GlobalToast } from "./src/components/GlobalToast";
 import { Colors } from "./src/theme/colors";
 import { useI18n } from "./src/i18n";
 import useAuthStore from "./src/store/auth-store";
@@ -1799,6 +1800,7 @@ export default function App() {
               <IncomingCallOverlay />
               <AppLockOverlay />
               <GuidedTourOverlay />
+              <GlobalToast />
             </View>
           </QueryClientProvider>
         </KeyboardProvider>

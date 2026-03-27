@@ -34,7 +34,7 @@ export function ChatList({
   composerHeight,
   dockBottomSpacerHeight,
   bottomCoveredHeight,
-  voiceDockVisible,
+  dockLiftVisible,
   messageListVisible,
   initialScrollDoneRef,
   scrollRestorePendingRef,
@@ -77,7 +77,7 @@ export function ChatList({
   composerHeight: number;
   dockBottomSpacerHeight: number;
   bottomCoveredHeight: number;
-  voiceDockVisible: boolean;
+  dockLiftVisible: boolean;
   messageListVisible: boolean;
   initialScrollDoneRef: MutableRefObject<boolean>;
   scrollRestorePendingRef: MutableRefObject<number | null>;
@@ -171,8 +171,10 @@ export function ChatList({
   ]);
 
   const effectiveBottomPadding =
-    composerHeight + dockBottomSpacerHeight + (voiceDockVisible ? 8 : 20);
-  const visualViewportHeight = Math.max(0, viewportHeight - bottomCoveredHeight);
+    composerHeight + dockBottomSpacerHeight + (dockLiftVisible ? 8 : 20);
+  const visualViewportHeight = dockLiftVisible
+    ? viewportHeight
+    : Math.max(0, viewportHeight - bottomCoveredHeight);
   const shouldEnableScroll = useMemo(() => {
     if (!visualViewportHeight || !contentBodyHeight) {
       return true;
@@ -236,6 +238,13 @@ export function ChatList({
         <FlashList
           ref={listRef}
           data={messageItems}
+          extraData={{
+            topFillHeight,
+            effectiveBottomPadding,
+            dockLiftVisible,
+            bottomCoveredHeight,
+            shouldEnableScroll,
+          }}
           keyExtractor={(item) => item.id}
           initialScrollIndex={initialMessageIndex}
           drawDistance={280}

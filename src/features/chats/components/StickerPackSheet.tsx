@@ -2,19 +2,18 @@ import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
 import {
   Animated,
   PanResponder,
+  Pressable,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { EmojiKeyboard } from "rn-emoji-keyboard";
 import { Colors } from "../../../theme/colors";
-
-const WAVE_BARS = [18, 28, 22, 38, 26, 46, 30, 24, 40, 20, 34, 26];
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
 
-export function VoiceDockSheet({
+export function StickerPackSheet({
   visible,
   heightAnim,
   heightRef,
@@ -22,6 +21,8 @@ export function VoiceDockSheet({
   maxHeight,
   onHeightImmediate,
   onSnapHeight,
+  onEmojiSelected,
+  onDeleteLastEmoji,
 }: {
   visible: boolean;
   heightAnim: Animated.Value;
@@ -30,6 +31,8 @@ export function VoiceDockSheet({
   maxHeight: number;
   onHeightImmediate: (nextHeight: number) => void;
   onSnapHeight: (nextHeight: number) => void;
+  onEmojiSelected: (selection: { emoji?: string }) => void;
+  onDeleteLastEmoji: () => void;
 }) {
   const dragStartHeightRef = useRef(initialHeight);
   const expansionMidpoint = initialHeight + (maxHeight - initialHeight) * 0.52;
@@ -105,52 +108,74 @@ export function VoiceDockSheet({
     >
       <View style={styles.header} {...headerPanResponder.panHandlers}>
         <View style={styles.grabber} />
-        <Text style={styles.title}>Voice Panel</Text>
-        <Text style={styles.subtitle}>
-          Tepaga tortib kengaytiring
-        </Text>
       </View>
 
-      <View style={styles.content}>
-        <View style={styles.heroCard}>
-          <View style={styles.heroIcon}>
-            <Ionicons name="mic" size={18} color="#fff" />
-          </View>
-          <View style={styles.heroTextWrap}>
-            <Text style={styles.heroTitle}>Voice draft tayyor</Text>
-            <Text style={styles.heroSubtitle}>
-              Composer va chat shu panel balandligiga birga ko‘tariladi.
-            </Text>
-          </View>
-        </View>
+      <View style={styles.keyboardWrap}>
+        <Pressable
+          onPress={onDeleteLastEmoji}
+          style={({ pressed }) => [
+            styles.deleteButton,
+            pressed && styles.deleteButtonPressed,
+          ]}
+        >
+          <Ionicons
+            name="backspace-outline"
+            size={18}
+            color={Colors.mutedText}
+          />
+        </Pressable>
 
-        <View style={styles.waveCard}>
-          <Text style={styles.sectionLabel}>Live space</Text>
-          <View style={styles.waveRow}>
-            {WAVE_BARS.map((height, index) => (
-              <View
-                key={`wave-${index}`}
-                style={[
-                  styles.waveBar,
-                  {
-                    height,
-                  },
-                ]}
-              />
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.hintRow}>
-          <View style={styles.hintChip}>
-            <Ionicons name="expand" size={14} color={Colors.primary} />
-            <Text style={styles.hintChipText}>Headerni torting</Text>
-          </View>
-          <View style={styles.hintChip}>
-            <Ionicons name="swap-vertical" size={14} color={Colors.primary} />
-            <Text style={styles.hintChipText}>Full height</Text>
-          </View>
-        </View>
+        <EmojiKeyboard
+          onEmojiSelected={onEmojiSelected}
+          expandable={false}
+          categoryPosition="top"
+          disableSafeArea
+          defaultHeight="100%"
+          theme={{
+            container: Colors.surfaceMuted,
+            header: Colors.text,
+            knob: "rgba(255,255,255,0.2)",
+            backdrop: "transparent",
+            category: {
+              icon: Colors.mutedText,
+              iconActive: "#fff",
+              container: "rgba(255,255,255,0.04)",
+              containerActive: Colors.primary,
+            },
+            search: {
+              background: "rgba(255,255,255,0.05)",
+              text: Colors.text,
+              placeholder: Colors.mutedText,
+              icon: Colors.mutedText,
+            },
+            customButton: {
+              icon: Colors.mutedText,
+              iconPressed: "#fff",
+              background: "rgba(255,255,255,0.04)",
+              backgroundPressed: "rgba(255,255,255,0.08)",
+            },
+            emoji: {
+              selected: "rgba(88, 101, 242, 0.18)",
+            },
+            skinTonesContainer: Colors.surface,
+          }}
+          styles={{
+            container: styles.emojiKeyboardContainer,
+            searchBar: {
+              container: {},
+              text: {},
+            },
+            category: {
+              container: styles.emojiCategoryContainer,
+              icon: styles.emojiCategoryIcon,
+            },
+            knob: styles.emojiKnob,
+            header: styles.emojiHeader,
+            emoji: {
+              selected: styles.emojiSelected,
+            },
+          }}
+        />
       </View>
     </Animated.View>
   );
@@ -181,13 +206,11 @@ const styles = StyleSheet.create({
     },
   },
   header: {
-    paddingTop: 10,
+    paddingTop: 6,
     paddingHorizontal: 18,
-    paddingBottom: 14,
+    paddingBottom: 2,
     alignItems: "center",
     justifyContent: "center",
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.06)",
     backgroundColor: "rgba(47, 49, 54, 0.98)",
   },
   grabber: {
@@ -195,105 +218,51 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.2)",
-    marginBottom: 12,
+    marginBottom: 0,
   },
-  title: {
-    color: Colors.text,
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  subtitle: {
-    marginTop: 4,
-    color: Colors.mutedText,
-    fontSize: 12,
-  },
-  content: {
+  keyboardWrap: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 18,
-    gap: 14,
+    paddingTop: 0,
+    backgroundColor: Colors.surfaceMuted,
   },
-  heroCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 14,
+  deleteButton: {
+    position: "absolute",
+    bottom: 14,
+    right: 10,
+    zIndex: 3,
+    width: 36,
+    height: 36,
     borderRadius: 18,
-    backgroundColor: "rgba(88, 101, 242, 0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(88, 101, 242, 0.28)",
-  },
-  heroIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
-  },
-  heroTextWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  heroTitle: {
-    color: Colors.text,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  heroSubtitle: {
-    marginTop: 3,
-    color: Colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  waveCard: {
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 18,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(32,34,37,0.78)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.06)",
   },
-  sectionLabel: {
-    color: Colors.subtleText,
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginBottom: 16,
+  deleteButtonPressed: {
+    opacity: 0.82,
   },
-  waveRow: {
-    minHeight: 56,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    gap: 6,
-  },
-  waveBar: {
+  emojiKeyboardContainer: {
     flex: 1,
-    borderRadius: 999,
-    backgroundColor: "rgba(88, 101, 242, 0.72)",
+    borderRadius: 0,
+    backgroundColor: Colors.surfaceMuted,
   },
-  hintRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
+  emojiCategoryContainer: {
+    borderRadius: 14,
+    marginTop: 6,
+    marginBottom: 6,
+    marginHorizontal: 4,
   },
-  hintChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+  emojiCategoryIcon: {
+    fontSize: 17,
   },
-  hintChipText: {
-    color: Colors.text,
-    fontSize: 12,
-    fontWeight: "600",
+  emojiKnob: {
+    display: "none",
+  },
+  emojiHeader: {
+    display: "none",
+  },
+  emojiSelected: {
+    borderRadius: 12,
   },
 });

@@ -445,21 +445,22 @@ export function ChatScreen({ navigation, route }: Props) {
     keyboardVisibleRef,
     composerDockVisible,
     controlledDockLiftVisible,
-    voiceDockVisible,
-    voiceDockHeightAnim,
-    voiceDockHeightRef,
+    stickerSheetVisible,
+    stickerSheetHeightAnim,
+    stickerSheetHeightRef,
     controlledDockBottomOffset,
-    voiceDockInitialHeight,
-    voiceDockMaxHeight,
+    stickerSheetInitialHeight,
+    stickerSheetMaxHeight,
     composerSoftInputEnabled,
     enableComposerSoftInput,
     dismissKeyboard,
     showComposerDock,
+    showComposerDockImmediately,
     hideComposerDock,
-    hideVoiceDock,
-    toggleVoiceDock,
-    setVoiceDockHeightImmediate,
-    snapVoiceDockHeight,
+    hideStickerSheet,
+    toggleStickerSheet,
+    setStickerSheetHeightImmediate,
+    snapStickerSheetHeight,
     activeDockTranslateY,
     messagesViewportTranslateY,
     messagesCoveredBottomInset,
@@ -476,8 +477,8 @@ export function ChatScreen({ navigation, route }: Props) {
     composerFocusedRef,
   });
   const handleMessagesTouchStart = useCallback(() => {
-    if (voiceDockVisible) {
-      hideVoiceDock();
+    if (stickerSheetVisible) {
+      hideStickerSheet();
       return;
     }
 
@@ -485,16 +486,15 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
-    hideComposerDock();
     dismissKeyboard();
   }, [
     composerDockVisible,
     dismissKeyboard,
-    hideComposerDock,
-    hideVoiceDock,
-    voiceDockVisible,
+    hideStickerSheet,
+    stickerSheetVisible,
   ]);
-  const controlledDockVisible = voiceDockVisible || composerDockVisible;
+  const controlledDockVisible = stickerSheetVisible || composerDockVisible;
+  const useSharedComposerDockLift = composerDockVisible && !stickerSheetVisible;
   useEffect(() => {
     navigation.setOptions({
       gestureEnabled: !infoDrawerOpen && !infoPageMounted,
@@ -621,12 +621,14 @@ export function ChatScreen({ navigation, route }: Props) {
   const {
     draft,
     setDraft,
-    composerNotice,
     composerContentMessage,
     hasComposerText,
     handleSend,
     handleAttachmentPress,
     handleVoiceMessagePress,
+    handleStickerTogglePress,
+    handleStickerSelect,
+    handleDeleteLastSticker,
     handleComposerSelectionChange,
     handleComposerPressIn,
     handleComposerFocus,
@@ -644,7 +646,7 @@ export function ChatScreen({ navigation, route }: Props) {
     isComposerDisabled,
     composerSoftInputEnabled,
     composerDockVisible,
-    voiceDockVisible,
+    stickerSheetVisible,
     composerInputRef,
     composerSelectionRef,
     composerFocusedRef,
@@ -653,9 +655,10 @@ export function ChatScreen({ navigation, route }: Props) {
     setEditingMessageId,
     enableComposerSoftInput,
     showComposerDock,
+    showComposerDockImmediately,
     hideComposerDock,
-    hideVoiceDock,
-    toggleVoiceDock,
+    hideStickerSheet,
+    toggleStickerSheet,
     onSendMessage: sendMessage,
     onEditMessage: editMessageContent,
     onScrollToLatestMessage: scrollToLatestMessage,
@@ -877,6 +880,13 @@ export function ChatScreen({ navigation, route }: Props) {
   const chatBodyContent = (
     <ChatBody
       styles={styles}
+      chatBodyTransformStyle={
+        !isWeb && useSharedComposerDockLift
+          ? {
+              transform: [{ translateY: activeDockTranslateY }],
+            }
+          : undefined
+      }
       listProps={{
         listRef,
         messageItems,
@@ -886,7 +896,7 @@ export function ChatScreen({ navigation, route }: Props) {
         composerHeight,
         dockBottomSpacerHeight,
         bottomCoveredHeight: messagesCoveredBottomInset,
-        voiceDockVisible: controlledDockLiftVisible,
+        dockLiftVisible: controlledDockLiftVisible,
         messageListVisible,
         initialScrollDoneRef,
         scrollRestorePendingRef,
@@ -927,14 +937,16 @@ export function ChatScreen({ navigation, route }: Props) {
           setMessageListVisible(true);
         },
       }}
-      voiceDockProps={{
-        visible: voiceDockVisible,
-        heightAnim: voiceDockHeightAnim,
-        heightRef: voiceDockHeightRef,
-        initialHeight: voiceDockInitialHeight,
-        maxHeight: voiceDockMaxHeight,
-        onHeightImmediate: setVoiceDockHeightImmediate,
-        onSnapHeight: snapVoiceDockHeight,
+      stickerPackProps={{
+        visible: stickerSheetVisible,
+        heightAnim: stickerSheetHeightAnim,
+        heightRef: stickerSheetHeightRef,
+        initialHeight: stickerSheetInitialHeight,
+        maxHeight: stickerSheetMaxHeight,
+        onHeightImmediate: setStickerSheetHeightImmediate,
+        onSnapHeight: snapStickerSheetHeight,
+        onEmojiSelected: handleStickerSelect,
+        onDeleteLastEmoji: handleDeleteLastSticker,
       }}
       composerProps={{
         composerInputRef,
@@ -943,12 +955,12 @@ export function ChatScreen({ navigation, route }: Props) {
         composerShellBottomPadding,
         dockBottomSpacerHeight,
         composerContentMessage,
-        composerNotice,
         editingMessageId,
         draft,
         isComposerDisabled,
         composerSoftInputEnabled,
         hasComposerText,
+        stickerPickerOpen: stickerSheetVisible,
         isSending,
         onChangeDraft: setDraft,
         onSelectionChange: handleComposerSelectionChange,
@@ -961,6 +973,9 @@ export function ChatScreen({ navigation, route }: Props) {
         onSend: () => {
           void handleSend();
         },
+        onStickerToggle: () => {
+          void handleStickerTogglePress();
+        },
         onVoice: () => {
           void handleVoiceMessagePress();
         },
@@ -971,14 +986,14 @@ export function ChatScreen({ navigation, route }: Props) {
         onComposerLayout: handleComposerLayout,
       }}
       messagesViewportTransformStyle={
-        !isWeb
+        !isWeb && !useSharedComposerDockLift
           ? {
               transform: [{ translateY: messagesViewportTranslateY }],
             }
           : undefined
       }
       composerTranslateStyle={
-        !isWeb
+        !isWeb && !useSharedComposerDockLift
           ? {
               transform: [{ translateY: activeDockTranslateY }],
             }
@@ -2053,7 +2068,24 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "flex-end",
     alignItems: "center",
-    gap: 12,
+    gap: 8,
+  },
+  composerInlineAccessoryButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.02)",
+  },
+  composerInlineAccessoryButtonActive: {
+    backgroundColor: Colors.primary,
+  },
+  composerInlineAccessoryButtonPressed: {
+    opacity: 0.88,
+  },
+  composerInlineAccessoryButtonDisabled: {
+    opacity: 0.45,
   },
   composerInlineSendButton: {
     width: 28,
