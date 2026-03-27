@@ -16,7 +16,6 @@ export function useChatMessageOverlay({
   screenHeight,
   insets,
   keyboardVisibleRef,
-  stickerPickerVisible,
   dismissKeyboard,
   listRef,
   messageItemsRef,
@@ -27,7 +26,6 @@ export function useChatMessageOverlay({
   screenHeight: number;
   insets: { top: number; bottom: number };
   keyboardVisibleRef: MutableRefObject<boolean>;
-  stickerPickerVisible: boolean;
   dismissKeyboard: () => void;
   listRef: RefObject<FlashListRef<MessageListItem> | null>;
   messageItemsRef: MutableRefObject<MessageListItem[]>;
@@ -117,7 +115,7 @@ export function useChatMessageOverlay({
         messageMenuOpenTimeoutRef.current = null;
       }
 
-      if (keyboardVisibleRef.current || stickerPickerVisible) {
+      if (keyboardVisibleRef.current) {
         dismissKeyboard();
         messageMenuOpenTimeoutRef.current = setTimeout(
           () => {
@@ -139,7 +137,6 @@ export function useChatMessageOverlay({
       openMessageMenu,
       screenHeight,
       screenWidth,
-      stickerPickerVisible,
     ],
   );
 

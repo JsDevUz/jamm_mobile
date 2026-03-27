@@ -325,7 +325,10 @@ function RootNavigator() {
           <Stack.Screen
             name="ChatRoom"
             component={ChatScreen}
-            options={{ animation: "slide_from_right" }}
+            options={{
+              animation: "slide_from_right",
+              keyboardHandlingEnabled: false,
+            }}
           />
           <Stack.Screen
             name="GroupPreview"

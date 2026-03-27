@@ -1,7 +1,7 @@
 import { Animated } from "react-native";
 import { ChatList } from "./ChatList";
-import { StickerPickerDock } from "./StickerPickerDock";
 import { ChatComposer } from "./ChatComposer";
+import { VoiceDockSheet } from "./VoiceDockSheet";
 
 export function ChatBody({
   styles,
@@ -9,18 +9,18 @@ export function ChatBody({
   messagesViewportInsetStyle,
   messagesViewportTransformStyle,
   listProps,
-  stickerProps,
   composerProps,
   composerTranslateStyle,
+  voiceDockProps,
 }: {
   styles: Record<string, any>;
   chatBodyTransformStyle?: any;
   messagesViewportInsetStyle?: any;
   messagesViewportTransformStyle?: any;
   listProps: any;
-  stickerProps: any;
   composerProps: any;
   composerTranslateStyle?: any;
+  voiceDockProps?: any;
 }) {
   return (
     <Animated.View style={[styles.chatBody, chatBodyTransformStyle]}>
@@ -30,10 +30,10 @@ export function ChatBody({
         containerInsetStyle={messagesViewportInsetStyle}
         containerTransformStyle={messagesViewportTransformStyle}
       />
-      <StickerPickerDock {...stickerProps} styles={styles} />
       <Animated.View style={[styles.composerStickyHost, composerTranslateStyle]}>
         <ChatComposer {...composerProps} styles={styles} />
       </Animated.View>
+      {voiceDockProps ? <VoiceDockSheet {...voiceDockProps} /> : null}
     </Animated.View>
   );
 }

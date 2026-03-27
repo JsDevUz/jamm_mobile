@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject, type RefObject } from "react";
 import {
-  Keyboard,
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
   TextInput as NativeTextInput,
@@ -50,18 +49,19 @@ export function useChatComposerController({
   isSending,
   isComposerDisabled,
   composerSoftInputEnabled,
-  stickerPickerVisible,
+  composerDockVisible,
+  voiceDockVisible,
   composerInputRef,
   composerSelectionRef,
   composerFocusedRef,
   keyboardVisibleRef,
-  openingStickerPickerRef,
-  shouldStickToBottomRef,
-  animateAccessoryHeight,
-  hideStickerPicker,
   setReplyingToId,
   setEditingMessageId,
-  setComposerSoftInputEnabled,
+  enableComposerSoftInput,
+  showComposerDock,
+  hideComposerDock,
+  hideVoiceDock,
+  toggleVoiceDock,
   onSendMessage,
   onEditMessage,
   onScrollToLatestMessage,
@@ -74,22 +74,22 @@ export function useChatComposerController({
   isSending: boolean;
   isComposerDisabled: boolean;
   composerSoftInputEnabled: boolean;
-  stickerPickerVisible: boolean;
+  composerDockVisible: boolean;
+  voiceDockVisible: boolean;
   composerInputRef: RefObject<NativeTextInput | null>;
   composerSelectionRef: MutableRefObject<{ start: number; end: number }>;
   composerFocusedRef: MutableRefObject<boolean>;
   keyboardVisibleRef: MutableRefObject<boolean>;
-  openingStickerPickerRef: MutableRefObject<boolean>;
-  shouldStickToBottomRef: MutableRefObject<boolean>;
-  animateAccessoryHeight: (
-    toValue: number,
-    duration?: number,
-    onComplete?: () => void,
-  ) => void;
-  hideStickerPicker: (focusInput?: boolean) => void;
   setReplyingToId: (value: string | null) => void;
   setEditingMessageId: (value: string | null) => void;
-  setComposerSoftInputEnabled: (value: boolean) => void;
+  enableComposerSoftInput: () => void;
+  showComposerDock: () => void;
+  hideComposerDock: () => void;
+  hideVoiceDock: (options?: {
+    enableSoftInput?: boolean;
+    focusComposer?: boolean;
+  }) => void;
+  toggleVoiceDock: () => void;
   onSendMessage: (args: {
     content: string;
     replayToId?: string | null;
@@ -213,49 +213,24 @@ export function useChatComposerController({
 
   const handleVoiceMessagePress = useCallback(async () => {
     await Haptics.selectionAsync();
-    showComposerNotice("Ovozli xabar tez orada qo'shiladi.");
-  }, [showComposerNotice]);
-
-  const handleStickerPress = useCallback(
-    async (sticker: string) => {
-      await Haptics.selectionAsync();
-      let nextCaret = 0;
-      setDraft((current) => {
-        const source = current || "";
-        const start = Math.max(
-          0,
-          Math.min(composerSelectionRef.current.start, source.length),
-        );
-        const end = Math.max(
-          start,
-          Math.min(composerSelectionRef.current.end, source.length),
-        );
-        const nextValue = `${source.slice(0, start)}${sticker}${source.slice(end)}`;
-        nextCaret = start + sticker.length;
-        return nextValue;
-      });
-      composerSelectionRef.current = { start: nextCaret, end: nextCaret };
-      shouldStickToBottomRef.current = true;
-      requestAnimationFrame(() => {
-        composerInputRef.current?.setNativeProps({
-          selection: { start: nextCaret, end: nextCaret },
-        });
-      });
-    },
-    [composerInputRef, composerSelectionRef, shouldStickToBottomRef],
-  );
+    toggleVoiceDock();
+  }, [toggleVoiceDock]);
 
   const enterReplyMode = useCallback(
     async (messageId: string) => {
       await Haptics.selectionAsync();
       setEditingMessageId(null);
       setReplyingToId(messageId);
-      setComposerSoftInputEnabled(true);
+      hideComposerDock();
+      hideVoiceDock();
+      enableComposerSoftInput();
       focusComposerInput();
     },
     [
+      hideComposerDock,
+      hideVoiceDock,
+      enableComposerSoftInput,
       focusComposerInput,
-      setComposerSoftInputEnabled,
       setEditingMessageId,
       setReplyingToId,
     ],
@@ -266,7 +241,9 @@ export function useChatComposerController({
       setReplyingToId(null);
       setEditingMessageId(messageId);
       setDraft(content);
-      setComposerSoftInputEnabled(true);
+      hideComposerDock();
+      hideVoiceDock();
+      enableComposerSoftInput();
       const nextSelection = { start: content.length, end: content.length };
       composerSelectionRef.current = nextSelection;
       requestAnimationFrame(() => {
@@ -277,9 +254,11 @@ export function useChatComposerController({
       });
     },
     [
+      hideComposerDock,
+      hideVoiceDock,
+      enableComposerSoftInput,
       composerInputRef,
       composerSelectionRef,
-      setComposerSoftInputEnabled,
       setEditingMessageId,
       setReplyingToId,
     ],
@@ -293,41 +272,43 @@ export function useChatComposerController({
   );
 
   const handleComposerPressIn = useCallback(() => {
-    if (stickerPickerVisible) {
-      hideStickerPicker(true);
+    if (voiceDockVisible) {
+      enableComposerSoftInput();
+      showComposerDock();
+      requestAnimationFrame(() => {
+        composerInputRef.current?.focus();
+      });
+      return;
     }
-  }, [hideStickerPicker, stickerPickerVisible]);
+
+    showComposerDock();
+
+    if (!composerSoftInputEnabled) {
+      enableComposerSoftInput();
+      requestAnimationFrame(() => {
+        composerInputRef.current?.focus();
+      });
+    }
+  }, [
+    composerSoftInputEnabled,
+    composerInputRef,
+    enableComposerSoftInput,
+    showComposerDock,
+    voiceDockVisible,
+  ]);
 
   const handleComposerFocus = useCallback(() => {
-    if (!composerSoftInputEnabled && !stickerPickerVisible) {
+    if (!composerSoftInputEnabled) {
       composerInputRef.current?.blur();
       return;
     }
 
     composerFocusedRef.current = true;
-  }, [
-    composerFocusedRef,
-    composerInputRef,
-    composerSoftInputEnabled,
-    stickerPickerVisible,
-  ]);
+  }, [composerFocusedRef, composerInputRef, composerSoftInputEnabled]);
 
   const handleComposerBlur = useCallback(() => {
     composerFocusedRef.current = false;
-    if (openingStickerPickerRef.current) {
-      openingStickerPickerRef.current = false;
-      return;
-    }
-    if (!stickerPickerVisible && !keyboardVisibleRef.current) {
-      animateAccessoryHeight(0, 160);
-    }
-  }, [
-    animateAccessoryHeight,
-    composerFocusedRef,
-    keyboardVisibleRef,
-    openingStickerPickerRef,
-    stickerPickerVisible,
-  ]);
+  }, [composerFocusedRef]);
 
   const clearComposerMode = useCallback(() => {
     setReplyingToId(null);
@@ -339,8 +320,7 @@ export function useChatComposerController({
   const composerContentMessage = editingMessage || replyingMessage || null;
   const hasComposerText = Boolean(draft.trim());
   const isComposerInputEditable =
-    !isComposerDisabled && composerSoftInputEnabled;
-  const isStickerPanelActive = stickerPickerVisible;
+    !isComposerDisabled && composerSoftInputEnabled && !voiceDockVisible;
 
   return {
     draft,
@@ -349,12 +329,10 @@ export function useChatComposerController({
     composerContentMessage,
     hasComposerText,
     isComposerInputEditable,
-    isStickerPanelActive,
     handleSendContent,
     handleSend,
     handleAttachmentPress,
     handleVoiceMessagePress,
-    handleStickerPress,
     handleComposerSelectionChange,
     handleComposerPressIn,
     handleComposerFocus,

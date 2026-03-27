@@ -1,5 +1,8 @@
 import { useEffect, useRef } from "react";
-import { useKeyboardAnimation } from "react-native-keyboard-controller";
+import {
+  KeyboardEvents,
+  useKeyboardAnimation,
+} from "react-native-keyboard-controller";
 
 export function useKeyboardHeight() {
   const { height: keyboardHeightAnim, progress: keyboardProgressAnim } =
@@ -29,6 +32,23 @@ export function useKeyboardHeight() {
     };
   }, [keyboardHeightAnim, keyboardProgressAnim]);
 
+  useEffect(() => {
+    const keyboardDidShowSubscription = KeyboardEvents.addListener(
+      "keyboardDidShow",
+      (event) => {
+        const nextHeight = Math.max(0, Number(event?.height) || 0);
+
+        if (nextHeight > 0) {
+          lastOpenedKeyboardHeightRef.current = nextHeight;
+        }
+      },
+    );
+
+    return () => {
+      keyboardDidShowSubscription.remove();
+    };
+  }, []);
+
   return {
     keyboardHeightAnim,
     keyboardProgressAnim,
@@ -38,4 +58,3 @@ export function useKeyboardHeight() {
     lastOpenedKeyboardHeightRef,
   };
 }
-

@@ -17,6 +17,7 @@ import {
 import { FlashList, type FlashListRef, type ViewToken } from "@shopify/flash-list";
 import { ChevronDown } from "lucide-react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { Colors } from "../../../theme/colors";
 import type { MessageListItem, NormalizedMessage } from "../../../utils/chat";
 import { ChatMessageRow } from "./ChatMessageRow";
@@ -32,6 +33,8 @@ export function ChatList({
   stickyDateHeaderIndices,
   composerHeight,
   dockBottomSpacerHeight,
+  bottomCoveredHeight,
+  voiceDockVisible,
   messageListVisible,
   initialScrollDoneRef,
   scrollRestorePendingRef,
@@ -73,6 +76,8 @@ export function ChatList({
   stickyDateHeaderIndices: number[];
   composerHeight: number;
   dockBottomSpacerHeight: number;
+  bottomCoveredHeight: number;
+  voiceDockVisible: boolean;
   messageListVisible: boolean;
   initialScrollDoneRef: MutableRefObject<boolean>;
   scrollRestorePendingRef: MutableRefObject<number | null>;
@@ -91,7 +96,7 @@ export function ChatList({
   pendingNewMessageIds: string[];
   onMessagesTouchStart: () => void;
   onMessagesScroll: (event: any) => void;
-  onMessagesScrollBeginDrag: () => void;
+  onMessagesScrollBeginDrag?: () => void;
   onMessagesScrollEndDrag: () => void;
   onMessagesMomentumScrollEnd: () => void;
   onViewableItemsChanged: (info: { viewableItems: Array<ViewToken<MessageListItem>> }) => void;
@@ -105,7 +110,7 @@ export function ChatList({
   onLoadComplete: () => void;
 }) {
   const [viewportHeight, setViewportHeight] = useState(0);
-  const [contentHeight, setContentHeight] = useState(0);
+  const [contentBodyHeight, setContentBodyHeight] = useState(0);
 
   const finalizeInitialListLayout = useCallback(() => {
     if (initialScrollDoneRef.current) {
@@ -165,29 +170,45 @@ export function ChatList({
     messagesQuery.isLoading,
   ]);
 
-  const effectiveBottomPadding = composerHeight + dockBottomSpacerHeight + 20;
+  const effectiveBottomPadding =
+    composerHeight + dockBottomSpacerHeight + (voiceDockVisible ? 8 : 20);
+  const visualViewportHeight = Math.max(0, viewportHeight - bottomCoveredHeight);
   const shouldEnableScroll = useMemo(() => {
-    if (!viewportHeight || !contentHeight) {
+    if (!visualViewportHeight || !contentBodyHeight) {
       return true;
     }
 
-    return contentHeight > viewportHeight + 2;
-  }, [contentHeight, viewportHeight]);
+    return contentBodyHeight > visualViewportHeight + 2;
+  }, [contentBodyHeight, visualViewportHeight]);
   const shouldUseStickyDates = shouldEnableScroll;
   const shouldMaintainVisibleContent =
     shouldKeepMessagesAnchoredToBottom && shouldEnableScroll && false;
   const topFillHeight = !shouldEnableScroll
-    ? Math.max(0, viewportHeight - contentHeight)
+    ? Math.max(0, visualViewportHeight - contentBodyHeight)
     : 0;
+  const messagesTapGesture = useMemo(
+    () =>
+      Gesture.Tap()
+        .runOnJS(true)
+        .maxDistance(8)
+        .onEnd((_event, success) => {
+          if (!success) {
+            return;
+          }
+
+          onMessagesTouchStart();
+        }),
+    [onMessagesTouchStart],
+  );
 
   return (
-    <Animated.View
-      style={[styles.messagesViewport, containerInsetStyle, containerTransformStyle]}
-      onTouchStart={onMessagesTouchStart}
-      onLayout={(event) => {
-        setViewportHeight(Math.ceil(event.nativeEvent.layout.height || 0));
-      }}
-    >
+    <GestureDetector gesture={messagesTapGesture}>
+      <Animated.View
+        style={[styles.messagesViewport, containerInsetStyle, containerTransformStyle]}
+        onLayout={(event) => {
+          setViewportHeight(Math.ceil(event.nativeEvent.layout.height || 0));
+        }}
+      >
       {messagesQuery.isFetchingNextPage ? (
         <View style={styles.historyLoader}>
           <ActivityIndicator size="small" color={Colors.mutedText} />
@@ -244,7 +265,16 @@ export function ChatList({
           keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={(_width, height) => {
-            setContentHeight(Math.ceil(height || 0));
+            const measuredHeight = Math.ceil(height || 0);
+            const nextContentBodyHeight = Math.max(
+              0,
+              measuredHeight - topFillHeight,
+            );
+            setContentBodyHeight((previous) =>
+              previous === nextContentBodyHeight
+                ? previous
+                : nextContentBodyHeight,
+            );
           }}
           onScroll={onMessagesScroll}
           onScrollBeginDrag={onMessagesScrollBeginDrag}
@@ -298,6 +328,7 @@ export function ChatList({
           </View>
         </Pressable>
       ) : null}
-    </Animated.View>
+      </Animated.View>
+    </GestureDetector>
   );
 }

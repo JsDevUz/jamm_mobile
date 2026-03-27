@@ -135,6 +135,7 @@ export function ChatScreen({ navigation, route }: Props) {
   const composerInputRef = useRef<NativeTextInput>(null);
   const composerSelectionRef = useRef({ start: 0, end: 0 });
   const composerFocusedRef = useRef(false);
+  const routeGestureHadKeyboardRef = useRef(false);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMenuInfoRef = useRef<{
@@ -314,18 +315,6 @@ export function ChatScreen({ navigation, route }: Props) {
   ]);
 
   useEffect(() => {
-    navigation.setOptions({
-      gestureEnabled: !infoDrawerOpen && !infoPageMounted,
-    });
-
-    return () => {
-      navigation.setOptions({
-        gestureEnabled: true,
-      });
-    };
-  }, [infoDrawerOpen, infoPageMounted, navigation]);
-
-  useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", (event) => {
       if (!infoDrawerOpen && !infoPageMounted) {
         return;
@@ -453,32 +442,98 @@ export function ChatScreen({ navigation, route }: Props) {
     },
   ).current;
   const {
-    pickerHeightSharedValue,
     keyboardVisibleRef,
-    stickerPickerVisible,
-    stickerOpeningFromKeyboard,
-    stickerToKeyboardTransition,
+    composerDockVisible,
+    controlledDockLiftVisible,
+    voiceDockVisible,
+    voiceDockHeightAnim,
+    voiceDockHeightRef,
+    controlledDockBottomOffset,
+    voiceDockInitialHeight,
+    voiceDockMaxHeight,
     composerSoftInputEnabled,
-    openingStickerPickerRef,
-    animateAccessoryHeight,
-    hideStickerPicker,
-    toggleStickerPicker,
+    enableComposerSoftInput,
     dismissKeyboard,
-    setComposerSoftInputEnabled,
+    showComposerDock,
+    hideComposerDock,
+    hideVoiceDock,
+    toggleVoiceDock,
+    setVoiceDockHeightImmediate,
+    snapVoiceDockHeight,
     activeDockTranslateY,
     messagesViewportTranslateY,
+    messagesCoveredBottomInset,
     shouldKeepMessagesAnchoredToBottom,
     lockComposerShellHeight,
     dockBottomSpacerHeight,
     composerShellBottomPadding,
   } = useChatDockController({
-    screenHeight,
     bottomInset: insets.bottom,
+    topInset: insets.top,
+    screenHeight,
     isWeb,
     composerInputRef,
     composerFocusedRef,
-    scrollToLatestMessage,
   });
+  const handleMessagesTouchStart = useCallback(() => {
+    if (voiceDockVisible) {
+      hideVoiceDock();
+      return;
+    }
+
+    if (!composerDockVisible) {
+      return;
+    }
+
+    dismissKeyboard();
+  }, [composerDockVisible, dismissKeyboard, hideVoiceDock, voiceDockVisible]);
+  const controlledDockVisible = voiceDockVisible || composerDockVisible;
+  useEffect(() => {
+    navigation.setOptions({
+      gestureEnabled: !infoDrawerOpen && !infoPageMounted,
+      fullScreenGestureEnabled: true,
+      keyboardHandlingEnabled: false,
+    });
+
+    return () => {
+      navigation.setOptions({
+        gestureEnabled: true,
+        fullScreenGestureEnabled: true,
+        keyboardHandlingEnabled: false,
+      });
+    };
+  }, [infoDrawerOpen, infoPageMounted, navigation]);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("transitionStart", (event) => {
+      if (!event.data.closing) {
+        return;
+      }
+
+      if (!keyboardVisibleRef.current && !composerFocusedRef.current) {
+        return;
+      }
+
+      routeGestureHadKeyboardRef.current = true;
+      dismissKeyboard();
+    });
+
+    return unsubscribe;
+  }, [dismissKeyboard, keyboardVisibleRef, navigation]);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("gestureCancel", () => {
+      if (!routeGestureHadKeyboardRef.current) {
+        return;
+      }
+
+      routeGestureHadKeyboardRef.current = false;
+      enableComposerSoftInput();
+      requestAnimationFrame(() => {
+        composerInputRef.current?.focus();
+      });
+    });
+
+    return unsubscribe;
+  }, [enableComposerSoftInput, navigation]);
   const {
     messageMenuAnim,
     messageMenuMounted,
@@ -494,7 +549,6 @@ export function ChatScreen({ navigation, route }: Props) {
     screenHeight,
     insets,
     keyboardVisibleRef,
-    stickerPickerVisible,
     dismissKeyboard,
     listRef,
     messageItemsRef,
@@ -563,11 +617,9 @@ export function ChatScreen({ navigation, route }: Props) {
     composerNotice,
     composerContentMessage,
     hasComposerText,
-    isStickerPanelActive,
     handleSend,
     handleAttachmentPress,
     handleVoiceMessagePress,
-    handleStickerPress,
     handleComposerSelectionChange,
     handleComposerPressIn,
     handleComposerFocus,
@@ -584,18 +636,19 @@ export function ChatScreen({ navigation, route }: Props) {
     isSending,
     isComposerDisabled,
     composerSoftInputEnabled,
-    stickerPickerVisible,
+    composerDockVisible,
+    voiceDockVisible,
     composerInputRef,
     composerSelectionRef,
     composerFocusedRef,
     keyboardVisibleRef,
-    openingStickerPickerRef,
-    shouldStickToBottomRef,
-    animateAccessoryHeight,
-    hideStickerPicker,
     setReplyingToId,
     setEditingMessageId,
-    setComposerSoftInputEnabled,
+    enableComposerSoftInput,
+    showComposerDock,
+    hideComposerDock,
+    hideVoiceDock,
+    toggleVoiceDock,
     onSendMessage: sendMessage,
     onEditMessage: editMessageContent,
     onScrollToLatestMessage: scrollToLatestMessage,
@@ -825,6 +878,8 @@ export function ChatScreen({ navigation, route }: Props) {
         stickyDateHeaderIndices,
         composerHeight,
         dockBottomSpacerHeight,
+        bottomCoveredHeight: messagesCoveredBottomInset,
+        voiceDockVisible: controlledDockLiftVisible,
         messageListVisible,
         initialScrollDoneRef,
         scrollRestorePendingRef,
@@ -841,17 +896,9 @@ export function ChatScreen({ navigation, route }: Props) {
         messageMenuMounted,
         selectedMessageId,
         pendingNewMessageIds,
-        onMessagesTouchStart: () => {
-          if (stickerPickerVisible) {
-            hideStickerPicker(false);
-          }
-        },
+        onMessagesTouchStart: handleMessagesTouchStart,
         onMessagesScroll: handleMessagesScroll,
-        onMessagesScrollBeginDrag: () => {
-          if (stickerPickerVisible) {
-            hideStickerPicker(false);
-          }
-        },
+        onMessagesScrollBeginDrag: undefined,
         onMessagesScrollEndDrag: scheduleScrollOffsetPersist,
         onMessagesMomentumScrollEnd: scheduleScrollOffsetPersist,
         onViewableItemsChanged: handleViewableItemsChanged,
@@ -873,14 +920,14 @@ export function ChatScreen({ navigation, route }: Props) {
           setMessageListVisible(true);
         },
       }}
-      stickerProps={{
-        pickerHeightSharedValue,
-        stickerPickerVisible,
-        composerHeight,
-        bottomInset: insets.bottom,
-        onPressSticker: (emoji: string) => {
-          void handleStickerPress(emoji);
-        },
+      voiceDockProps={{
+        visible: voiceDockVisible,
+        heightAnim: voiceDockHeightAnim,
+        heightRef: voiceDockHeightRef,
+        initialHeight: voiceDockInitialHeight,
+        maxHeight: voiceDockMaxHeight,
+        onHeightImmediate: setVoiceDockHeightImmediate,
+        onSnapHeight: snapVoiceDockHeight,
       }}
       composerProps={{
         composerInputRef,
@@ -894,7 +941,6 @@ export function ChatScreen({ navigation, route }: Props) {
         draft,
         isComposerDisabled,
         composerSoftInputEnabled,
-        stickerPickerVisible: isStickerPanelActive,
         hasComposerText,
         isSending,
         onChangeDraft: setDraft,
@@ -905,7 +951,6 @@ export function ChatScreen({ navigation, route }: Props) {
         onAttach: () => {
           void handleAttachmentPress();
         },
-        onToggleSticker: toggleStickerPicker,
         onSend: () => {
           void handleSend();
         },
@@ -1936,18 +1981,6 @@ const styles = StyleSheet.create({
     zIndex: 6,
     elevation: 6,
   },
-  stickerPickerDock: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 5,
-    elevation: 5,
-    overflow: "hidden",
-    backgroundColor: Colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
   composerShell: {
     paddingHorizontal: 16,
     paddingTop: 12,
@@ -1996,12 +2029,6 @@ const styles = StyleSheet.create({
   composerInputWrap: {
     flex: 1,
     minWidth: 0,
-  },
-  iconButton: {
-    width: 20,
-    height: 20,
-    alignItems: "center",
-    justifyContent: "center",
   },
   composerActionButton: {
     width: 42,
@@ -2094,55 +2121,6 @@ const styles = StyleSheet.create({
     textAlignVertical: "center",
     textAlign: "left",
     alignSelf: "stretch",
-  },
-  stickerDismissBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "transparent",
-    zIndex: 3,
-  },
-  stickerPickerContent: {
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: 16,
-  },
-  emojiSection: {
-    gap: 8,
-  },
-  emojiSectionLabel: {
-    color: Colors.mutedText,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-    textTransform: "uppercase",
-    paddingHorizontal: 4,
-  },
-  emojiGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginHorizontal: -3,
-  },
-  emojiButton: {
-    width: "14.2857%",
-    minWidth: 40,
-    minHeight: 40,
-    padding: 3,
-  },
-  emojiButtonPressed: {
-    opacity: 0.82,
-    transform: [{ scale: 0.96 }],
-  },
-  emojiButtonText: {
-    flex: 1,
-    textAlign: "center",
-    textAlignVertical: "center",
-    fontSize: 22,
-    lineHeight: 40,
-    borderRadius: 12,
-    overflow: "hidden",
-    backgroundColor: Colors.input,
-    borderWidth: 1,
-    borderColor: Colors.border,
   },
   sendButton: {
     width: 42,

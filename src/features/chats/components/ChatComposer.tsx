@@ -18,7 +18,6 @@ export function ChatComposer({
   draft,
   isComposerDisabled,
   composerSoftInputEnabled,
-  stickerPickerVisible,
   hasComposerText,
   isSending,
   onChangeDraft,
@@ -27,7 +26,6 @@ export function ChatComposer({
   onFocus,
   onBlur,
   onAttach,
-  onToggleSticker,
   onSend,
   onVoice,
   onClearComposerMode,
@@ -46,7 +44,6 @@ export function ChatComposer({
   draft: string;
   isComposerDisabled: boolean;
   composerSoftInputEnabled: boolean;
-  stickerPickerVisible: boolean;
   hasComposerText: boolean;
   isSending: boolean;
   onChangeDraft: (value: string) => void;
@@ -55,7 +52,6 @@ export function ChatComposer({
   onFocus: () => void;
   onBlur: () => void;
   onAttach: () => void;
-  onToggleSticker: () => void;
   onSend: () => void;
   onVoice: () => void;
   onClearComposerMode: () => void;
@@ -132,7 +128,7 @@ export function ChatComposer({
                 maxLength={3000}
                 editable={!isComposerDisabled}
                 showSoftInputOnFocus={composerSoftInputEnabled}
-                caretHidden={!composerSoftInputEnabled && !stickerPickerVisible}
+                caretHidden={!composerSoftInputEnabled}
                 onPressIn={onPressIn}
                 onFocus={onFocus}
                 onBlur={onBlur}
@@ -140,20 +136,6 @@ export function ChatComposer({
             </View>
 
             <View style={styles.composerSideRight}>
-              {hasComposerText || editingMessageId || stickerPickerVisible ? (
-                <Pressable
-                  style={styles.iconButton}
-                  disabled={isComposerDisabled}
-                  onPress={onToggleSticker}
-                >
-                  <Ionicons
-                    name={stickerPickerVisible ? "keypad-outline" : "happy-outline"}
-                    size={20}
-                    color={Colors.mutedText}
-                  />
-                </Pressable>
-              ) : null}
-
               {hasComposerText || editingMessageId ? (
                 <Pressable
                   onPress={onSend}
