@@ -142,26 +142,10 @@ export function useChatDockController({
   ]);
 
   const dismissKeyboard = useCallback(() => {
-    if (composerDockVisibleRef.current && !voiceDockVisibleRef.current) {
-      voiceDockHeightAnim.stopAnimation();
-      voiceDockHeightAnim.setValue(
-        Math.max(
-          keyboardHeightRef.current,
-          lastOpenedKeyboardHeightRef.current,
-        ),
-      );
-    }
-
     composerFocusedRef.current = false;
     composerInputRef.current?.blur();
     void KeyboardController.dismiss({ keepFocus: false });
-  }, [
-    composerFocusedRef,
-    composerInputRef,
-    keyboardHeightRef,
-    lastOpenedKeyboardHeightRef,
-    voiceDockHeightAnim,
-  ]);
+  }, [composerFocusedRef, composerInputRef]);
 
   const enableComposerSoftInput = useCallback(() => {
     composerInputRef.current?.setNativeProps({
@@ -203,7 +187,7 @@ export function useChatDockController({
       const isOpening = toValue > voiceDockHeightRef.current;
       Animated.timing(voiceDockHeightAnim, {
         toValue,
-        duration: isOpening ? 460 : 360,
+        duration: isOpening ? 560 : 360,
         easing: isOpening
           ? Easing.inOut(Easing.cubic)
           : Easing.inOut(Easing.ease),
@@ -388,24 +372,7 @@ export function useChatDockController({
   const dockVisible = voiceDockVisible || composerDockVisible;
   const controlledDockLiftVisible = voiceDockVisible || composerDockVisible;
   const voiceDockTranslateY = Animated.multiply(voiceDockHeightAnim, -1);
-  const composerDockVisualGap = 6;
   const voiceDockVisualGap = 2;
-  const composerDockLiftOffset = Animated.diffClamp(
-    Animated.subtract(
-      voiceDockHeightAnim,
-      Math.max(bottomInset - composerDockVisualGap, 0),
-    ),
-    0,
-    resolveVoiceDockMaxHeight(),
-  );
-  const keyboardDockLiftOffset = Animated.diffClamp(
-    Animated.subtract(
-      keyboardHeightAnim,
-      Math.max(bottomInset - composerDockVisualGap, 0),
-    ),
-    0,
-    resolveVoiceDockMaxHeight(),
-  );
   const voiceDockLiftOffset = Animated.diffClamp(
     Animated.subtract(
       voiceDockHeightAnim,
@@ -414,14 +381,10 @@ export function useChatDockController({
     0,
     resolveVoiceDockMaxHeight(),
   );
-  const controlledDockBottomOffset =
-    voiceDockVisible
-      ? voiceDockOpenedFromKeyboard
-        ? voiceDockHeightAnim
-        : voiceDockLiftOffset
-      : keyboardVisible
-        ? keyboardDockLiftOffset
-        : composerDockLiftOffset;
+  const controlledDockBottomOffset = voiceDockVisible &&
+    voiceDockOpenedFromKeyboard
+    ? voiceDockHeightAnim
+    : voiceDockLiftOffset;
   const activeDockTranslateY = voiceDockVisible
     ? voiceDockTranslateY
     : composerDockVisible
@@ -445,13 +408,10 @@ export function useChatDockController({
             voiceDockHeightRef.current,
             resolveVoiceDockHeight(),
           )
-      : keyboardVisible
-        ? keyboardCoveredHeight
-        : Math.max(
-            voiceDockHeightRef.current,
-            lastOpenedKeyboardHeightRef.current,
-            resolveVoiceDockHeight(),
-          )
+      : Math.max(
+          voiceDockHeightRef.current,
+          resolveVoiceDockHeight(),
+        )
     : 0;
   const messagesCoveredBottomInset = controlledDockLiftVisible
     ? dockCoveredHeight
