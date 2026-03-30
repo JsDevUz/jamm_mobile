@@ -12,13 +12,11 @@ export function useChatGroupActions({
   isGroupOwnerLeaving,
   queryClient,
   navigation,
-  setEditGroupOpen,
 }: {
   currentChat: ChatSummary | null;
   isGroupOwnerLeaving: boolean;
   queryClient: QueryClient;
   navigation: NativeStackNavigationProp<RootStackParamList, "ChatRoom">;
-  setEditGroupOpen: (value: boolean) => void;
 }) {
   const handleDeleteOrLeave = useCallback(() => {
     if (!currentChat) {
@@ -51,42 +49,7 @@ export function useChatGroupActions({
     ]);
   }, [currentChat, isGroupOwnerLeaving, navigation, queryClient]);
 
-  const handleEditGroup = useCallback(
-    async (draftData: {
-      name: string;
-      description: string;
-      avatarUri?: string | null;
-      memberIds: string[];
-      admins?: any[];
-    }) => {
-      if (!currentChat) {
-        return;
-      }
-
-      let nextAvatar = draftData.avatarUri || currentChat.avatar || "";
-      if (nextAvatar && !nextAvatar.startsWith("http")) {
-        nextAvatar = await chatsApi.updateGroupAvatar(
-          getEntityId(currentChat),
-          nextAvatar,
-        );
-      }
-
-      await chatsApi.editChat(getEntityId(currentChat), {
-        name: draftData.name,
-        description: draftData.description,
-        avatar: nextAvatar,
-        members: draftData.memberIds,
-        admins: draftData.admins,
-      });
-
-      await queryClient.invalidateQueries({ queryKey: ["chats"] });
-      setEditGroupOpen(false);
-    },
-    [currentChat, queryClient, setEditGroupOpen],
-  );
-
   return {
     handleDeleteOrLeave,
-    handleEditGroup,
   };
 }

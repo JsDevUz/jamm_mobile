@@ -33,7 +33,6 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { EditGroupDialog } from "./GroupDialogs";
 import {
   loadCachedChats,
   loadCachedMessages,
@@ -108,7 +107,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const currentUserId = getEntityId(user);
   const [composerHeight, setComposerHeight] = useState(66);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [editGroupOpen, setEditGroupOpen] = useState(false);
   const [infoDrawerOpen, setInfoDrawerOpen] = useState(false);
   const [infoDrawerUserId, setInfoDrawerUserId] = useState<string | null>(null);
   const [infoPageMounted, setInfoPageMounted] = useState(false);
@@ -186,7 +184,6 @@ export function ChatScreen({ navigation, route }: Props) {
     chatTitle,
     chatAvatarUri,
     otherMember,
-    knownUsers,
     currentChatMemberIds,
     canEditGroup,
     canDeleteOthersMessages,
@@ -701,12 +698,11 @@ export function ChatScreen({ navigation, route }: Props) {
     setInfoDrawerOpen,
   });
 
-  const { handleDeleteOrLeave, handleEditGroup } = useChatGroupActions({
+  const { handleDeleteOrLeave } = useChatGroupActions({
     currentChat,
     isGroupOwnerLeaving,
     queryClient,
     navigation,
-    setEditGroupOpen,
   });
 
   const infoPagePanResponder = useMemo(
@@ -1564,7 +1560,7 @@ export function ChatScreen({ navigation, route }: Props) {
         }}
         onEditGroup={() => {
           setMenuOpen(false);
-          setEditGroupOpen(true);
+          navigation.push("EditGroup", { chatId: route.params.chatId });
         }}
         onDeleteOrLeave={handleDeleteOrLeave}
       />
@@ -1594,7 +1590,7 @@ export function ChatScreen({ navigation, route }: Props) {
         onClose={handleCloseInfoDrawer}
         onOpenEditGroup={() => {
           handleCloseInfoDrawer();
-          setEditGroupOpen(true);
+          navigation.push("EditGroup", { chatId: route.params.chatId });
         }}
         onOpenAvatarPreview={() => {
           if (drawerAvatarUri) {
@@ -1629,13 +1625,6 @@ export function ChatScreen({ navigation, route }: Props) {
         onClose={() => setAvatarPreviewOpen(false)}
       />
 
-      <EditGroupDialog
-        visible={editGroupOpen}
-        group={currentChat}
-        users={knownUsers}
-        onClose={() => setEditGroupOpen(false)}
-        onSave={handleEditGroup}
-      />
     </SafeAreaView>
   );
 }

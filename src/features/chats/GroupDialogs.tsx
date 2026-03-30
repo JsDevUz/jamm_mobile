@@ -67,6 +67,7 @@ type GroupDraft = {
 type CreateGroupDialogProps = {
   visible: boolean;
   users: User[];
+  asScreen?: boolean;
   onClose: () => void;
   onCreate: (draft: GroupDraft) => Promise<void>;
 };
@@ -75,6 +76,7 @@ type EditGroupDialogProps = {
   visible: boolean;
   group: ChatSummary | null;
   users: User[];
+  asScreen?: boolean;
   onClose: () => void;
   onSave: (draft: GroupDraft) => Promise<void>;
 };
@@ -84,8 +86,9 @@ type MemberPickerProps = {
   title: string;
   users: User[];
   selectedUserIds: string[];
+  embedded?: boolean;
   onClose: () => void;
-  onSelect: (userId: string) => void;
+  onSave: (userIds: string[]) => void;
 };
 
 type AdminRightsDialogProps = {
@@ -122,8 +125,9 @@ function MemberPickerDialog({
   title,
   users,
   selectedUserIds,
+  embedded = false,
   onClose,
-  onSelect,
+  onSave,
 }: MemberPickerProps) {
   const { t } = useI18n();
   const { width: screenWidth } = useWindowDimensions();
@@ -134,6 +138,9 @@ function MemberPickerDialog({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<User[]>([]);
   const [searching, setSearching] = useState(false);
+  const [draftSelectedUserIds, setDraftSelectedUserIds] = useState<string[]>(
+    selectedUserIds,
+  );
   const currentUser = useAuthStore((state) => state.user);
 
   useEffect(() => {
@@ -187,7 +194,13 @@ function MemberPickerDialog({
       setSearching(false);
       return;
     }
+    setDraftSelectedUserIds(selectedUserIds);
+  }, [selectedUserIds, visible]);
 
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
     const normalizedQuery = query.trim().replace(/^@+/, "");
     if (normalizedQuery.length < 3) {
       setResults([]);
@@ -241,14 +254,14 @@ function MemberPickerDialog({
   }, [currentUser, mergedUsers]);
 
   const selectedUsers = useMemo(() => {
-    const selectedSet = new Set(selectedUserIds);
+    const selectedSet = new Set(draftSelectedUserIds);
     return allEligibleUsers
       .filter((user) => {
         const userId = getEntityId(user);
         return Boolean(userId && selectedSet.has(userId));
       })
       .sort((left, right) => getUserLabel(left).localeCompare(getUserLabel(right)));
-  }, [allEligibleUsers, selectedUserIds]);
+  }, [allEligibleUsers, draftSelectedUserIds]);
 
   const filteredUsers = useMemo(() => {
     const normalizedQuery = query.trim().replace(/^@+/, "").toLowerCase();
@@ -272,156 +285,154 @@ function MemberPickerDialog({
         return haystack.includes(normalizedQuery);
       })
       .sort((left, right) => getUserLabel(left).localeCompare(getUserLabel(right)));
-  }, [allEligibleUsers, query, selectedUserIds]);
+  }, [allEligibleUsers, query]);
 
-  const groupedUsers = useMemo(() => {
-    const groups = new Map<string, User[]>();
+  const toggleDraftUser = useCallback((userId: string) => {
+    setDraftSelectedUserIds((current) => {
+      if (current.includes(userId)) {
+        return current.filter((memberId) => memberId !== userId);
+      }
 
-    filteredUsers.forEach((user) => {
-      const label = getUserLabel(user).trim();
-      const letter = (label[0] || "#").toUpperCase();
-      const key = /[A-ZА-ЯЎҚҒҲ]/i.test(letter) ? letter : "#";
-      const bucket = groups.get(key) || [];
-      bucket.push(user);
-      groups.set(key, bucket);
+      if (current.length >= GROUP_MEMBER_LIMIT) {
+        return current;
+      }
+
+      return [...current, userId];
     });
-
-    return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
-  }, [filteredUsers]);
+  }, []);
 
   if (!isMounted) {
     return null;
   }
-  return (
-    <Modal
-      visible={isMounted}
-      transparent
-      onRequestClose={onClose}
-    >
-      <View style={styles.memberPickerLayer} pointerEvents="box-none">
-        <Animated.View style={[styles.createScreenBackdrop, { opacity: backdropOpacity }]}>
-          <View style={StyleSheet.absoluteFill} pointerEvents="none" />
-        </Animated.View>
+  const content = (
+    <View style={styles.memberPickerLayer} pointerEvents="box-none">
+      <Animated.View style={[styles.createScreenBackdrop, { opacity: backdropOpacity }]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+      </Animated.View>
 
-        <Animated.View
-          style={[
-            styles.memberPickerPanel,
-            {
-              transform: [{ translateX }],
-            },
-          ]}
-        >
-          <SafeAreaView style={styles.memberPickerSafeArea} edges={["top", "right", "bottom"]}>
-            <View
-              style={[
-                styles.memberPickerHeader,
-                { paddingTop: Math.max(insets.top, 6) },
-              ]}
+      <Animated.View
+        style={[
+          styles.memberPickerPanel,
+          {
+            transform: [{ translateX }],
+          },
+        ]}
+      >
+        <SafeAreaView style={styles.memberPickerSafeArea} edges={["top", "right", "bottom"]}>
+          <View style={styles.memberPickerHeader}>
+            <Pressable onPress={onClose} style={styles.memberPickerCloseButton}>
+              <X size={18} color={Colors.text} />
+            </Pressable>
+            <Text style={styles.memberPickerHeaderTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <Pressable
+              onPress={() => onSave(draftSelectedUserIds)}
+              style={styles.memberPickerSaveButton}
             >
-              <Pressable onPress={onClose} style={styles.memberPickerTopButton}>
-                <Text style={styles.memberPickerTopButtonText}>{t("common.cancel")}</Text>
-              </Pressable>
-              <Text style={styles.memberPickerHeaderTitle} numberOfLines={1}>
-                {title}
-              </Text>
-              <Pressable onPress={onClose} style={styles.memberPickerTopButton}>
-                <Text style={styles.memberPickerTopButtonText}>{t("common.save")}</Text>
-              </Pressable>
-            </View>
+              <Text style={styles.memberPickerSaveButtonText}>{t("common.save")}</Text>
+            </Pressable>
+          </View>
 
-            <View style={styles.memberPickerSearchCard}>
-              {selectedUsers.length > 0 ? (
-                <View style={styles.memberPickerChipsWrap}>
-                  {selectedUsers.map((user) => {
-                    const userId = getEntityId(user);
-                    return (
-                      <Pressable
-                        key={userId}
-                        onPress={() => onSelect(userId)}
-                        style={styles.memberPickerChip}
-                      >
-                        <Avatar label={getUserLabel(user)} uri={user.avatar} size={26} />
-                        <Text style={styles.memberPickerChipText} numberOfLines={1}>
-                          {getUserLabel(user)}
-                        </Text>
-                        <X size={14} color="#fff" />
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              ) : null}
-
-              <View style={styles.memberPickerSearchRow}>
-                <Search size={18} color={Colors.subtleText} />
-                <TextInput
-                  value={query}
-                  onChangeText={setQuery}
-                  placeholder={t("chatsSidebar.groupDialog.searchPlaceholder")}
-                  placeholderTextColor={Colors.subtleText}
-                  style={styles.memberPickerSearchInput}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoFocus
-                />
-                {searching ? <ActivityIndicator size="small" color={Colors.primary} /> : null}
+          <View style={styles.memberPickerSearchCard}>
+            {selectedUsers.length > 0 ? (
+              <View style={styles.memberPickerChipsWrap}>
+                {selectedUsers.map((user) => {
+                  const userId = getEntityId(user);
+                  return (
+                    <Pressable
+                      key={userId}
+                      onPress={() => toggleDraftUser(userId)}
+                      style={styles.memberPickerChip}
+                    >
+                      <Avatar label={getUserLabel(user)} uri={user.avatar} size={26} />
+                      <Text style={styles.memberPickerChipText} numberOfLines={1}>
+                        {getUserLabel(user)}
+                      </Text>
+                      <X size={14} color="#fff" />
+                    </Pressable>
+                  );
+                })}
               </View>
+            ) : null}
+
+            <View style={styles.memberPickerSearchRow}>
+              <Search size={18} color={Colors.subtleText} />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder={t("chatsSidebar.groupDialog.searchPlaceholder")}
+                placeholderTextColor={Colors.subtleText}
+                style={styles.memberPickerSearchInput}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+              />
+              {searching ? <ActivityIndicator size="small" color={Colors.primary} /> : null}
             </View>
+          </View>
 
-            <ScrollView
-              style={styles.memberPickerResults}
-              contentContainerStyle={{ paddingBottom: 24 + insets.bottom }}
-              keyboardShouldPersistTaps="handled"
-            >
-              {filteredUsers.length === 0 ? (
-                <Text style={styles.emptyInfo}>
-                  {query.trim()
-                    ? t("chatsSidebar.groupDialog.searchEmpty")
-                    : t("chatsSidebar.groupDialog.searchStart")}
-                </Text>
-              ) : (
-                groupedUsers.map(([letter, bucket]) => (
-                  <View key={letter} style={styles.memberPickerGroup}>
-                    <Text style={styles.memberPickerGroupTitle}>{letter}</Text>
-                    {bucket.map((user) => {
-                      const userId = getEntityId(user);
-                      const isSelected = Boolean(userId && selectedUserIds.includes(userId));
-                      return (
-                        <Pressable
-                          key={userId}
-                          style={styles.memberPickerRow}
-                          onPress={() => onSelect(userId)}
-                        >
-                          <View style={styles.memberPickerCheckWrap}>
-                            <View
-                              style={[
-                                styles.memberPickerCheck,
-                                isSelected && styles.memberPickerCheckActive,
-                              ]}
-                            >
-                              {isSelected ? <Check size={14} color="#fff" /> : null}
-                            </View>
-                          </View>
+          <ScrollView
+            style={styles.memberPickerResults}
+            contentContainerStyle={{ paddingBottom: 24 + insets.bottom }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {filteredUsers.length === 0 ? (
+              <Text style={styles.emptyInfo}>
+                {query.trim()
+                  ? t("chatsSidebar.groupDialog.searchEmpty")
+                  : t("chatsSidebar.groupDialog.searchStart")}
+              </Text>
+            ) : (
+              filteredUsers.map((user) => {
+                const userId = getEntityId(user);
+                const isSelected = Boolean(
+                  userId && draftSelectedUserIds.includes(userId),
+                );
+                return (
+                  <Pressable
+                    key={userId}
+                    style={styles.memberPickerRow}
+                    onPress={() => toggleDraftUser(userId)}
+                  >
+                    <View style={styles.memberPickerCheckWrap}>
+                      <View
+                        style={[
+                          styles.memberPickerCheck,
+                          isSelected && styles.memberPickerCheckActive,
+                        ]}
+                      >
+                        {isSelected ? <Check size={14} color="#fff" /> : null}
+                      </View>
+                    </View>
 
-                          <Avatar label={getUserLabel(user)} uri={user.avatar} size={42} />
+                    <Avatar label={getUserLabel(user)} uri={user.avatar} size={42} />
 
-                          <View style={styles.memberPickerTextWrap}>
-                            <UserDisplayName
-                              user={user}
-                              fallback={getUserLabel(user)}
-                              textStyle={styles.memberPickerName}
-                            />
-                            <Text style={styles.memberPickerStatus}>@{user.username || "user"}</Text>
-                          </View>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                ))
-              )}
-            </ScrollView>
-          </SafeAreaView>
-        </Animated.View>
-      </View>
+                    <View style={styles.memberPickerTextWrap}>
+                      <UserDisplayName
+                        user={user}
+                        fallback={getUserLabel(user)}
+                        textStyle={styles.memberPickerName}
+                      />
+                      <Text style={styles.memberPickerStatus}>@{user.username || "user"}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Animated.View>
+    </View>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <Modal visible={isMounted} transparent onRequestClose={onClose}>
+      {content}
     </Modal>
   );
 }
@@ -528,6 +539,7 @@ function GroupDialogLayout({
   canAddAdmins = false,
   ownerId,
   fullScreen = false,
+  asScreen = false,
   submitLabel,
   onClose,
   onSubmit,
@@ -548,6 +560,7 @@ function GroupDialogLayout({
   canAddAdmins?: boolean;
   ownerId?: string;
   fullScreen?: boolean;
+  asScreen?: boolean;
   submitLabel: string;
   onClose: () => void;
   onSubmit: (draft: GroupDraft) => Promise<void>;
@@ -570,6 +583,13 @@ function GroupDialogLayout({
   const [showSubmitHint, setShowSubmitHint] = useState(false);
 
   useEffect(() => {
+    if (asScreen) {
+      setIsMounted(visible);
+      translateX.setValue(0);
+      backdropOpacity.setValue(1);
+      return;
+    }
+
     if (!fullScreen) {
       setIsMounted(visible);
       return;
@@ -616,7 +636,7 @@ function GroupDialogLayout({
         setIsMounted(false);
       }
     });
-  }, [backdropOpacity, fullScreen, isMounted, screenWidth, translateX, visible]);
+  }, [asScreen, backdropOpacity, fullScreen, isMounted, screenWidth, translateX, visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -815,14 +835,16 @@ function GroupDialogLayout({
   const dialogBody = (
     <>
       <Pressable onPress={handlePickImage} style={styles.uploadCircle}>
-        {avatarUri ? (
-          <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
-        ) : (
-          <>
-            <Upload size={24} color={Colors.mutedText} />
-            <Text style={styles.uploadText}>{t("chatsSidebar.groupDialog.upload")}</Text>
-          </>
-        )}
+        <View style={styles.uploadCircleInner}>
+          {avatarUri ? (
+            <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
+          ) : (
+            <>
+              <Upload size={24} color={Colors.mutedText} />
+              <Text style={styles.uploadText}>{t("chatsSidebar.groupDialog.upload")}</Text>
+            </>
+          )}
+        </View>
         {canEditInfo ? (
           <View style={styles.cameraBadge}>
             <Camera size={12} color="#fff" />
@@ -973,8 +995,81 @@ function GroupDialogLayout({
     </>
   );
 
-  if (fullScreen && !isMounted) {
+  if (fullScreen && !asScreen && !isMounted) {
     return null;
+  }
+
+  if (asScreen) {
+    return (
+      <>
+        <SafeAreaView style={styles.routeScreenSafeArea} edges={["top", "right", "bottom"]}>
+          <View style={styles.createScreenHeader}>
+            <Pressable onPress={handleClose} style={styles.createScreenBackButton}>
+              <ArrowLeft size={18} color={Colors.text} />
+            </Pressable>
+            <View style={styles.createScreenHeaderCopy}>
+              <Text style={styles.createScreenTitle}>{title}</Text>
+              <Text style={styles.createScreenSubtitle}>{subtitle}</Text>
+            </View>
+          </View>
+
+          <ScrollView
+            style={styles.createScreenBody}
+            contentContainerStyle={[
+              styles.createScreenBodyContent,
+              { paddingBottom: 18 + insets.bottom },
+            ]}
+            keyboardShouldPersistTaps="handled"
+          >
+            {dialogBody}
+          </ScrollView>
+
+          <View style={[styles.createScreenFooter, { paddingBottom: 12 + insets.bottom }]}>
+            {footerContent}
+          </View>
+
+          <MemberPickerDialog
+            visible={pickerOpen}
+            title={t("chatsSidebar.groupDialog.addMember")}
+            users={users}
+            selectedUserIds={memberIds}
+            embedded
+            onClose={() => setPickerOpen(false)}
+            onSave={(nextUserIds) => {
+              setMemberIds(nextUserIds);
+              setAdmins((current) =>
+                current.filter((admin) => {
+                  const adminUserId = admin.userId || admin.id || admin._id;
+                  return Boolean(adminUserId && nextUserIds.includes(adminUserId));
+                }),
+              );
+              setShowSubmitHint(false);
+              setPickerOpen(false);
+            }}
+          />
+
+          <AdminRightsDialog
+            visible={Boolean(adminUserId)}
+            user={activeAdminUser}
+            permissions={activeAdminPermissions}
+            onClose={() => setAdminUserId(null)}
+            onDismissAdmin={() => {
+              if (!adminUserId) return;
+              setAdmins((current) =>
+                current.filter(
+                  (admin) => (admin.userId || admin.id || admin._id) !== adminUserId,
+                ),
+              );
+              setAdminUserId(null);
+            }}
+            onTogglePermission={(permissionId) => {
+              if (!adminUserId) return;
+              toggleAdminPermission(adminUserId, permissionId);
+            }}
+          />
+        </SafeAreaView>
+      </>
+    );
   }
 
   return (
@@ -1068,9 +1163,18 @@ function GroupDialogLayout({
         title={t("chatsSidebar.groupDialog.addMember")}
         users={users}
         selectedUserIds={memberIds}
+        embedded={fullScreen}
         onClose={() => setPickerOpen(false)}
-        onSelect={(userId) => {
-          toggleMember(userId);
+        onSave={(nextUserIds) => {
+          setMemberIds(nextUserIds);
+          setAdmins((current) =>
+            current.filter((admin) => {
+              const adminUserId = admin.userId || admin.id || admin._id;
+              return Boolean(adminUserId && nextUserIds.includes(adminUserId));
+            }),
+          );
+          setShowSubmitHint(false);
+          setPickerOpen(false);
         }}
       />
 
@@ -1098,6 +1202,7 @@ function GroupDialogLayout({
 export function CreateGroupDialog({
   visible,
   users,
+  asScreen = false,
   onClose,
   onCreate,
 }: CreateGroupDialogProps) {
@@ -1117,6 +1222,13 @@ export function CreateGroupDialog({
   const [showSubmitHint, setShowSubmitHint] = useState(false);
 
   useEffect(() => {
+    if (asScreen) {
+      setIsMounted(visible);
+      translateX.setValue(0);
+      backdropOpacity.setValue(1);
+      return;
+    }
+
     if (visible) {
       setIsMounted(true);
       translateX.setValue(screenWidth);
@@ -1158,7 +1270,7 @@ export function CreateGroupDialog({
         setIsMounted(false);
       }
     });
-  }, [backdropOpacity, isMounted, screenWidth, translateX, visible]);
+  }, [asScreen, backdropOpacity, isMounted, screenWidth, translateX, visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -1309,21 +1421,23 @@ export function CreateGroupDialog({
     [animateScreenBack, backdropOpacity, onClose, screenWidth, translateX],
   );
 
-  if (!isMounted) {
+  if (!isMounted && !asScreen) {
     return null;
   }
 
   return (
-    <View style={styles.createScreenLayer} pointerEvents="box-none">
-      <Animated.View style={[styles.createScreenBackdrop, { opacity: backdropOpacity }]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
-      </Animated.View>
+    <View style={asScreen ? styles.routeScreenRoot : styles.createScreenLayer} pointerEvents="box-none">
+      {asScreen ? null : (
+        <Animated.View style={[styles.createScreenBackdrop, { opacity: backdropOpacity }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
+        </Animated.View>
+      )}
 
       <Animated.View
         style={[
-          styles.createScreenPanel,
+          asScreen ? styles.routeScreenPanel : styles.createScreenPanel,
           {
-            transform: [{ translateX }],
+            transform: asScreen ? undefined : [{ translateX }],
           },
         ]}
       >
@@ -1358,14 +1472,16 @@ export function CreateGroupDialog({
             keyboardShouldPersistTaps="handled"
           >
             <Pressable onPress={handlePickImage} style={styles.uploadCircle}>
-              {avatarUri ? (
-                <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
-              ) : (
+              <View style={styles.uploadCircleInner}>
+                {avatarUri ? (
+                  <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
+                ) : (
                   <>
                     <Upload size={24} color={Colors.mutedText} />
                     <Text style={styles.uploadText}>{t("chatsSidebar.groupDialog.upload")}</Text>
                   </>
                 )}
+              </View>
               <View style={styles.cameraBadge}>
                 <Camera size={12} color="#fff" />
               </View>
@@ -1490,9 +1606,12 @@ export function CreateGroupDialog({
             title={t("chatsSidebar.groupDialog.addMember")}
             users={users}
             selectedUserIds={memberIds}
+            embedded
             onClose={() => setPickerOpen(false)}
-            onSelect={(userId) => {
-              toggleMember(userId);
+            onSave={(nextUserIds) => {
+              setMemberIds(nextUserIds);
+              setShowSubmitHint(false);
+              setPickerOpen(false);
             }}
           />
         </SafeAreaView>
@@ -1505,6 +1624,7 @@ export function EditGroupDialog({
   visible,
   group,
   users,
+  asScreen = false,
   onClose,
   onSave,
 }: EditGroupDialogProps) {
@@ -1526,6 +1646,7 @@ export function EditGroupDialog({
       subtitle={t("chatsSidebar.groupDialog.editSubtitle")}
       users={users}
       saving={false}
+      asScreen={asScreen}
       currentAvatar={group?.avatar || null}
       initialMemberIds={(group?.members || []).map((member) => getEntityId(member)).filter(Boolean)}
       initialName={group?.name || ""}
@@ -1545,6 +1666,19 @@ export function EditGroupDialog({
 }
 
 const styles = StyleSheet.create({
+  routeScreenRoot: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  routeScreenPanel: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: Colors.background,
+  },
+  routeScreenSafeArea: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
   overlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.72)",
@@ -1612,27 +1746,37 @@ const styles = StyleSheet.create({
   },
   memberPickerHeader: {
     paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 14,
+    paddingTop: 10,
+    paddingBottom: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
   },
-  memberPickerTopButton: {
-    minWidth: 92,
-    height: 46,
-    borderRadius: 23,
-    paddingHorizontal: 18,
+  memberPickerCloseButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  memberPickerTopButtonText: {
+  memberPickerSaveButton: {
+    minWidth: 78,
+    height: 42,
+    borderRadius: 21,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  memberPickerSaveButtonText: {
     color: Colors.text,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
   },
   memberPickerHeaderTitle: {
@@ -1690,17 +1834,6 @@ const styles = StyleSheet.create({
   memberPickerResults: {
     flex: 1,
     paddingHorizontal: 16,
-  },
-  memberPickerGroup: {
-    gap: 4,
-    marginBottom: 14,
-  },
-  memberPickerGroupTitle: {
-    color: Colors.mutedText,
-    fontSize: 18,
-    fontWeight: "600",
-    paddingHorizontal: 2,
-    marginBottom: 4,
   },
   memberPickerRow: {
     flexDirection: "row",
@@ -1774,7 +1907,7 @@ const styles = StyleSheet.create({
   createScreenHeader: {
     paddingHorizontal: 18,
     paddingTop: 10,
-    paddingBottom: 14,
+    paddingBottom: 12,
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 12,
@@ -1817,6 +1950,7 @@ const styles = StyleSheet.create({
   },
   createScreenBodyContent: {
     paddingHorizontal: 16,
+    paddingTop: 12,
     gap: 18,
   },
   createScreenFooter: {
@@ -1870,12 +2004,23 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     alignItems: "center",
     justifyContent: "center",
-    overflow: "hidden",
+    overflow: "visible",
+    position: "relative",
     marginBottom: 4,
+  },
+  uploadCircleInner: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 41,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.surfaceMuted,
   },
   uploadImage: {
     width: "100%",
     height: "100%",
+    borderRadius: 41,
   },
   uploadText: {
     color: Colors.mutedText,
@@ -1885,14 +2030,16 @@ const styles = StyleSheet.create({
   },
   cameraBadge: {
     position: "absolute",
-    right: 2,
-    bottom: 2,
+    right: -2,
+    bottom: -2,
     width: 24,
     height: 24,
     borderRadius: 12,
     backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 2,
+    borderColor: Colors.surface,
   },
   inputGroup: {
     gap: 8,

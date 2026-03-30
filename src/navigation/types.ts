@@ -119,6 +119,16 @@ export type RootStackParamList = {
     title: string;
     isGroup: boolean;
   };
+  ChatInfo: {
+    chatId: string;
+    title: string;
+    isGroup: boolean;
+    userId?: string | null;
+  };
+  CreateGroup: undefined;
+  EditGroup: {
+    chatId: string;
+  };
   GroupPreview: {
     identifier: string;
   };

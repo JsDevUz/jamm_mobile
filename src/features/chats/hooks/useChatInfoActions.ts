@@ -46,22 +46,30 @@ export function useChatInfoActions({
 
       dismissKeyboard();
       setAvatarPreviewOpen(false);
-      setInfoDrawerUserId(
-        targetUser
-          ? getEntityId(targetUser)
-          : currentChat.isGroup
-            ? null
-            : getEntityId(otherMember),
-      );
-      setInfoDrawerOpen(true);
+      setInfoDrawerOpen(false);
+      setInfoDrawerUserId(null);
+      navigation.push("ChatInfo", {
+        chatId: getEntityId(currentChat),
+        title: getChatTitle(currentChat, currentUserId, user),
+        isGroup: Boolean(currentChat.isGroup),
+        userId:
+          targetUser
+            ? getEntityId(targetUser)
+            : currentChat.isGroup
+              ? null
+              : getEntityId(otherMember),
+      });
     },
     [
       currentChat,
+      currentUserId,
       dismissKeyboard,
+      navigation,
       otherMember,
       setAvatarPreviewOpen,
       setInfoDrawerOpen,
       setInfoDrawerUserId,
+      user,
     ],
   );
 

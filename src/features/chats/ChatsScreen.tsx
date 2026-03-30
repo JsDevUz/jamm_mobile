@@ -27,7 +27,6 @@ import { Avatar } from "../../components/Avatar";
 import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { CreateMeetDialog } from "../calls/CreateMeetDialog";
-import { CreateGroupDialog } from "./GroupDialogs";
 import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
 import { useI18n } from "../../i18n";
 import { chatsApi, meetsApi } from "../../lib/api";
@@ -77,7 +76,6 @@ export function ChatsScreen({ navigation }: Props) {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<ChatTab>("private");
   const [searchQuery, setSearchQuery] = useState("");
-  const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const [createMeetOpen, setCreateMeetOpen] = useState(false);
   const [meetDialogLoading, setMeetDialogLoading] = useState(false);
   const [meetDialogError, setMeetDialogError] = useState("");
@@ -164,18 +162,6 @@ export function ChatsScreen({ navigation }: Props) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    navigation.setOptions({
-      tabBarStyle: createGroupOpen ? { display: "none" } : undefined,
-    });
-
-    return () => {
-      navigation.setOptions({
-        tabBarStyle: undefined,
-      });
-    };
-  }, [createGroupOpen, navigation]);
 
   const knownUsers = useMemo(() => {
     const map = new Map<string, NonNullable<ChatSummary["members"]>[number]>();
@@ -432,35 +418,6 @@ export function ChatsScreen({ navigation }: Props) {
     });
   };
 
-  const handleCreateGroup = async (draft: {
-    name: string;
-    description: string;
-    avatarUri?: string | null;
-    memberIds: string[];
-  }) => {
-    let avatar = draft.avatarUri || "";
-
-    if (avatar && !avatar.startsWith("http")) {
-      avatar = await chatsApi.uploadGroupAvatar(avatar);
-    }
-
-    const createdChat = await chatsApi.createChat({
-      isGroup: true,
-      name: draft.name,
-      description: draft.description,
-      avatar,
-      memberIds: draft.memberIds,
-    });
-
-    await queryClient.invalidateQueries({ queryKey: ["chats"] });
-    setCreateGroupOpen(false);
-    rootNavigation?.navigate("ChatRoom", {
-      chatId: getEntityId(createdChat),
-      title: getLocalizedChatTitle(createdChat),
-      isGroup: true,
-    });
-  };
-
   const indicatorTranslateX =
     tabsWidth > 0
       ? pagerScrollX.interpolate({
@@ -693,7 +650,10 @@ export function ChatsScreen({ navigation }: Props) {
             placeholder={t("chatsSidebar.searchPlaceholder")}
             rightSlot={
               activeTab === "group" ? (
-                <Pressable style={styles.actionButton} onPress={() => setCreateGroupOpen(true)}>
+                <Pressable
+                  style={styles.actionButton}
+                  onPress={() => rootNavigation?.navigate("CreateGroup")}
+                >
                   <Plus size={18} color={Colors.text} />
                 </Pressable>
               ) : (
@@ -808,13 +768,6 @@ export function ChatsScreen({ navigation }: Props) {
         </GuidedTourTarget>
 
       </View>
-
-      <CreateGroupDialog
-        visible={createGroupOpen}
-        users={knownUsers}
-        onClose={() => setCreateGroupOpen(false)}
-        onCreate={handleCreateGroup}
-      />
       <CreateMeetDialog
         visible={createMeetOpen}
         meet={activeMeet}

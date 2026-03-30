@@ -145,31 +145,6 @@ export function ChatList({
     shouldStickToBottomRef,
   ]);
 
-  useEffect(() => {
-    if (
-      messageListVisible ||
-      messageItems.length === 0 ||
-      messagesQuery.isLoading ||
-      messagesQuery.isFetchingNextPage
-    ) {
-      return;
-    }
-
-    const frameId = requestAnimationFrame(() => {
-      finalizeInitialListLayout();
-    });
-
-    return () => {
-      cancelAnimationFrame(frameId);
-    };
-  }, [
-    finalizeInitialListLayout,
-    messageItems.length,
-    messageListVisible,
-    messagesQuery.isFetchingNextPage,
-    messagesQuery.isLoading,
-  ]);
-
   const effectiveBottomPadding =
     composerHeight + dockBottomSpacerHeight + (dockLiftVisible ? 8 : 20);
   const visualViewportHeight = dockLiftVisible
@@ -188,6 +163,53 @@ export function ChatList({
   const topFillHeight = !shouldEnableScroll
     ? Math.max(0, visualViewportHeight - contentBodyHeight)
     : 0;
+  const hasPendingScrollRestore = scrollRestorePendingRef.current !== null;
+  const shouldAutofillInitialViewport =
+    !initialScrollDoneRef.current &&
+    !messageListVisible &&
+    !hasPendingScrollRestore &&
+    messageItems.length > 0 &&
+    viewportHeight > 0 &&
+    !messagesQuery.isLoading &&
+    !messagesQuery.isFetchingNextPage &&
+    !shouldEnableScroll &&
+    Boolean(messagesQuery.hasNextPage);
+
+  const maybeFinalizeInitialListLayout = useCallback(() => {
+    if (shouldAutofillInitialViewport) {
+      return;
+    }
+
+    finalizeInitialListLayout();
+  }, [finalizeInitialListLayout, shouldAutofillInitialViewport]);
+
+  useEffect(() => {
+    if (
+      messageListVisible ||
+      messageItems.length === 0 ||
+      messagesQuery.isLoading ||
+      messagesQuery.isFetchingNextPage ||
+      shouldAutofillInitialViewport
+    ) {
+      return;
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      maybeFinalizeInitialListLayout();
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [
+    messageItems.length,
+    messageListVisible,
+    maybeFinalizeInitialListLayout,
+    messagesQuery.isFetchingNextPage,
+    messagesQuery.isLoading,
+    shouldAutofillInitialViewport,
+  ]);
+
   const messagesTapGesture = useMemo(
     () =>
       Gesture.Tap()
@@ -202,6 +224,20 @@ export function ChatList({
         }),
     [onMessagesTouchStart],
   );
+
+  useEffect(() => {
+    if (!shouldAutofillInitialViewport) {
+      return;
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      onFetchOlder();
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [onFetchOlder, shouldAutofillInitialViewport]);
 
   return (
     <GestureDetector gesture={messagesTapGesture}>
@@ -267,7 +303,7 @@ export function ChatList({
               paddingBottom: effectiveBottomPadding,
             },
           ]}
-          onLoad={finalizeInitialListLayout}
+          onLoad={maybeFinalizeInitialListLayout}
           scrollEnabled={shouldEnableScroll}
           bounces={shouldEnableScroll}
           alwaysBounceVertical={false}

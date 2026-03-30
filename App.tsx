@@ -45,6 +45,9 @@ import useGuidedTourStore from "./src/store/guided-tour-store";
 import { AuthScreen } from "./src/features/auth/AuthScreen";
 import { ChatsScreen } from "./src/features/chats/ChatsScreen";
 import { ChatScreen } from "./src/features/chats/ChatScreen";
+import { ChatInfoScreen } from "./src/features/chats/ChatInfoScreen";
+import { CreateGroupScreen } from "./src/features/chats/CreateGroupScreen";
+import { EditGroupScreen } from "./src/features/chats/EditGroupScreen";
 import { GroupPreviewScreen } from "./src/features/chats/GroupPreviewScreen";
 import { GroupMeetRoute } from "./src/features/calls/GroupMeetRoute";
 import { PrivateMeetRoute } from "./src/features/calls/PrivateMeetRoute";
@@ -329,6 +332,33 @@ function RootNavigator() {
             options={{
               animation: "slide_from_right",
               keyboardHandlingEnabled: false,
+            }}
+          />
+          <Stack.Screen
+            name="ChatInfo"
+            component={ChatInfoScreen}
+            options={{
+              headerShown: false,
+              presentation: "modal",
+              animation: "slide_from_bottom",
+            }}
+          />
+          <Stack.Screen
+            name="CreateGroup"
+            component={CreateGroupScreen}
+            options={{
+              headerShown: false,
+              presentation: "modal",
+              animation: "slide_from_bottom",
+            }}
+          />
+          <Stack.Screen
+            name="EditGroup"
+            component={EditGroupScreen}
+            options={{
+              headerShown: false,
+              presentation: "modal",
+              animation: "slide_from_bottom",
             }}
           />
           <Stack.Screen
