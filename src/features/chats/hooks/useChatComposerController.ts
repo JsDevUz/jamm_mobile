@@ -61,6 +61,7 @@ export function useChatComposerController({
   enableComposerSoftInput,
   showComposerDock,
   showComposerDockImmediately,
+  moveComposerAndContentUp,
   hideComposerDock,
   hideStickerSheet,
   switchStickerToKeyboard,
@@ -88,6 +89,7 @@ export function useChatComposerController({
   enableComposerSoftInput: () => void;
   showComposerDock: (onComplete?: () => void) => void;
   showComposerDockImmediately: () => void;
+  moveComposerAndContentUp: (nextHeight?: number, durationOverride?: number) => void;
   hideComposerDock: () => void;
   hideStickerSheet: (options?: {
     enableSoftInput?: boolean;
@@ -321,6 +323,8 @@ export function useChatComposerController({
       return;
     }
 
+    moveComposerAndContentUp(undefined, 220);
+
     if (!composerSoftInputEnabled) {
       enableComposerSoftInput();
       requestAnimationFrame(() => {
@@ -331,6 +335,7 @@ export function useChatComposerController({
     composerSoftInputEnabled,
     composerInputRef,
     enableComposerSoftInput,
+    moveComposerAndContentUp,
     switchStickerToKeyboard,
     showComposerDock,
     stickerSheetVisible,
@@ -343,9 +348,7 @@ export function useChatComposerController({
     }
 
     composerFocusedRef.current = true;
-    requestAnimationFrame(() => {
-      showComposerDock();
-    });
+    showComposerDock();
   }, [
     composerFocusedRef,
     composerInputRef,

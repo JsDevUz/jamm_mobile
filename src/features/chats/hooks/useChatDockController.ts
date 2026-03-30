@@ -32,6 +32,7 @@ export function useChatDockController({
   composerInputRef: RefObject<NativeTextInput | null>;
   composerFocusedRef: MutableRefObject<boolean>;
 }) {
+  const liftedDockGap = 10;
   const {
     keyboardHeightAnim,
     keyboardHeightAnim: keyboardMessagesViewportTranslateY,
@@ -545,13 +546,19 @@ export function useChatDockController({
   const showComposerDock = useCallback((onComplete?: () => void) => {
     const shouldKeepKeyboardVisualPosition =
       keyboardVisibleRef.current || stickerToKeyboardHandoffRef.current;
+    const isFirstKeyboardLift =
+      composerContentLiftHeightRef.current > 0.5 &&
+      !keyboardVisibleRef.current &&
+      !stickerToKeyboardHandoffRef.current;
     raiseControlledDock({
       showSheet: false,
       targetHeight: resolveComposerDockHeight(),
       keepKeyboardVisualPosition: shouldKeepKeyboardVisualPosition,
       onComplete,
       durationOverride:
-        keyboardAnimationDurationRef.current > 0
+        isFirstKeyboardLift
+          ? 220
+          : keyboardAnimationDurationRef.current > 0
           ? Math.max(
               keyboardAnimationDurationRef.current + 200,
               Platform.OS === "ios" ? 520 : 380,
@@ -561,6 +568,7 @@ export function useChatDockController({
             : 380,
     });
   }, [
+    composerContentLiftHeightRef,
     keyboardAnimationDurationRef,
     keyboardVisibleRef,
     raiseControlledDock,
@@ -858,7 +866,9 @@ export function useChatDockController({
     messagesCoveredBottomInset,
     shouldKeepMessagesAnchoredToBottom: true,
     lockComposerShellHeight: dockVisible,
-    dockBottomSpacerHeight: Math.max(stableBottomInsetRef.current, 0),
+    dockBottomSpacerHeight: controlledDockLiftVisible
+      ? liftedDockGap
+      : Math.max(stableBottomInsetRef.current, 0),
     composerShellBottomPadding: 0,
   };
 }

@@ -115,7 +115,7 @@ export function ChatComposer({
             </Pressable>
 
             <View style={styles.composerField}>
-              <View style={styles.composerInputWrap}>
+              <View style={styles.composerInputWrap} onTouchStart={onPressIn}>
                 <TextInput
                   ref={composerInputRef}
                   style={styles.composerInput}
