@@ -1,5 +1,12 @@
 import type { RefObject } from "react";
-import { ActivityIndicator, Animated, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Animated,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { TextInput } from "../../../components/TextInput";
 import { Colors } from "../../../theme/colors";
@@ -28,6 +35,7 @@ export function ChatComposer({
   onAttach,
   onSend,
   onStickerToggle,
+  onKeyboardToggle,
   onVoice,
   onClearComposerMode,
   onContextPress,
@@ -55,6 +63,7 @@ export function ChatComposer({
   onAttach: () => void;
   onSend: () => void;
   onStickerToggle: () => void;
+  onKeyboardToggle: () => void;
   onVoice: () => void;
   onClearComposerMode: () => void;
   onContextPress: () => void;
@@ -130,11 +139,17 @@ export function ChatComposer({
                   onFocus={onFocus}
                   onBlur={onBlur}
                 />
+                {stickerPickerOpen ? (
+                  <Pressable
+                    onPress={onKeyboardToggle}
+                    style={localStyles.inputTapShield}
+                  />
+                ) : null}
               </View>
 
               <View style={styles.composerSideRight}>
                 <Pressable
-                  onPress={onStickerToggle}
+                  onPress={stickerPickerOpen ? onKeyboardToggle : onStickerToggle}
                   style={({ pressed }) => [
                     styles.composerInlineAccessoryButton,
                     stickerPickerOpen && styles.composerInlineAccessoryButtonActive,
@@ -205,3 +220,10 @@ export function ChatComposer({
     </View>
   );
 }
+
+const localStyles = StyleSheet.create({
+  inputTapShield: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 2,
+  },
+});

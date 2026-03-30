@@ -6,6 +6,7 @@ import { StickerPackSheet } from "./StickerPackSheet";
 export function ChatBody({
   styles,
   chatBodyTransformStyle,
+  contentTransformStyle,
   messagesViewportInsetStyle,
   messagesViewportTransformStyle,
   listProps,
@@ -15,6 +16,7 @@ export function ChatBody({
 }: {
   styles: Record<string, any>;
   chatBodyTransformStyle?: any;
+  contentTransformStyle?: any;
   messagesViewportInsetStyle?: any;
   messagesViewportTransformStyle?: any;
   listProps: any;
@@ -24,14 +26,16 @@ export function ChatBody({
 }) {
   return (
     <Animated.View style={[styles.chatBody, chatBodyTransformStyle]}>
-      <ChatList
-        {...listProps}
-        styles={styles}
-        containerInsetStyle={messagesViewportInsetStyle}
-        containerTransformStyle={messagesViewportTransformStyle}
-      />
-      <Animated.View style={[styles.composerStickyHost, composerTranslateStyle]}>
-        <ChatComposer {...composerProps} styles={styles} />
+      <Animated.View style={[styles.chatBodyContent, contentTransformStyle]}>
+        <ChatList
+          {...listProps}
+          styles={styles}
+          containerInsetStyle={messagesViewportInsetStyle}
+          containerTransformStyle={messagesViewportTransformStyle}
+        />
+        <Animated.View style={[styles.composerStickyHost, composerTranslateStyle]}>
+          <ChatComposer {...composerProps} styles={styles} />
+        </Animated.View>
       </Animated.View>
       {stickerPackProps ? <StickerPackSheet {...stickerPackProps} /> : null}
     </Animated.View>

@@ -446,6 +446,7 @@ export function ChatScreen({ navigation, route }: Props) {
     composerDockVisible,
     controlledDockLiftVisible,
     stickerSheetVisible,
+    stickerSheetOpenedFromKeyboard,
     stickerSheetHeightAnim,
     stickerSheetHeightRef,
     controlledDockBottomOffset,
@@ -458,6 +459,7 @@ export function ChatScreen({ navigation, route }: Props) {
     showComposerDockImmediately,
     hideComposerDock,
     hideStickerSheet,
+    switchStickerToKeyboard,
     toggleStickerSheet,
     setStickerSheetHeightImmediate,
     snapStickerSheetHeight,
@@ -494,7 +496,11 @@ export function ChatScreen({ navigation, route }: Props) {
     stickerSheetVisible,
   ]);
   const controlledDockVisible = stickerSheetVisible || composerDockVisible;
-  const useSharedComposerDockLift = composerDockVisible && !stickerSheetVisible;
+  const useSharedContentLift =
+    controlledDockLiftVisible ||
+    composerDockVisible ||
+    (stickerSheetVisible && !stickerSheetOpenedFromKeyboard) ||
+    controlledDockVisible;
   useEffect(() => {
     navigation.setOptions({
       gestureEnabled: !infoDrawerOpen && !infoPageMounted,
@@ -510,6 +516,7 @@ export function ChatScreen({ navigation, route }: Props) {
       });
     };
   }, [infoDrawerOpen, infoPageMounted, navigation]);
+  
   useEffect(() => {
     const unsubscribe = navigation.addListener("transitionStart", (event) => {
       if (!event.data.closing) {
@@ -626,7 +633,8 @@ export function ChatScreen({ navigation, route }: Props) {
     handleSend,
     handleAttachmentPress,
     handleVoiceMessagePress,
-    handleStickerTogglePress,
+    handleStickerPress,
+    handleKeyboardPress,
     handleStickerSelect,
     handleDeleteLastSticker,
     handleComposerSelectionChange,
@@ -658,6 +666,7 @@ export function ChatScreen({ navigation, route }: Props) {
     showComposerDockImmediately,
     hideComposerDock,
     hideStickerSheet,
+    switchStickerToKeyboard,
     toggleStickerSheet,
     onSendMessage: sendMessage,
     onEditMessage: editMessageContent,
@@ -880,8 +889,8 @@ export function ChatScreen({ navigation, route }: Props) {
   const chatBodyContent = (
     <ChatBody
       styles={styles}
-      chatBodyTransformStyle={
-        !isWeb && useSharedComposerDockLift
+      contentTransformStyle={
+        !isWeb
           ? {
               transform: [{ translateY: activeDockTranslateY }],
             }
@@ -974,7 +983,10 @@ export function ChatScreen({ navigation, route }: Props) {
           void handleSend();
         },
         onStickerToggle: () => {
-          void handleStickerTogglePress();
+          void handleStickerPress();
+        },
+        onKeyboardToggle: () => {
+          void handleKeyboardPress();
         },
         onVoice: () => {
           void handleVoiceMessagePress();
@@ -986,18 +998,10 @@ export function ChatScreen({ navigation, route }: Props) {
         onComposerLayout: handleComposerLayout,
       }}
       messagesViewportTransformStyle={
-        !isWeb && !useSharedComposerDockLift
-          ? {
-              transform: [{ translateY: messagesViewportTranslateY }],
-            }
-          : undefined
+        undefined
       }
       composerTranslateStyle={
-        !isWeb && !useSharedComposerDockLift
-          ? {
-              transform: [{ translateY: activeDockTranslateY }],
-            }
-          : undefined
+        undefined
       }
     />
   );
@@ -1739,6 +1743,9 @@ const styles = StyleSheet.create({
     flex: 1,
     position: "relative",
     overflow: "hidden",
+  },
+  chatBodyContent: {
+    flex: 1,
   },
   messagesListHidden: {
     opacity: 0,

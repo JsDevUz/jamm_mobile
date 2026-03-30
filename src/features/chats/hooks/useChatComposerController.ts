@@ -63,6 +63,7 @@ export function useChatComposerController({
   showComposerDockImmediately,
   hideComposerDock,
   hideStickerSheet,
+  switchStickerToKeyboard,
   toggleStickerSheet,
   onSendMessage,
   onEditMessage,
@@ -92,6 +93,7 @@ export function useChatComposerController({
     enableSoftInput?: boolean;
     focusComposer?: boolean;
   }) => void;
+  switchStickerToKeyboard: () => void;
   toggleStickerSheet: () => void;
   onSendMessage: (args: {
     content: string;
@@ -205,10 +207,10 @@ export function useChatComposerController({
 
   const handleVoiceMessagePress = useCallback(async () => {
     await Haptics.selectionAsync();
-    showComposerDockImmediately();
-  }, [showComposerDockImmediately]);
+    showSystemToast("Ovozli xabar tez orada qo'shiladi.");
+  }, [showSystemToast]);
 
-  const handleStickerTogglePress = useCallback(async () => {
+  const handleStickerPress = useCallback(async () => {
     await Haptics.selectionAsync();
 
     if (pendingStickerHandoffTimeoutRef.current) {
@@ -216,33 +218,21 @@ export function useChatComposerController({
       pendingStickerHandoffTimeoutRef.current = null;
     }
 
-    if (stickerSheetVisible) {
-      hideStickerSheet({
-        enableSoftInput: true,
-        focusComposer: true,
-      });
-      return;
-    }
-
-    if (!keyboardVisibleRef.current) {
-      if (!composerDockVisible) {
-        showComposerDock();
-        return;
-      }
-
+    if (!stickerSheetVisible) {
       toggleStickerSheet();
-      return;
+    }
+  }, [toggleStickerSheet, stickerSheetVisible]);
+
+  const handleKeyboardPress = useCallback(async () => {
+    await Haptics.selectionAsync();
+
+    if (pendingStickerHandoffTimeoutRef.current) {
+      clearTimeout(pendingStickerHandoffTimeoutRef.current);
+      pendingStickerHandoffTimeoutRef.current = null;
     }
 
-    toggleStickerSheet();
-  }, [
-    composerDockVisible,
-    hideStickerSheet,
-    keyboardVisibleRef,
-    showComposerDock,
-    toggleStickerSheet,
-    stickerSheetVisible,
-  ]);
+    switchStickerToKeyboard();
+  }, [switchStickerToKeyboard]);
 
   const handleStickerSelect = useCallback(
     (selection: { emoji?: string }) => {
@@ -327,14 +317,9 @@ export function useChatComposerController({
 
   const handleComposerPressIn = useCallback(() => {
     if (stickerSheetVisible) {
-      hideStickerSheet({
-        enableSoftInput: true,
-        focusComposer: true,
-      });
+      switchStickerToKeyboard();
       return;
     }
-
-    showComposerDock();
 
     if (!composerSoftInputEnabled) {
       enableComposerSoftInput();
@@ -346,7 +331,7 @@ export function useChatComposerController({
     composerSoftInputEnabled,
     composerInputRef,
     enableComposerSoftInput,
-    hideStickerSheet,
+    switchStickerToKeyboard,
     showComposerDock,
     stickerSheetVisible,
   ]);
@@ -358,7 +343,15 @@ export function useChatComposerController({
     }
 
     composerFocusedRef.current = true;
-  }, [composerFocusedRef, composerInputRef, composerSoftInputEnabled]);
+    requestAnimationFrame(() => {
+      showComposerDock();
+    });
+  }, [
+    composerFocusedRef,
+    composerInputRef,
+    composerSoftInputEnabled,
+    showComposerDock,
+  ]);
 
   const handleComposerBlur = useCallback(() => {
     composerFocusedRef.current = false;
@@ -391,7 +384,8 @@ export function useChatComposerController({
     handleSend,
     handleAttachmentPress,
     handleVoiceMessagePress,
-    handleStickerTogglePress,
+    handleStickerPress,
+    handleKeyboardPress,
     handleStickerSelect,
     handleDeleteLastSticker,
     handleComposerSelectionChange,

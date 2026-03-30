@@ -14,7 +14,7 @@ import {
   type MutableRefObject,
   type RefObject,
 } from "react";
-import { KeyboardController } from "react-native-keyboard-controller";
+import { AndroidSoftInputModes, KeyboardController } from "react-native-keyboard-controller";
 import { useKeyboardHeight } from "./useKeyboardHeight";
 
 export function useChatDockController({
@@ -38,6 +38,8 @@ export function useChatDockController({
     keyboardProgressAnim,
     keyboardHeightRef,
     keyboardProgressRef,
+    keyboardTargetHeightRef,
+    keyboardAnimationDurationRef,
     lastOpenedKeyboardHeightRef,
   } = useKeyboardHeight();
   const [keyboardVisible, setKeyboardVisible] = useState(false);
@@ -45,11 +47,23 @@ export function useChatDockController({
   const [composerDockVisible, setComposerDockVisible] = useState(false);
   const [stickerSheetVisible, setStickerSheetVisible] = useState(false);
   const [controlledDockCoveredHeight, setControlledDockCoveredHeight] = useState(0);
+  const [composerContentLiftHeight, setComposerContentLiftHeight] = useState(0);
   const [stickerSheetOpenedFromKeyboard, setStickerSheetOpenedFromKeyboard] = useState(false);
   const [composerSoftInputEnabled, setComposerSoftInputEnabledState] = useState(true);
   const keyboardVisibleRef = useRef(false);
   const composerDockVisibleRef = useRef(false);
   const stickerSheetVisibleRef = useRef(false);
+  const keyboardComposerHandoffActiveRef = useRef(false);
+  const keyboardComposerHandoffStartHeightRef = useRef(0);
+  const stickerToKeyboardHandoffRef = useRef(false);
+  const pendingKeyboardShowRef = useRef(false);
+  const pendingKeyboardShowTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const zeroDockTranslateAnim = useRef(new Animated.Value(0)).current;
+  const stableBottomInsetRef = useRef(bottomInset);
+  const composerContentLiftAnim = useRef(new Animated.Value(0)).current;
+  const composerContentLiftHeightRef = useRef(0);
   const stickerSheetHeightAnim = useRef(new Animated.Value(0)).current;
   const stickerSheetHeightRef = useRef(0);
   const dockHideFrameRef = useRef<number | null>(null);
@@ -86,6 +100,24 @@ export function useChatDockController({
       UIManager.setLayoutAnimationEnabledExperimental(true);
     }
   }, []);
+  
+  useEffect(() => {
+    if (Platform.OS !== "android") {
+      return;
+    }
+
+    if (stickerSheetVisible || composerDockVisible) {
+      KeyboardController.setInputMode(
+        AndroidSoftInputModes.SOFT_INPUT_ADJUST_NOTHING,
+      );
+    } else {
+      KeyboardController.setDefaultMode();
+    }
+
+    return () => {
+      KeyboardController.setDefaultMode();
+    };
+  }, [composerDockVisible, stickerSheetVisible]);
 
   const clearPendingDockHideFrame = useCallback(() => {
     if (dockHideFrameRef.current === null) {
@@ -107,6 +139,16 @@ export function useChatDockController({
   }, [stickerSheetHeightAnim]);
 
   useEffect(() => {
+    const listenerId = composerContentLiftAnim.addListener(({ value }) => {
+      composerContentLiftHeightRef.current = Math.max(0, value || 0);
+    });
+
+    return () => {
+      composerContentLiftAnim.removeListener(listenerId);
+    };
+  }, [composerContentLiftAnim]);
+
+  useEffect(() => {
     composerDockVisibleRef.current = composerDockVisible;
   }, [composerDockVisible]);
 
@@ -115,20 +157,84 @@ export function useChatDockController({
   }, [stickerSheetVisible]);
 
   useEffect(() => {
+    return () => {
+      if (pendingKeyboardShowTimeoutRef.current) {
+        clearTimeout(pendingKeyboardShowTimeoutRef.current);
+        pendingKeyboardShowTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!keyboardVisible && !composerDockVisible && !stickerSheetVisible) {
+      stableBottomInsetRef.current = bottomInset;
+    }
+  }, [bottomInset, composerDockVisible, keyboardVisible, stickerSheetVisible]);
+
+  useEffect(() => {
     const syncKeyboardVisible = () => {
       const nextVisible =
         keyboardHeightRef.current > 1 || keyboardProgressRef.current > 0.01;
       const nextCoveredHeight = nextVisible
-        ? Math.max(
-            keyboardHeightRef.current,
-            lastOpenedKeyboardHeightRef.current,
-          )
+        ? Math.max(0, keyboardHeightRef.current)
         : 0;
       keyboardVisibleRef.current = nextVisible;
       setKeyboardVisibleAnimated(nextVisible);
       setKeyboardCoveredHeight((previous) =>
         previous === nextCoveredHeight ? previous : nextCoveredHeight,
       );
+      if (
+        nextVisible &&
+        stickerToKeyboardHandoffRef.current &&
+        composerDockVisibleRef.current &&
+        !stickerSheetVisibleRef.current
+      ) {
+        if (pendingKeyboardShowRef.current) {
+          pendingKeyboardShowRef.current = false;
+          if (pendingKeyboardShowTimeoutRef.current) {
+            clearTimeout(pendingKeyboardShowTimeoutRef.current);
+            pendingKeyboardShowTimeoutRef.current = null;
+          }
+        }
+        if (!keyboardComposerHandoffActiveRef.current) {
+          keyboardComposerHandoffActiveRef.current = true;
+          keyboardComposerHandoffStartHeightRef.current = Math.max(
+            stickerSheetHeightRef.current,
+            nextCoveredHeight,
+          );
+        }
+
+        const handoffProgress = Math.max(
+          0,
+          Math.min(1, keyboardProgressRef.current || 0),
+        );
+        const handoffStartHeight = keyboardComposerHandoffStartHeightRef.current;
+        const nextDockHeight =
+          handoffStartHeight +
+          (nextCoveredHeight - handoffStartHeight) * handoffProgress;
+
+        if (Math.abs(nextDockHeight - stickerSheetHeightRef.current) > 0.5) {
+          stickerSheetHeightAnim.setValue(nextDockHeight);
+        }
+        setControlledDockCoveredHeight((previous) =>
+          previous === nextDockHeight ? previous : nextDockHeight,
+        );
+        if (handoffProgress >= 0.98) {
+          keyboardComposerHandoffActiveRef.current = false;
+          keyboardComposerHandoffStartHeightRef.current = 0;
+          stickerToKeyboardHandoffRef.current = false;
+          stickerSheetHeightAnim.setValue(nextCoveredHeight);
+          setControlledDockCoveredHeight((previous) =>
+            previous === nextCoveredHeight ? previous : nextCoveredHeight,
+          );
+        }
+      } else if (!nextVisible) {
+        if (!pendingKeyboardShowRef.current) {
+          keyboardComposerHandoffActiveRef.current = false;
+          keyboardComposerHandoffStartHeightRef.current = 0;
+          stickerToKeyboardHandoffRef.current = false;
+        }
+      }
     };
 
     const heightListenerId = keyboardHeightAnim.addListener(() => {
@@ -183,6 +289,28 @@ export function useChatDockController({
 
     return Math.max(measuredKeyboardHeight, estimatedKeyboardHeight);
   }, [keyboardHeightRef, lastOpenedKeyboardHeightRef]);
+  const resolveComposerDockHeight = useCallback(() => {
+    const measuredKeyboardHeight = Math.max(
+      keyboardHeightRef.current,
+      keyboardTargetHeightRef.current,
+      lastOpenedKeyboardHeightRef.current,
+      0,
+    );
+
+    if (measuredKeyboardHeight <= 0) {
+      return resolveStickerSheetHeight();
+    }
+
+    return Math.max(
+      measuredKeyboardHeight,
+      0,
+    );
+  }, [
+    keyboardHeightRef,
+    keyboardTargetHeightRef,
+    lastOpenedKeyboardHeightRef,
+    resolveStickerSheetHeight,
+  ]);
   const resolveStickerSheetMaxHeight = useCallback(() => {
     const minimumHeight = resolveStickerSheetHeight();
     const availableHeight = Math.max(
@@ -194,12 +322,21 @@ export function useChatDockController({
   }, [resolveStickerSheetHeight, screenHeight, topInset]);
 
   const animateStickerSheet = useCallback(
-    (toValue: number, onComplete?: () => void) => {
+    (
+      toValue: number,
+      onComplete?: () => void,
+      durationOverride?: number,
+    ) => {
       stickerSheetHeightAnim.stopAnimation();
       const isOpening = toValue > stickerSheetHeightRef.current;
       Animated.timing(stickerSheetHeightAnim, {
         toValue,
-        duration: isOpening ? 680 : 360,
+        duration:
+          durationOverride && durationOverride > 0
+            ? durationOverride
+            : isOpening
+              ? 680
+              : 360,
         easing: isOpening
           ? Easing.inOut(Easing.cubic)
           : Easing.inOut(Easing.ease),
@@ -213,6 +350,56 @@ export function useChatDockController({
       });
     },
     [stickerSheetHeightAnim, stickerSheetHeightRef],
+  );
+
+  const setComposerAndContentLiftImmediate = useCallback(
+    (nextHeight: number) => {
+      const clampedHeight = Math.max(0, nextHeight);
+      composerContentLiftHeightRef.current = clampedHeight;
+      setComposerContentLiftHeight(clampedHeight);
+      composerContentLiftAnim.stopAnimation();
+      composerContentLiftAnim.setValue(clampedHeight);
+    },
+    [composerContentLiftAnim],
+  );
+
+  const animateComposerAndContentLift = useCallback(
+    (nextHeight: number, durationOverride?: number) => {
+      const clampedHeight = Math.max(0, nextHeight);
+      const previousHeight = composerContentLiftHeightRef.current;
+      composerContentLiftHeightRef.current = clampedHeight;
+      setComposerContentLiftHeight(clampedHeight);
+      composerContentLiftAnim.stopAnimation();
+      Animated.timing(composerContentLiftAnim, {
+        toValue: clampedHeight,
+        duration:
+          durationOverride && durationOverride > 0
+            ? durationOverride
+            : clampedHeight > previousHeight
+              ? 420
+              : 280,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    },
+    [composerContentLiftAnim],
+  );
+
+  const moveComposerAndContentUp = useCallback(
+    (nextHeight?: number, durationOverride?: number) => {
+      animateComposerAndContentLift(
+        Math.max(0, nextHeight ?? resolveComposerDockHeight()),
+        durationOverride,
+      );
+    },
+    [animateComposerAndContentLift, resolveComposerDockHeight],
+  );
+
+  const moveComposerAndContentDown = useCallback(
+    (durationOverride?: number) => {
+      animateComposerAndContentLift(0, durationOverride);
+    },
+    [animateComposerAndContentLift],
   );
 
   const syncDockVisibility = useCallback(
@@ -243,11 +430,13 @@ export function useChatDockController({
       targetHeight,
       keepKeyboardVisualPosition = false,
       onComplete,
+      durationOverride,
     }: {
       showSheet?: boolean;
       targetHeight?: number;
       keepKeyboardVisualPosition?: boolean;
       onComplete?: () => void;
+      durationOverride?: number;
     } = {}) => {
       const resolvedTargetHeight = targetHeight ?? resolveStickerSheetHeight();
       const hasExistingLift =
@@ -267,20 +456,19 @@ export function useChatDockController({
         stickerSheetHeightAnim.setValue(
           Math.max(keyboardHeightRef.current, resolvedTargetHeight),
         );
-      } else if (!hasExistingLift && !showSheet) {
+      } else if (!hasExistingLift) {
         stickerSheetHeightAnim.setValue(0);
-      } else if (!hasExistingLift && showSheet) {
-        stickerSheetHeightAnim.setValue(resolvedTargetHeight);
       }
 
       if (showSheet) {
         disableComposerSoftInput();
-        if (keepKeyboardVisualPosition) {
+        if (keepKeyboardVisualPosition || Platform.OS === "android") {
           dismissKeyboard();
         }
       }
 
-      animateStickerSheet(resolvedTargetHeight, onComplete);
+      moveComposerAndContentUp(resolvedTargetHeight, durationOverride);
+      animateStickerSheet(resolvedTargetHeight, onComplete, durationOverride);
     },
     [
       animateStickerSheet,
@@ -288,6 +476,7 @@ export function useChatDockController({
       disableComposerSoftInput,
       dismissKeyboard,
       keyboardHeightRef,
+      moveComposerAndContentUp,
       resolveStickerSheetHeight,
       syncDockVisibility,
       stickerSheetHeightAnim,
@@ -300,12 +489,20 @@ export function useChatDockController({
       keepComposerDock = false,
       enableSoftInput = false,
       focusComposer = false,
+      onSettled,
     }: {
       keepComposerDock?: boolean;
       enableSoftInput?: boolean;
       focusComposer?: boolean;
+      onSettled?: () => void;
     } = {}) => {
       const settledHeight = keepComposerDock ? resolveStickerSheetHeight() : 0;
+
+      if (keepComposerDock) {
+        moveComposerAndContentUp(settledHeight, 260);
+      } else {
+        moveComposerAndContentDown();
+      }
 
       animateStickerSheet(settledHeight, () => {
         if (!keepComposerDock) {
@@ -328,6 +525,7 @@ export function useChatDockController({
               });
             }
           }
+          onSettled?.();
         });
       });
     },
@@ -336,6 +534,8 @@ export function useChatDockController({
       clearPendingDockHideFrame,
       composerInputRef,
       enableComposerSoftInput,
+      moveComposerAndContentDown,
+      moveComposerAndContentUp,
       resolveStickerSheetHeight,
       syncDockVisibility,
       stickerSheetHeightAnim,
@@ -344,31 +544,45 @@ export function useChatDockController({
 
   const showComposerDock = useCallback((onComplete?: () => void) => {
     const shouldKeepKeyboardVisualPosition =
-      keyboardVisibleRef.current ||
-      keyboardHeightRef.current > 1 ||
-      keyboardProgressRef.current > 0.01;
-
+      keyboardVisibleRef.current || stickerToKeyboardHandoffRef.current;
     raiseControlledDock({
       showSheet: false,
+      targetHeight: resolveComposerDockHeight(),
       keepKeyboardVisualPosition: shouldKeepKeyboardVisualPosition,
       onComplete,
+      durationOverride:
+        keyboardAnimationDurationRef.current > 0
+          ? Math.max(
+              keyboardAnimationDurationRef.current + 200,
+              Platform.OS === "ios" ? 520 : 380,
+            )
+          : Platform.OS === "ios"
+            ? 520
+            : 380,
     });
   }, [
-    keyboardHeightRef,
-    keyboardProgressRef,
+    keyboardAnimationDurationRef,
     keyboardVisibleRef,
     raiseControlledDock,
+    resolveComposerDockHeight,
+    stickerToKeyboardHandoffRef,
   ]);
 
   const showComposerDockImmediately = useCallback(() => {
-    raiseControlledDock({
-      showSheet: false,
-      targetHeight: resolveStickerSheetHeight(),
-      keepKeyboardVisualPosition: false,
-      onComplete: undefined,
+    const nextHeight = resolveStickerSheetHeight();
+    syncDockVisibility({
+      composerVisible: true,
+      sheetVisible: false,
+      openedFromKeyboard: false,
+      coveredHeight: nextHeight,
     });
-    stickerSheetHeightAnim.setValue(resolveStickerSheetHeight());
-  }, [raiseControlledDock, resolveStickerSheetHeight, stickerSheetHeightAnim]);
+    setControlledDockCoveredHeight(nextHeight);
+    setComposerAndContentLiftImmediate(nextHeight);
+  }, [
+    resolveStickerSheetHeight,
+    setComposerAndContentLiftImmediate,
+    syncDockVisibility,
+  ]);
 
   const showStickerSheet = useCallback(() => {
     const shouldKeepKeyboardVisualPosition =
@@ -424,6 +638,40 @@ export function useChatDockController({
         return;
       }
 
+      if (enableSoftInput) {
+        stickerToKeyboardHandoffRef.current = true;
+        pendingKeyboardShowRef.current = true;
+        if (pendingKeyboardShowTimeoutRef.current) {
+          clearTimeout(pendingKeyboardShowTimeoutRef.current);
+        }
+        pendingKeyboardShowTimeoutRef.current = setTimeout(() => {
+          pendingKeyboardShowRef.current = false;
+          pendingKeyboardShowTimeoutRef.current = null;
+        }, 900);
+        clearPendingDockHideFrame();
+        const currentHeight = Math.max(
+          stickerSheetHeightRef.current,
+          controlledDockCoveredHeight,
+          0,
+        );
+        setComposerAndContentLiftImmediate(currentHeight);
+        syncDockVisibility({
+          composerVisible: true,
+          sheetVisible: false,
+          openedFromKeyboard: false,
+          coveredHeight: currentHeight,
+        });
+        setControlledDockCoveredHeight((previous) =>
+          previous === currentHeight ? previous : currentHeight,
+        );
+        enableComposerSoftInput();
+        if (focusComposer) {
+          requestAnimationFrame(() => {
+            composerInputRef.current?.focus();
+          });
+        }
+        return;
+      }
       lowerControlledDock({
         keepComposerDock: true,
         enableSoftInput,
@@ -431,11 +679,76 @@ export function useChatDockController({
       });
     },
     [
+      clearPendingDockHideFrame,
       enableComposerSoftInput,
       lowerControlledDock,
+      controlledDockCoveredHeight,
+      setComposerAndContentLiftImmediate,
+      setControlledDockCoveredHeight,
+      stickerSheetHeightRef,
       stickerSheetVisible,
+      syncDockVisibility,
     ],
   );
+
+  const switchStickerToKeyboard = useCallback(() => {
+    composerFocusedRef.current = false;
+    composerInputRef.current?.blur();
+
+    if (!stickerSheetVisibleRef.current) {
+      enableComposerSoftInput();
+      requestAnimationFrame(() => {
+        composerInputRef.current?.focus();
+      });
+      return;
+    }
+
+    const currentHeight = Math.max(
+      stickerSheetHeightRef.current,
+      controlledDockCoveredHeight,
+      resolveStickerSheetHeight(),
+      0,
+    );
+
+    stickerToKeyboardHandoffRef.current = true;
+    pendingKeyboardShowRef.current = true;
+    if (pendingKeyboardShowTimeoutRef.current) {
+      clearTimeout(pendingKeyboardShowTimeoutRef.current);
+    }
+    pendingKeyboardShowTimeoutRef.current = setTimeout(() => {
+      pendingKeyboardShowRef.current = false;
+      pendingKeyboardShowTimeoutRef.current = null;
+    }, 900);
+
+    clearPendingDockHideFrame();
+    setComposerAndContentLiftImmediate(currentHeight);
+    syncDockVisibility({
+      composerVisible: true,
+      sheetVisible: false,
+      openedFromKeyboard: false,
+      coveredHeight: currentHeight,
+    });
+    setControlledDockCoveredHeight((previous) =>
+      previous === currentHeight ? previous : currentHeight,
+    );
+
+    enableComposerSoftInput();
+    requestAnimationFrame(() => {
+      composerInputRef.current?.focus();
+    });
+  }, [
+    clearPendingDockHideFrame,
+    composerFocusedRef,
+    composerInputRef,
+    controlledDockCoveredHeight,
+    enableComposerSoftInput,
+    resolveStickerSheetHeight,
+    setComposerAndContentLiftImmediate,
+    setControlledDockCoveredHeight,
+    stickerSheetHeightRef,
+    stickerSheetVisibleRef,
+    syncDockVisibility,
+  ]);
 
   const setStickerSheetHeightImmediate = useCallback(
     (nextHeight: number) => {
@@ -444,11 +757,17 @@ export function useChatDockController({
         Math.min(resolveStickerSheetMaxHeight(), nextHeight),
       );
 
+      setComposerAndContentLiftImmediate(clampedHeight);
       stickerSheetHeightAnim.stopAnimation();
       stickerSheetHeightAnim.setValue(clampedHeight);
       setControlledDockCoveredHeight(clampedHeight);
     },
-    [resolveStickerSheetHeight, resolveStickerSheetMaxHeight, stickerSheetHeightAnim],
+    [
+      resolveStickerSheetHeight,
+      resolveStickerSheetMaxHeight,
+      setComposerAndContentLiftImmediate,
+      stickerSheetHeightAnim,
+    ],
   );
 
   const snapStickerSheetHeight = useCallback(
@@ -458,10 +777,16 @@ export function useChatDockController({
         Math.min(resolveStickerSheetMaxHeight(), nextHeight),
       );
 
+      moveComposerAndContentUp(clampedHeight, 320);
       setControlledDockCoveredHeight(clampedHeight);
       animateStickerSheet(clampedHeight);
     },
-    [animateStickerSheet, resolveStickerSheetHeight, resolveStickerSheetMaxHeight],
+    [
+      animateStickerSheet,
+      moveComposerAndContentUp,
+      resolveStickerSheetHeight,
+      resolveStickerSheetMaxHeight,
+    ],
   );
 
   const toggleStickerSheet = useCallback(() => {
@@ -473,18 +798,15 @@ export function useChatDockController({
     showStickerSheet();
   }, [hideStickerSheet, showStickerSheet, stickerSheetVisible]);
 
-  const dockVisible = stickerSheetVisible || composerDockVisible;
-  const controlledDockLiftVisible = stickerSheetVisible || composerDockVisible;
+  const dockVisible =
+    stickerSheetVisible || composerDockVisible || composerContentLiftHeight > 0.5;
+  const controlledDockLiftVisible =
+    composerContentLiftHeight > 0.5;
   const stickerSheetTranslateY = Animated.multiply(stickerSheetHeightAnim, -1);
-  const stickerSheetVisualGap = 2;
-  const stickerSheetSafeAreaCompensation = Math.max(
-    Math.min(bottomInset - stickerSheetVisualGap, 8),
-    0,
-  );
   const stickerSheetLiftOffset = Animated.diffClamp(
     Animated.subtract(
       stickerSheetHeightAnim,
-      stickerSheetSafeAreaCompensation,
+      Math.max(stableBottomInsetRef.current, 0),
     ),
     0,
     resolveStickerSheetMaxHeight(),
@@ -493,26 +815,23 @@ export function useChatDockController({
     stickerSheetOpenedFromKeyboard
     ? stickerSheetHeightAnim
     : stickerSheetLiftOffset;
-  const activeDockTranslateY = stickerSheetVisible
-    ? stickerSheetTranslateY
-    : composerDockVisible
-      ? stickerSheetTranslateY
-      : keyboardHeightAnim;
-  const messagesViewportTranslateY = stickerSheetVisible || composerDockVisible
-    ? stickerSheetTranslateY
-    : keyboardMessagesViewportTranslateY;
+  const activeDockTranslateY = controlledDockLiftVisible
+    ? Animated.multiply(composerContentLiftAnim, -1)
+    : zeroDockTranslateAnim;
+  const messagesViewportTranslateY = controlledDockLiftVisible
+    ? Animated.multiply(composerContentLiftAnim, -1)
+    : zeroDockTranslateAnim;
   const dockCoveredHeight = controlledDockLiftVisible
-    ? controlledDockCoveredHeight
+    ? composerContentLiftHeight
     : 0;
-  const messagesCoveredBottomInset = controlledDockLiftVisible
-    ? dockCoveredHeight
-    : keyboardCoveredHeight;
+  const messagesCoveredBottomInset = dockCoveredHeight;
   return {
     keyboardVisible,
     keyboardVisibleRef,
     composerDockVisible,
     controlledDockLiftVisible,
     stickerSheetVisible,
+    stickerSheetOpenedFromKeyboard,
     stickerSheetHeightAnim,
     stickerSheetHeightRef,
     stickerSheetLiftOffset,
@@ -525,9 +844,12 @@ export function useChatDockController({
     dismissKeyboard,
     showComposerDock,
     showComposerDockImmediately,
+    moveComposerAndContentUp,
+    moveComposerAndContentDown,
     hideComposerDock,
     showStickerSheet,
     hideStickerSheet,
+    switchStickerToKeyboard,
     toggleStickerSheet,
     setStickerSheetHeightImmediate,
     snapStickerSheetHeight,
@@ -536,8 +858,7 @@ export function useChatDockController({
     messagesCoveredBottomInset,
     shouldKeepMessagesAnchoredToBottom: true,
     lockComposerShellHeight: dockVisible,
-    dockBottomSpacerHeight:
-      keyboardVisible || dockVisible ? 0 : Math.max(bottomInset, 0),
-    composerShellBottomPadding: keyboardVisible ? 6 : dockVisible ? 0 : 0,
+    dockBottomSpacerHeight: Math.max(stableBottomInsetRef.current, 0),
+    composerShellBottomPadding: 0,
   };
 }

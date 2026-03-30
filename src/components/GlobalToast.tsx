@@ -6,6 +6,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useKeyboardAnimation } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors } from "../theme/colors";
 import { useToastStore } from "../store/toast-store";
@@ -16,6 +17,11 @@ export function GlobalToast() {
   const clearToast = useToastStore((state) => state.clearToast);
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(18)).current;
+  const { height: keyboardHeightAnim } = useKeyboardAnimation();
+  const toastTranslateY = Animated.add(
+    translateY,
+    Animated.multiply(keyboardHeightAnim, -1),
+  );
 
   useEffect(() => {
     if (!toast) {
@@ -80,7 +86,7 @@ export function GlobalToast() {
           {
             bottom: insets.bottom + 24,
             opacity,
-            transform: [{ translateY }],
+            transform: [{ translateY: toastTranslateY }],
           },
         ]}
       >
