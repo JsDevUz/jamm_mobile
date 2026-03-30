@@ -458,6 +458,7 @@ export function ChatScreen({ navigation, route }: Props) {
     showComposerDock,
     showComposerDockImmediately,
     moveComposerAndContentUp,
+    moveComposerAndContentDown,
     hideComposerDock,
     hideStickerSheet,
     switchStickerToKeyboard,
@@ -480,20 +481,23 @@ export function ChatScreen({ navigation, route }: Props) {
     composerFocusedRef,
   });
   const handleMessagesTouchStart = useCallback(() => {
-    if (stickerSheetVisible) {
-      hideStickerSheet();
+    if (
+      !stickerSheetVisible &&
+      !composerDockVisible &&
+      !keyboardVisibleRef.current
+    ) {
       return;
     }
 
-    if (!composerDockVisible) {
-      return;
-    }
-
+    moveComposerAndContentDown(240);
+    hideComposerDock();
     dismissKeyboard();
   }, [
     composerDockVisible,
     dismissKeyboard,
-    hideStickerSheet,
+    hideComposerDock,
+    keyboardVisibleRef,
+    moveComposerAndContentDown,
     stickerSheetVisible,
   ]);
   const controlledDockVisible = stickerSheetVisible || composerDockVisible;
@@ -926,7 +930,7 @@ export function ChatScreen({ navigation, route }: Props) {
         pendingNewMessageIds,
         onMessagesTouchStart: handleMessagesTouchStart,
         onMessagesScroll: handleMessagesScroll,
-        onMessagesScrollBeginDrag: undefined,
+        onMessagesScrollBeginDrag: handleMessagesTouchStart,
         onMessagesScrollEndDrag: scheduleScrollOffsetPersist,
         onMessagesMomentumScrollEnd: scheduleScrollOffsetPersist,
         onViewableItemsChanged: handleViewableItemsChanged,
