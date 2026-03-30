@@ -212,8 +212,8 @@ export function useChatComposerController({
     showSystemToast("Ovozli xabar tez orada qo'shiladi.");
   }, [showSystemToast]);
 
-  const handleStickerPress = useCallback(async () => {
-    await Haptics.selectionAsync();
+  const handleStickerPress = useCallback(() => {
+    void Haptics.selectionAsync();
 
     if (pendingStickerHandoffTimeoutRef.current) {
       clearTimeout(pendingStickerHandoffTimeoutRef.current);

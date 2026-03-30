@@ -477,7 +477,7 @@ export function ChatScreen({ navigation, route }: Props) {
     composerInputRef,
     composerFocusedRef,
   });
-  const handleMessagesTouchStart = useCallback(() => {
+  const closeDockAndKeyboard = useCallback((duration = 240) => {
     if (
       !stickerSheetVisible &&
       !composerDockVisible &&
@@ -486,10 +486,12 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
-    moveComposerAndContentDown(240);
+    composerFocusedRef.current = false;
+    moveComposerAndContentDown(duration);
     hideComposerDock();
     dismissKeyboard();
   }, [
+    composerFocusedRef,
     composerDockVisible,
     dismissKeyboard,
     hideComposerDock,
@@ -497,6 +499,9 @@ export function ChatScreen({ navigation, route }: Props) {
     moveComposerAndContentDown,
     stickerSheetVisible,
   ]);
+  const handleMessagesTouchStart = useCallback(() => {
+    closeDockAndKeyboard();
+  }, [closeDockAndKeyboard]);
   const controlledDockVisible = stickerSheetVisible || composerDockVisible;
   const useSharedContentLift =
     controlledDockLiftVisible ||
@@ -566,6 +571,9 @@ export function ChatScreen({ navigation, route }: Props) {
     insets,
     keyboardVisibleRef,
     dismissKeyboard,
+    onBeforeOpenMenu: () => {
+      closeDockAndKeyboard(200);
+    },
     listRef,
     messageItemsRef,
     hasNextPageRef,
@@ -1533,7 +1541,7 @@ export function ChatScreen({ navigation, route }: Props) {
               void handleStartVideoCall();
             }}
             onOpenMenu={() => {
-              dismissKeyboard();
+              closeDockAndKeyboard(200);
               setMenuOpen(true);
             }}
           />

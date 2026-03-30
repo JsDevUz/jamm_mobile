@@ -14,7 +14,11 @@ import {
   type MutableRefObject,
   type RefObject,
 } from "react";
-import { AndroidSoftInputModes, KeyboardController } from "react-native-keyboard-controller";
+import {
+  AndroidSoftInputModes,
+  KeyboardController,
+  KeyboardEvents,
+} from "react-native-keyboard-controller";
 import { useKeyboardHeight } from "./useKeyboardHeight";
 
 export function useChatDockController({
@@ -336,7 +340,7 @@ export function useChatDockController({
           durationOverride && durationOverride > 0
             ? durationOverride
             : isOpening
-              ? 680
+              ? 520
               : 360,
         easing: isOpening
           ? Easing.inOut(Easing.cubic)
@@ -542,6 +546,28 @@ export function useChatDockController({
       stickerSheetHeightAnim,
     ],
   );
+
+  useEffect(() => {
+    const keyboardDidHideSubscription = KeyboardEvents.addListener(
+      "keyboardDidHide",
+      () => {
+        if (
+          pendingKeyboardShowRef.current ||
+          stickerSheetVisibleRef.current ||
+          !composerDockVisibleRef.current
+        ) {
+          return;
+        }
+
+        composerFocusedRef.current = false;
+        lowerControlledDock();
+      },
+    );
+
+    return () => {
+      keyboardDidHideSubscription.remove();
+    };
+  }, [composerFocusedRef, lowerControlledDock]);
 
   const showComposerDock = useCallback((onComplete?: () => void) => {
     const shouldKeepKeyboardVisualPosition =

@@ -78,10 +78,7 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
   };
 
   return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.wrapper, { bottom: 12 + insets.bottom }]}
-    >
+    <View style={[styles.wrapper, { paddingBottom: 12 + insets.bottom }]}>
       <View style={styles.shell}>
         <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
         <View style={styles.container}>
@@ -136,10 +133,9 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    position: "absolute",
-    left: 14,
-    right: 14,
-    zIndex: 20,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    backgroundColor: Colors.background,
   },
   shell: {
     minHeight: 64,

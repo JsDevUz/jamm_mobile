@@ -17,6 +17,7 @@ export function useChatMessageOverlay({
   insets,
   keyboardVisibleRef,
   dismissKeyboard,
+  onBeforeOpenMenu,
   listRef,
   messageItemsRef,
   hasNextPageRef,
@@ -27,6 +28,7 @@ export function useChatMessageOverlay({
   insets: { top: number; bottom: number };
   keyboardVisibleRef: MutableRefObject<boolean>;
   dismissKeyboard: () => void;
+  onBeforeOpenMenu?: () => void;
   listRef: RefObject<FlashListRef<MessageListItem> | null>;
   messageItemsRef: MutableRefObject<MessageListItem[]>;
   hasNextPageRef: MutableRefObject<boolean>;
@@ -115,6 +117,8 @@ export function useChatMessageOverlay({
         messageMenuOpenTimeoutRef.current = null;
       }
 
+      onBeforeOpenMenu?.();
+
       if (keyboardVisibleRef.current) {
         dismissKeyboard();
         messageMenuOpenTimeoutRef.current = setTimeout(
@@ -134,6 +138,7 @@ export function useChatMessageOverlay({
       insets.bottom,
       insets.top,
       keyboardVisibleRef,
+      onBeforeOpenMenu,
       openMessageMenu,
       screenHeight,
       screenWidth,

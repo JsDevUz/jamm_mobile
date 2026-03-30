@@ -304,9 +304,10 @@ export function ChatList({
             },
           ]}
           onLoad={maybeFinalizeInitialListLayout}
-          scrollEnabled={shouldEnableScroll}
-          bounces={shouldEnableScroll}
-          alwaysBounceVertical={false}
+          scrollEnabled
+          bounces
+          alwaysBounceVertical
+          overScrollMode="always"
           keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={(_width, height) => {
