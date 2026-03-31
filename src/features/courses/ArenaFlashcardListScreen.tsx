@@ -904,6 +904,7 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
   const [folderDetailLoading, setFolderDetailLoading] = useState(false);
   const [folderPreviewVisible, setFolderPreviewVisible] = useState(false);
   const [folderActionId, setFolderActionId] = useState<string | null>(null);
+  const [deletingFolderId, setDeletingFolderId] = useState<string | null>(null);
   const [savingFolder, setSavingFolder] = useState(false);
   const [deletingDeckId, setDeletingDeckId] = useState<string | null>(null);
   const [promptSide, setPromptSide] = useState<ArenaFlashcardPromptSide>("front");
@@ -971,6 +972,11 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
       folders.find((folder) => getFolderIdentifierCandidates(folder).includes(folderId)) ||
       (getFolderIdentifierCandidates(folderDetail).includes(folderId) ? folderDetail : null),
     [folderDetail, folders],
+  );
+  const selectedFolderId = getFolderIdentifier(selectedFolder);
+  const canDeleteSelectedFolder = Boolean(selectedFolder && isFolderOwner(selectedFolder, currentUserId));
+  const deletingSelectedFolder = Boolean(
+    selectedFolderId && deletingFolderId === selectedFolderId,
   );
 
   useEffect(() => {
@@ -1498,15 +1504,16 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
     );
   };
 
-  const handleDeleteFolder = () => {
-    const folderId = String(folderDetail?._id || folderDetail?.urlSlug || "");
-    if (!folderId) {
+  const handleDeleteFolder = (folder?: ArenaFlashcardFolder | null) => {
+    const targetFolder = folder || folderDetail || selectedFolder;
+    const folderId = getFolderIdentifier(targetFolder);
+    if (!folderId || deletingFolderId) {
       return;
     }
 
     Alert.alert(
       "Folderni o'chirasizmi?",
-      "Ichidagi lug'atlar saqlanadi, faqat folderdan ajraladi.",
+      "Bu amal folder ichidagi barcha lug'atlar, kartalar va progresslarni ham o'chiradi.",
       [
         { text: "Bekor qilish", style: "cancel" },
         {
@@ -1515,9 +1522,39 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
           onPress: () => {
             void (async () => {
               try {
+                setDeletingFolderId(folderId);
+                let loadedFolder = targetFolder ?? null;
+                try {
+                  loadedFolder = await arenaApi.fetchFlashcardFolder(folderId);
+                } catch {}
+                const localFolderDecks = allKnownDecks.filter((deck) =>
+                  getDeckFolderIdentifierCandidates(deck).includes(folderId),
+                );
+                const deckIds = Array.from(
+                  new Set(
+                    [
+                      ...(Array.isArray(loadedFolder?.decks) ? loadedFolder.decks : []),
+                      ...(Array.isArray(targetFolder?.decks) ? targetFolder.decks : []),
+                      ...localFolderDecks,
+                    ]
+                      .map((deck) => getDeckIdentifier(deck))
+                      .filter(Boolean),
+                  ),
+                );
+
+                for (const deckId of deckIds) {
+                  await arenaApi.deleteFlashcardDeck(deckId);
+                  await removeFlashcardDeckCache(deckId);
+                }
+
+                if (detailDeck?._id && deckIds.includes(String(detailDeck._id))) {
+                  setDetailDeck(null);
+                  setDetailMode(null);
+                }
                 await arenaApi.deleteFlashcardFolder(folderId);
                 setFolderDetail(null);
                 setFolderPreviewVisible(false);
+                setSelectedFolderFilter(NO_FOLDER_FILTER_ID);
                 await loadDecks(1, { replace: true, silent: true });
                 await loadFolders(true);
               } catch (error) {
@@ -1525,6 +1562,8 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
                   "Folder o'chirilmadi",
                   error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
                 );
+              } finally {
+                setDeletingFolderId(null);
               }
             })();
           },
@@ -1701,6 +1740,18 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
         <Text style={styles.decksSectionTitle}>Lug'atlar</Text>
         {selectedFolder ? (
           <View style={styles.decksHeaderActions}>
+            {canDeleteSelectedFolder ? (
+              <Pressable
+                style={[
+                  styles.decksHeaderAction,
+                  deletingSelectedFolder && styles.footerButtonDisabled,
+                ]}
+                disabled={deletingSelectedFolder}
+                onPress={() => handleDeleteFolder(selectedFolder)}
+              >
+                <Trash2 size={15} color={Colors.danger} />
+              </Pressable>
+            ) : null}
             <Pressable
               style={styles.decksHeaderAction}
               onPress={handleOpenSelectedFolderPreview}
