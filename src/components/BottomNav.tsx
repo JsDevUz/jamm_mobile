@@ -6,7 +6,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
-import { BlurView } from "expo-blur";
 import {
   Flame,
   GraduationCap,
@@ -28,11 +27,12 @@ type BottomNavProps = {
 const items: Array<{
   route: keyof MainTabsParamList;
   icon: ComponentType<{ size?: number; color?: string }>;
+  label: string;
 }> = [
-  { route: "Feed", icon: Flame },
-  { route: "Chats", icon: MessagesSquare },
-  { route: "Articles", icon: Newspaper },
-  { route: "Courses", icon: GraduationCap },
+  { route: "Feed", icon: Flame, label: "Feed" },
+  { route: "Chats", icon: MessagesSquare, label: "Chats" },
+  { route: "Articles", icon: Newspaper, label: "Articles" },
+  { route: "Courses", icon: GraduationCap, label: "Courses" },
 ];
 
 export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
@@ -78,10 +78,13 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
   };
 
   return (
-    <View style={[styles.wrapper, { paddingBottom: 12 + insets.bottom }]}>
-      <View style={styles.shell}>
-        <BlurView intensity={22} tint="dark" style={StyleSheet.absoluteFillObject} />
-        <View style={styles.container}>
+    <View
+      style={[
+        styles.wrapper,
+        { paddingBottom: Math.max(2, insets.bottom - 22) },
+      ]}
+    >
+      <View style={styles.container}>
         {items.map((item) => {
           const isActive = item.route === activeRoute;
           const Icon = item.icon;
@@ -89,43 +92,67 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
             <Pressable
               key={item.route}
               onPress={() => handleNavigate(item.route)}
-              style={[styles.navButton, isActive && styles.navButtonActive]}
+              style={styles.navItem}
             >
-              <Icon size={20} color={isActive ? "#fff" : Colors.mutedText} />
-              {item.route === "Chats" && unreadCount > 0 ? (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {unreadCount > 99 ? "99+" : unreadCount}
-                  </Text>
-                </View>
-              ) : null}
+              <View style={styles.iconSlot}>
+                <Icon
+                  size={21}
+                  color={isActive ? "#fff" : Colors.mutedText}
+                />
+                {item.route === "Chats" && unreadCount > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text
+                style={[
+                  styles.navLabel,
+                  isActive && styles.navLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                {item.label}
+              </Text>
             </Pressable>
           );
         })}
 
         <Pressable
           onPress={() => handleNavigate("Profile")}
-          style={[
-            styles.profileButton,
-            activeRoute === "Profile" && styles.profileButtonActive,
-          ]}
+          style={styles.navItem}
         >
-          {user?.avatar ? (
-            <Image
-              source={{ uri: user.avatar }}
-              style={styles.profileImage}
-              contentFit="cover"
-              transition={140}
-            />
-          ) : (
-            <View style={styles.profileFallback}>
-              <Text style={styles.profileFallbackText}>
-                {profileLabel.charAt(0).toUpperCase()}
-              </Text>
+          <View style={styles.iconSlot}>
+            <View style={styles.profileAvatarWrap}>
+              {user?.avatar ? (
+                <Image
+                  source={{ uri: user.avatar }}
+                  style={styles.profileImage}
+                  contentFit="cover"
+                  transition={140}
+                />
+              ) : (
+                <View style={styles.profileFallback}>
+                  <Text style={styles.profileFallbackText}>
+                    {profileLabel.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.profileStatusDot} />
             </View>
-          )}
+          </View>
+          <Text
+            style={[
+              styles.navLabel,
+              activeRoute === "Profile" && styles.navLabelActive,
+            ]}
+            numberOfLines={1}
+          >
+            You
+          </Text>
         </Pressable>
-        </View>
       </View>
     </View>
   );
@@ -133,101 +160,103 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    paddingHorizontal: 14,
-    paddingTop: 10,
+    paddingHorizontal: 10,
+    paddingTop: 2,
     backgroundColor: Colors.background,
-  },
-  shell: {
-    minHeight: 64,
-    borderRadius: 20,
-    overflow: "hidden",
-    backgroundColor: "rgba(32, 34, 37, 0.7)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    shadowColor: "#000",
-    shadowOpacity: 0.45,
-    shadowRadius: 16,
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
-    elevation: 12,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
   },
   container: {
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 10,
+    minHeight: 64,
+    paddingHorizontal: 6,
+    paddingTop: 6,
+    paddingBottom: 0,
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-around",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
   },
-  navButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  navItem: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 3,
+    paddingHorizontal: 4,
+  },
+  iconSlot: {
+    minWidth: 28,
+    height: 28,
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
   },
-  navButtonActive: {
-    backgroundColor: Colors.primary,
-  },
   badge: {
     position: "absolute",
-    top: -4,
-    right: -4,
-    minWidth: 18,
-    height: 18,
+    top: -2,
+    right: -10,
+    minWidth: 17,
+    height: 17,
     borderRadius: 999,
     backgroundColor: Colors.primary,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 5,
+    paddingHorizontal: 4,
     borderWidth: 2,
-    borderColor: Colors.surfaceMuted,
+    borderColor: Colors.background,
   },
   badgeText: {
     color: "#fff",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
   },
-  profileButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    overflow: "hidden",
-    borderWidth: 2,
-    borderColor: Colors.border,
+  navLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "600",
+    color: Colors.mutedText,
+    textAlign: "center",
+  },
+  navLabelActive: {
+    color: "#fff",
+    fontWeight: "700",
+  },
+  profileAvatarWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    overflow: "visible",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Colors.primary,
-  },
-  profileButtonActive: {
-    borderColor: Colors.primary,
-    shadowColor: Colors.primary,
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
   },
   profileImage: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 999,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
   },
   profileFallback: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 999,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Colors.primary,
   },
   profileFallbackText: {
     color: "#fff",
-    fontSize: 15,
+    fontSize: 11,
     fontWeight: "800",
+  },
+  profileStatusDot: {
+    position: "absolute",
+    right: -2,
+    bottom: -1,
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: "#46c46b",
+    borderWidth: 1.5,
+    borderColor: Colors.background,
   },
 });

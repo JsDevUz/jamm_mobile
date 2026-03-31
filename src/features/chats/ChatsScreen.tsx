@@ -684,7 +684,7 @@ export function ChatsScreen({ navigation }: Props) {
                 : null,
             ]}
           />
-            <GuidedTourTarget targetKey="chats-private-tab">
+            <GuidedTourTarget targetKey="chats-private-tab" style={styles.segmentTarget}>
               <Pressable
                 style={styles.segmentButton}
                 onPress={() => animateToTab("private", true)}
@@ -706,7 +706,7 @@ export function ChatsScreen({ navigation }: Props) {
                 ) : null}
               </Pressable>
             </GuidedTourTarget>
-            <GuidedTourTarget targetKey="chats-groups-tab">
+            <GuidedTourTarget targetKey="chats-groups-tab" style={styles.segmentTarget}>
               <Pressable
                 style={styles.segmentButton}
                 onPress={() => animateToTab("group", true)}
@@ -855,6 +855,9 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 11,
     zIndex: 1,
+  },
+  segmentTarget: {
+    flex: 1,
   },
   segmentIndicator: {
     position: "absolute",

@@ -43,6 +43,7 @@ import { useI18n } from "./src/i18n";
 import useAuthStore from "./src/store/auth-store";
 import useGuidedTourStore from "./src/store/guided-tour-store";
 import { AuthScreen } from "./src/features/auth/AuthScreen";
+import { OnboardingScreen } from "./src/features/auth/OnboardingScreen";
 import { ChatsScreen } from "./src/features/chats/ChatsScreen";
 import { ChatScreen } from "./src/features/chats/ChatScreen";
 import { ChatInfoScreen } from "./src/features/chats/ChatInfoScreen";
@@ -52,7 +53,12 @@ import { GroupPreviewScreen } from "./src/features/chats/GroupPreviewScreen";
 import { GroupMeetRoute } from "./src/features/calls/GroupMeetRoute";
 import { PrivateMeetRoute } from "./src/features/calls/PrivateMeetRoute";
 import { FeedScreen } from "./src/features/feed/FeedScreen";
-import { ProfilePaneScreen, ProfileScreen } from "./src/features/profile/ProfileScreen";
+import {
+  ProfileEditScreen,
+  PremiumBenefitsScreen,
+  ProfilePaneScreen,
+  ProfileScreen,
+} from "./src/features/profile/ProfileScreen";
 import { ArticleDetailScreen, ArticlesScreen } from "./src/features/articles/ArticlesScreen";
 import { ArenaFlashcardListScreen } from "./src/features/courses/ArenaFlashcardListScreen";
 import { ArenaFlashcardStudyScreen } from "./src/features/courses/ArenaFlashcardStudyScreen";
@@ -233,6 +239,7 @@ function RootNavigator() {
   const bootstrapping = useAuthStore((state) => state.bootstrapping);
   const user = useAuthStore((state) => state.user);
   const bootstrapAuth = useAuthStore((state) => state.bootstrapAuth);
+  const needsOnboarding = Boolean(user && user.isOnboardingCompleted !== true);
 
   useEffect(() => {
     void bootstrapAuth();
@@ -244,6 +251,7 @@ function RootNavigator() {
 
   return (
     <Stack.Navigator
+      key={user ? (needsOnboarding ? "onboarding-flow" : "app-flow") : "auth-flow"}
       screenOptions={{
         headerShown: false,
         gestureEnabled: true,
@@ -255,6 +263,16 @@ function RootNavigator() {
       }}
     >
       {user ? (
+        needsOnboarding ? (
+          <Stack.Screen
+            name="Onboarding"
+            component={OnboardingScreen}
+            options={{
+              animation: "none",
+              gestureEnabled: false,
+            }}
+          />
+        ) : (
         <>
           <Stack.Screen
             name="MainTabs"
@@ -275,6 +293,24 @@ function RootNavigator() {
             name="ProfileCourses"
             component={ProfilePaneScreen}
             options={{ animation: "slide_from_right" }}
+          />
+          <Stack.Screen
+            name="EditProfile"
+            component={ProfileEditScreen}
+            options={{
+              headerShown: false,
+              presentation: "modal",
+              animation: "slide_from_bottom",
+            }}
+          />
+          <Stack.Screen
+            name="PremiumBenefits"
+            component={PremiumBenefitsScreen}
+            options={{
+              headerShown: false,
+              presentation: "modal",
+              animation: "slide_from_bottom",
+            }}
           />
           <Stack.Screen
             name="ProfileAppearance"
@@ -407,6 +443,7 @@ function RootNavigator() {
             options={{ animation: "fade_from_bottom" }}
           />
         </>
+        )
       ) : (
         <Stack.Screen
           name="Auth"

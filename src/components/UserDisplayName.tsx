@@ -88,6 +88,36 @@ const isOfficialBadgeSelected = (decorationId?: string | null) =>
 const isPremiumBadgeSelected = (decorationId?: string | null) =>
   decorationId === "premium-badge";
 
+function BadgeIcon({
+  size,
+  color,
+  variant,
+}: {
+  size: number;
+  color: string;
+  variant: "official" | "premium";
+}) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        fill={color}
+        d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91-1.01-1.01-2.52-1.27-3.91-.81-.67-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.34 2.19c-1.39-.46-2.9-.2-3.91.81-1.01 1.01-1.27 2.52-.81 3.91C2.63 9.33 1.75 10.57 1.75 12s.88 2.67 2.19 3.34c-.46 1.39-.2 2.9.81 3.91 1.01 1.01 2.52 1.27 3.91.81.67 1.31 1.91 2.19 3.34 2.19s2.67-.88 3.34-2.19c1.39.46 2.9.2 3.91-.81 1.01-1.01 1.27-2.52.81-3.91 1.31-.67 2.19-1.91 2.19-3.34z"
+      />
+      {variant === "premium" ? (
+        <Path
+          fill="#fff"
+          d="M12 6.9l1.44 2.93 3.23.47-2.34 2.28.55 3.22L12 14.28 9.12 15.8l.55-3.22-2.34-2.28 3.23-.47L12 6.9z"
+        />
+      ) : (
+        <Path
+          fill="#fff"
+          d="M10.54 16.2L6.8 12.46l1.41-1.42 2.26 2.26 4.8-5.23 1.47 1.36-6.2 6.77z"
+        />
+      )}
+    </Svg>
+  );
+}
+
 export function OfficialBadgeIcon({
   size,
   color,
@@ -95,14 +125,17 @@ export function OfficialBadgeIcon({
   size: number;
   color: string;
 }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 24 24">
-      <Path
-        fill={color}
-        d="M22.25 12c0-1.43-.88-2.67-2.19-3.34.46-1.39.2-2.9-.81-3.91-1.01-1.01-2.52-1.27-3.91-.81-.67-1.31-1.91-2.19-3.34-2.19s-2.67.88-3.34 2.19c-1.39-.46-2.9-.2-3.91.81-1.01 1.01-1.27 2.52-.81 3.91C2.63 9.33 1.75 10.57 1.75 12s.88 2.67 2.19 3.34c-.46 1.39-.2 2.9.81 3.91 1.01 1.01 2.52 1.27 3.91.81.67 1.31 1.91 2.19 3.34 2.19s2.67-.88 3.34-2.19c1.39.46 2.9.2 3.91-.81 1.01-1.01 1.27-2.52.81-3.91 1.31-.67 2.19-1.91 2.19-3.34zm-11.71 4.2L6.8 12.46l1.41-1.42 2.26 2.26 4.8-5.23 1.47 1.36-6.2 6.77z"
-      />
-    </Svg>
-  );
+  return <BadgeIcon size={size} color={color} variant="official" />;
+}
+
+export function PremiumBadgeIcon({
+  size,
+  color,
+}: {
+  size: number;
+  color: string;
+}) {
+  return <BadgeIcon size={size} color={color} variant="premium" />;
 }
 
 export const UserDisplayName = memo(function UserDisplayName({
@@ -183,7 +216,7 @@ export const UserDisplayName = memo(function UserDisplayName({
       ) : null}
 
       {showOfficialBadge ? <OfficialBadgeIcon size={premiumSize} color={Colors.primary} /> : null}
-      {showPremiumBadgeVariant ? <OfficialBadgeIcon size={premiumSize} color="#ff4fb3" /> : null}
+      {showPremiumBadgeVariant ? <PremiumBadgeIcon size={premiumSize} color="#ff4fb3" /> : null}
     </View>
   );
 });

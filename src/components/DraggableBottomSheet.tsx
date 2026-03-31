@@ -51,20 +51,18 @@ export function DraggableBottomSheet({
     maxHeight,
     Math.max(screenHeight * initialHeightRatio, minHeight),
   );
-  const collapsedTranslateY = Math.max(0, maxHeight - collapsedHeight);
-  const closedTranslateY = maxHeight + insets.bottom + 40;
-  const sheetTranslateY = useRef(new Animated.Value(closedTranslateY)).current;
+  const sheetHeightAnim = useRef(new Animated.Value(0)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
-  const currentTranslateYRef = useRef(closedTranslateY);
-  const panStartYRef = useRef(closedTranslateY);
+  const currentHeightRef = useRef(0);
+  const panStartHeightRef = useRef(0);
   const [keyboardInset, setKeyboardInset] = useState(0);
 
   const animateSheetTo = useCallback(
     (toValue: number, opacity = 1, onDone?: () => void) => {
       Animated.parallel([
-        Animated.spring(sheetTranslateY, {
+        Animated.spring(sheetHeightAnim, {
           toValue,
-          useNativeDriver: true,
+          useNativeDriver: false,
           damping: 24,
           stiffness: 240,
           mass: 0.95,
@@ -80,23 +78,23 @@ export function DraggableBottomSheet({
         }
       });
     },
-    [backdropOpacity, sheetTranslateY],
+    [backdropOpacity, sheetHeightAnim],
   );
 
   useEffect(() => {
-    currentTranslateYRef.current = closedTranslateY;
-    panStartYRef.current = closedTranslateY;
-  }, [closedTranslateY]);
+    currentHeightRef.current = 0;
+    panStartHeightRef.current = 0;
+  }, [maxHeight]);
 
   useEffect(() => {
-    const listenerId = sheetTranslateY.addListener(({ value }) => {
-      currentTranslateYRef.current = value;
+    const listenerId = sheetHeightAnim.addListener(({ value }) => {
+      currentHeightRef.current = Math.max(0, value || 0);
     });
 
     return () => {
-      sheetTranslateY.removeListener(listenerId);
+      sheetHeightAnim.removeListener(listenerId);
     };
-  }, [sheetTranslateY]);
+  }, [sheetHeightAnim]);
 
   useEffect(() => {
     const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
@@ -142,22 +140,24 @@ export function DraggableBottomSheet({
     (translationY: number) => {
       const nextValue = Math.max(
         0,
-        Math.min(closedTranslateY, panStartYRef.current + translationY),
+        Math.min(maxHeight, panStartHeightRef.current - translationY),
       );
-      sheetTranslateY.setValue(nextValue);
-      backdropOpacity.setValue(1 - Math.min(nextValue / Math.max(maxHeight, 1), 1));
+      sheetHeightAnim.setValue(nextValue);
+      backdropOpacity.setValue(
+        Math.min(1, nextValue / Math.max(collapsedHeight, 1)),
+      );
     },
-    [backdropOpacity, closedTranslateY, maxHeight, sheetTranslateY],
+    [backdropOpacity, collapsedHeight, maxHeight, sheetHeightAnim],
   );
 
   useEffect(() => {
     if (visible) {
       setIsMounted(true);
-      sheetTranslateY.setValue(closedTranslateY);
+      sheetHeightAnim.setValue(0);
       backdropOpacity.setValue(0);
-      currentTranslateYRef.current = closedTranslateY;
-      panStartYRef.current = closedTranslateY;
-      animateSheetTo(collapsedTranslateY, 1);
+      currentHeightRef.current = 0;
+      panStartHeightRef.current = 0;
+      animateSheetTo(collapsedHeight, 1);
       return;
     }
 
@@ -166,10 +166,10 @@ export function DraggableBottomSheet({
     }
 
     Animated.parallel([
-      Animated.timing(sheetTranslateY, {
-        toValue: closedTranslateY,
+      Animated.timing(sheetHeightAnim, {
+        toValue: 0,
         duration: 220,
-        useNativeDriver: true,
+        useNativeDriver: false,
       }),
       Animated.timing(backdropOpacity, {
         toValue: 0,
@@ -184,10 +184,9 @@ export function DraggableBottomSheet({
   }, [
     animateSheetTo,
     backdropOpacity,
-    closedTranslateY,
-    collapsedTranslateY,
+    collapsedHeight,
     isMounted,
-    sheetTranslateY,
+    sheetHeightAnim,
     visible,
   ]);
 
@@ -203,33 +202,42 @@ export function DraggableBottomSheet({
       const { state, oldState, translationY, velocityY } = event.nativeEvent;
 
       if (state === State.BEGAN) {
-        sheetTranslateY.stopAnimation((value) => {
-          currentTranslateYRef.current = value;
-          panStartYRef.current = value;
+        sheetHeightAnim.stopAnimation((value) => {
+          currentHeightRef.current = value;
+          panStartHeightRef.current = value;
         });
         return;
       }
 
       if (oldState !== State.ACTIVE) {
         if (state === State.CANCELLED || state === State.FAILED) {
-          animateSheetTo(collapsedTranslateY, 1);
+          animateSheetTo(
+            currentHeightRef.current > collapsedHeight + maxHeight * 0.12
+              ? maxHeight
+              : collapsedHeight,
+            1,
+          );
         }
         return;
       }
 
-      const releaseValue = panStartYRef.current + translationY;
+      const releaseValue = Math.max(
+        0,
+        Math.min(maxHeight, panStartHeightRef.current - translationY),
+      );
       const shouldClose =
-        releaseValue > collapsedTranslateY + maxHeight * 0.12 || velocityY > 700;
+        releaseValue < collapsedHeight - maxHeight * 0.12 || velocityY > 700;
 
       if (shouldClose) {
         handleClose();
         return;
       }
 
-      const shouldExpand = releaseValue < collapsedTranslateY * 0.62 || velocityY < -350;
-      animateSheetTo(shouldExpand ? 0 : collapsedTranslateY, 1);
+      const shouldExpand =
+        releaseValue > collapsedHeight + maxHeight * 0.12 || velocityY < -350;
+      animateSheetTo(shouldExpand ? maxHeight : collapsedHeight, 1);
     },
-    [animateSheetTo, collapsedTranslateY, handleClose, maxHeight, sheetTranslateY],
+    [animateSheetTo, collapsedHeight, handleClose, maxHeight, sheetHeightAnim],
   );
 
   if (!isMounted) {
@@ -251,11 +259,10 @@ export function DraggableBottomSheet({
             style={[
               styles.panel,
               {
-                height: maxHeight,
+                height: sheetHeightAnim,
                 paddingBottom:
                   Math.max(insets.bottom, 12) +
                   (Platform.OS === "android" ? keyboardInset : 0),
-                transform: [{ translateY: sheetTranslateY }],
               },
             ]}
           >
@@ -279,7 +286,6 @@ export function DraggableBottomSheet({
                 <X size={18} color={Colors.text} />
               </Pressable>
             </View>
-
             <View style={styles.body}>{children}</View>
             {footer ? <View style={styles.footer}>{footer}</View> : null}
             {overlay ? <View style={styles.overlay}>{overlay}</View> : null}

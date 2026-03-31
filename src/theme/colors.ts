@@ -7,7 +7,7 @@ export const Colors = {
   border: "#40444B",
   primarySoft: "rgba(88, 101, 242, 0.1)",
   accent: "#43B581",
-  text: "#DCDDDE",
+  text: "#FFFFFF",
   mutedText: "#B9BBBE",
   subtleText: "#72767D",
   danger: "#F04747",

@@ -69,10 +69,13 @@ export type ProfilePaneRouteName =
 
 export type RootStackParamList = {
   Auth: undefined;
+  Onboarding: undefined;
   MainTabs: NavigatorScreenParams<MainTabsParamList>;
   ProfileGroups: ProfilePaneRouteParams;
   ProfileArticles: ProfilePaneRouteParams;
   ProfileCourses: ProfilePaneRouteParams;
+  EditProfile: undefined;
+  PremiumBenefits: undefined;
   ProfileAppearance: ProfilePaneRouteParams;
   ProfileStorage: ProfilePaneRouteParams;
   ProfileLanguage: ProfilePaneRouteParams;

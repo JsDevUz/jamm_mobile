@@ -164,6 +164,8 @@ export function ChatList({
     ? Math.max(0, visualViewportHeight - contentBodyHeight)
     : 0;
   const hasPendingScrollRestore = scrollRestorePendingRef.current !== null;
+  const shouldHideUntilScrollRestore =
+    hasPendingScrollRestore && !messageListVisible;
   const shouldAutofillInitialViewport =
     !initialScrollDoneRef.current &&
     !messageListVisible &&
@@ -242,7 +244,12 @@ export function ChatList({
   return (
     <GestureDetector gesture={messagesTapGesture}>
       <Animated.View
-        style={[styles.messagesViewport, containerInsetStyle, containerTransformStyle]}
+        style={[
+          styles.messagesViewport,
+          containerInsetStyle,
+          containerTransformStyle,
+          shouldHideUntilScrollRestore ? styles.messagesListHidden : null,
+        ]}
         onLayout={(event) => {
           setViewportHeight(Math.ceil(event.nativeEvent.layout.height || 0));
         }}
@@ -330,6 +337,10 @@ export function ChatList({
           viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
           scrollEventThrottle={16}
           onStartReached={() => {
+            if (shouldHideUntilScrollRestore) {
+              return;
+            }
+
             if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
               onFetchOlder();
             }

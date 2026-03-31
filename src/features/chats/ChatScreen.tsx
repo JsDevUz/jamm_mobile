@@ -451,6 +451,7 @@ export function ChatScreen({ navigation, route }: Props) {
     stickerSheetMaxHeight,
     composerSoftInputEnabled,
     enableComposerSoftInput,
+    disableComposerSoftInput,
     dismissKeyboard,
     showComposerDock,
     showComposerDockImmediately,
@@ -530,16 +531,30 @@ export function ChatScreen({ navigation, route }: Props) {
         return;
       }
 
-      if (!keyboardVisibleRef.current && !composerFocusedRef.current) {
+      if (
+        !keyboardVisibleRef.current &&
+        !composerFocusedRef.current &&
+        !stickerSheetVisible &&
+        !composerDockVisible
+      ) {
         return;
       }
 
       routeGestureHadKeyboardRef.current = true;
-      dismissKeyboard();
+      disableComposerSoftInput();
+      closeDockAndKeyboard(220);
     });
 
     return unsubscribe;
-  }, [dismissKeyboard, keyboardVisibleRef, navigation]);
+  }, [
+    closeDockAndKeyboard,
+    composerDockVisible,
+    composerFocusedRef,
+    disableComposerSoftInput,
+    keyboardVisibleRef,
+    navigation,
+    stickerSheetVisible,
+  ]);
   useEffect(() => {
     const unsubscribe = navigation.addListener("gestureCancel", () => {
       if (!routeGestureHadKeyboardRef.current) {
@@ -548,9 +563,6 @@ export function ChatScreen({ navigation, route }: Props) {
 
       routeGestureHadKeyboardRef.current = false;
       enableComposerSoftInput();
-      requestAnimationFrame(() => {
-        composerInputRef.current?.focus();
-      });
     });
 
     return unsubscribe;

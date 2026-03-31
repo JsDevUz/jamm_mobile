@@ -360,7 +360,7 @@ function FlashcardDeckPreviewSheet({
   const members = useMemo(() => getDeckMembers(deck), [deck]);
 
   const footer = (
-    <SafeAreaView style={styles.sheetFooterSafeArea} edges={["bottom"]}>
+    <View style={styles.sheetFooterSafeArea}>
       <View style={styles.sheetFooterRow}>
         {!ownDeck ? (
           joined ? (
@@ -399,7 +399,7 @@ function FlashcardDeckPreviewSheet({
           <Text style={styles.footerPrimaryButtonText}>Mashqni boshlash</Text>
         </Pressable>
       </View>
-    </SafeAreaView>
+    </View>
   );
 
   return (
@@ -685,7 +685,7 @@ function FlashcardFolderPreviewSheet({
   const canRenderFooter = Boolean(folder) && !loading;
 
   const footer = !canRenderFooter ? null : !ownFolder && !joined ? (
-    <SafeAreaView style={styles.sheetFooterSafeArea} edges={["bottom"]}>
+    <View style={styles.sheetFooterSafeArea}>
       <View style={styles.sheetFooterRow}>
         <Pressable style={styles.footerSecondaryButton} onPress={onCopyLink}>
           <Text style={styles.footerSecondaryButtonText}>Havolani nusxalash</Text>
@@ -702,9 +702,9 @@ function FlashcardFolderPreviewSheet({
           )}
         </Pressable>
       </View>
-    </SafeAreaView>
+    </View>
   ) : (
-    <SafeAreaView style={styles.sheetFooterSafeArea} edges={["bottom"]}>
+    <View style={styles.sheetFooterSafeArea}>
       <View style={styles.sheetFooterRow}>
         {!ownFolder ? (
           <Pressable
@@ -727,7 +727,7 @@ function FlashcardFolderPreviewSheet({
           <Text style={styles.footerPrimaryButtonText}>Havolani nusxalash</Text>
         </Pressable>
       </View>
-    </SafeAreaView>
+    </View>
   );
 
   return (
@@ -838,7 +838,7 @@ function FlashcardFolderEditorSheet({
       title={folder?._id ? "Folderni tahrirlash" : "Yangi folder"}
       onClose={onClose}
       footer={
-        <SafeAreaView style={styles.sheetFooterSafeArea} edges={["bottom"]}>
+        <View style={styles.sheetFooterSafeArea}>
           <View style={styles.sheetFooterRow}>
             <Pressable style={styles.footerSecondaryButton} onPress={onClose}>
               <Text style={styles.footerSecondaryButtonText}>Bekor qilish</Text>
@@ -858,7 +858,7 @@ function FlashcardFolderEditorSheet({
               )}
             </Pressable>
           </View>
-        </SafeAreaView>
+        </View>
       }
       minHeight={340}
       initialHeightRatio={0.52}

@@ -15,6 +15,7 @@ import {
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -1140,6 +1141,15 @@ function CommentsModal({
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         showsVerticalScrollIndicator={false}
+        bounces
+        alwaysBounceVertical
+        overScrollMode="always"
+        onScrollEndDrag={(event) => {
+          const offsetY = Number(event.nativeEvent.contentOffset?.y || 0);
+          if (offsetY < -36) {
+            handleCloseComments();
+          }
+        }}
       >
               {!commentsCacheHydrated || (loading && comments.length === 0) ? (
                 <Text style={styles.commentsEmpty}>{t("comments.loading")}</Text>
@@ -1423,7 +1433,7 @@ function FeedPostCard({
 
 export function FeedScreen({ navigation }: Props) {
   const { t } = useI18n();
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const currentUser = useAuthStore((state) => state.user);
   const currentUserId = String(currentUser?._id || currentUser?.id || "");
@@ -1438,6 +1448,9 @@ export function FeedScreen({ navigation }: Props) {
   const viewedRef = useRef(new Set<string>());
   const pagerRef = useRef<ScrollView>(null);
   const lightboxScrollRef = useRef<ScrollView>(null);
+  const lightboxTranslateY = useRef(new Animated.Value(0)).current;
+  const lightboxBackdropOpacity = useRef(new Animated.Value(1)).current;
+  const lightboxPanStartYRef = useRef(0);
   const forYouListRef = useRef<FlashListRef<FeedPost>>(null);
   const followingListRef = useRef<FlashListRef<FeedPost>>(null);
   const pagerScrollX = useRef(new Animated.Value(0)).current;
@@ -1817,6 +1830,88 @@ export function FeedScreen({ navigation }: Props) {
     setLightboxIndex(0);
   }, []);
 
+  const animateLightboxTo = useCallback(
+    (toValue: number, opacity: number, onDone?: () => void) => {
+      Animated.parallel([
+        Animated.spring(lightboxTranslateY, {
+          toValue,
+          useNativeDriver: true,
+          damping: 26,
+          stiffness: 260,
+          mass: 0.92,
+        }),
+        Animated.timing(lightboxBackdropOpacity, {
+          toValue: opacity,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) {
+          onDone?.();
+        }
+      });
+    },
+    [lightboxBackdropOpacity, lightboxTranslateY],
+  );
+
+  useEffect(() => {
+    lightboxTranslateY.setValue(0);
+    lightboxBackdropOpacity.setValue(1);
+    lightboxPanStartYRef.current = 0;
+  }, [lightboxBackdropOpacity, lightboxState, lightboxTranslateY]);
+
+  const lightboxPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gestureState) =>
+          Math.abs(gestureState.dy) > 8 &&
+          Math.abs(gestureState.dy) > Math.abs(gestureState.dx) * 1.05,
+        onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
+          Math.abs(gestureState.dy) > 8 &&
+          Math.abs(gestureState.dy) > Math.abs(gestureState.dx) * 1.05,
+        onPanResponderGrant: () => {
+          lightboxTranslateY.stopAnimation((value) => {
+            lightboxPanStartYRef.current = value;
+          });
+        },
+        onPanResponderMove: (_event, gestureState) => {
+          const nextTranslateY = lightboxPanStartYRef.current + gestureState.dy;
+          lightboxTranslateY.setValue(nextTranslateY);
+          lightboxBackdropOpacity.setValue(
+            Math.max(0.35, 1 - Math.min(Math.abs(nextTranslateY) / 220, 0.65)),
+          );
+        },
+        onPanResponderRelease: (_event, gestureState) => {
+          const releaseDistance = Math.abs(
+            lightboxPanStartYRef.current + gestureState.dy,
+          );
+          const shouldClose =
+            releaseDistance > 64 || Math.abs(gestureState.vy) > 0.75;
+
+          if (shouldClose) {
+            animateLightboxTo(
+              gestureState.dy >= 0 ? screenHeight : -screenHeight,
+              0,
+              handleCloseLightbox,
+            );
+            return;
+          }
+
+          animateLightboxTo(0, 1);
+        },
+        onPanResponderTerminate: () => {
+          animateLightboxTo(0, 1);
+        },
+      }),
+    [
+      animateLightboxTo,
+      handleCloseLightbox,
+      lightboxBackdropOpacity,
+      lightboxTranslateY,
+      screenHeight,
+    ],
+  );
+
   useEffect(() => {
     const subscriptions = [
       realtime.onPostEvent("post_updated", (payload) => {
@@ -2164,71 +2259,77 @@ export function FeedScreen({ navigation }: Props) {
         statusBarTranslucent
         onRequestClose={handleCloseLightbox}
       >
-        <View style={styles.lightboxRoot}>
-          <ScrollView
-            ref={lightboxScrollRef}
-            horizontal
-            pagingEnabled
-            bounces={false}
-            showsHorizontalScrollIndicator={false}
-            style={styles.lightboxPager}
-            onMomentumScrollEnd={(event) => {
-              const nextIndex = Math.round(
-                event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
-              );
-              setLightboxIndex(
-                Math.max(0, Math.min(nextIndex, (lightboxState?.images.length || 1) - 1)),
-              );
-            }}
+        <Animated.View style={[styles.lightboxRoot, { opacity: lightboxBackdropOpacity }]}>
+          <Animated.View
+            style={{ flex: 1, transform: [{ translateY: lightboxTranslateY }] }}
+            {...lightboxPanResponder.panHandlers}
           >
-            {(lightboxState?.images || []).map((image, index) => (
-              <View
-                key={`lightbox-${getFeedImageKey(image, index)}`}
-                style={[styles.lightboxSlide, { width: screenWidth }]}
-              >
-                <PersistentCachedImage
-                  remoteUri={image.url}
-                  blurDataUrl={image.blurDataUrl}
-                  style={styles.lightboxImage}
-                  contentFit="contain"
-                />
-              </View>
-            ))}
-          </ScrollView>
+            <ScrollView
+              ref={lightboxScrollRef}
+              horizontal
+              pagingEnabled
+              bounces={false}
+              directionalLockEnabled
+              showsHorizontalScrollIndicator={false}
+              style={styles.lightboxPager}
+              onMomentumScrollEnd={(event) => {
+                const nextIndex = Math.round(
+                  event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
+                );
+                setLightboxIndex(
+                  Math.max(0, Math.min(nextIndex, (lightboxState?.images.length || 1) - 1)),
+                );
+              }}
+            >
+              {(lightboxState?.images || []).map((image, index) => (
+                <View
+                  key={`lightbox-${getFeedImageKey(image, index)}`}
+                  style={[styles.lightboxSlide, { width: screenWidth }]}
+                >
+                  <PersistentCachedImage
+                    remoteUri={image.url}
+                    blurDataUrl={image.blurDataUrl}
+                    style={styles.lightboxImage}
+                    contentFit="contain"
+                  />
+                </View>
+              ))}
+            </ScrollView>
 
-          <View
-            style={[
-              styles.lightboxTopBar,
-              { top: Math.max(insets.top + 10, 16) },
-            ]}
-          >
-            <Text style={styles.lightboxCounter}>
-              {lightboxState?.images.length ? `${lightboxIndex + 1} / ${lightboxState.images.length}` : ""}
-            </Text>
-            <Pressable onPress={handleCloseLightbox} style={styles.lightboxCloseButton}>
-              <X size={20} color="#fff" />
-            </Pressable>
-          </View>
-
-          {(lightboxState?.images.length || 0) > 1 ? (
             <View
               style={[
-                styles.lightboxDots,
-                { bottom: Math.max(insets.bottom + 18, 26) },
+                styles.lightboxTopBar,
+                { top: Math.max(insets.top + 10, 16) },
               ]}
             >
-              {lightboxState?.images.map((image, index) => (
-                <View
-                  key={`lightbox-dot-${getFeedImageKey(image, index)}`}
-                  style={[
-                    styles.lightboxDot,
-                    index === lightboxIndex && styles.lightboxDotActive,
-                  ]}
-                />
-              ))}
+              <Text style={styles.lightboxCounter}>
+                {lightboxState?.images.length ? `${lightboxIndex + 1} / ${lightboxState.images.length}` : ""}
+              </Text>
+              <Pressable onPress={handleCloseLightbox} style={styles.lightboxCloseButton}>
+                <X size={20} color="#fff" />
+              </Pressable>
             </View>
-          ) : null}
-        </View>
+
+            {(lightboxState?.images.length || 0) > 1 ? (
+              <View
+                style={[
+                  styles.lightboxDots,
+                  { bottom: Math.max(insets.bottom + 18, 26) },
+                ]}
+              >
+                {lightboxState?.images.map((image, index) => (
+                  <View
+                    key={`lightbox-dot-${getFeedImageKey(image, index)}`}
+                    style={[
+                      styles.lightboxDot,
+                      index === lightboxIndex && styles.lightboxDotActive,
+                    ]}
+                  />
+                ))}
+              </View>
+            ) : null}
+          </Animated.View>
+        </Animated.View>
       </Modal>
     </SafeAreaView>
   );
@@ -2366,7 +2467,7 @@ const styles = StyleSheet.create({
   postAuthor: {
     fontSize: 17,
     fontWeight: "800",
-    color: Colors.text,
+    color: "#fff",
   },
   postUsername: {
     fontSize: 15,
@@ -2379,7 +2480,7 @@ const styles = StyleSheet.create({
   postText: {
     fontSize: 17,
     lineHeight: 29,
-    color: Colors.text,
+    color: "#fff",
   },
   feedMarkdownStrong: {
     fontWeight: "800",

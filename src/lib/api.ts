@@ -510,6 +510,22 @@ export const usersApi = {
   },
   getPublicProfile: (identifier: string) =>
     request<User>(`/users/${identifier}/profile`),
+  checkUsernameAvailability: (username: string) =>
+    request<{ available: boolean }>(
+      `/users/check-username/${encodeURIComponent(username)}`,
+    ),
+  completeOnboarding: (payload: {
+    username: string;
+    gender: string;
+    age: number;
+    interests?: string[];
+    goals?: string[];
+    level?: string;
+  }) =>
+    request<User>("/users/complete-onboarding", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   toggleFollow: (identifier: string) =>
     request<{ following: boolean; followersCount: number }>(`/users/${identifier}/follow`, {
       method: "POST",

@@ -13,6 +13,8 @@ export type User = {
   lastSeen?: string | null;
   createdAt?: string | null;
   premiumStatus?: string | null;
+  isOnboardingCompleted?: boolean;
+  onboardingData?: Record<string, unknown> | null;
   selectedProfileDecorationId?: string | null;
   customProfileDecorationImage?: string | null;
   isOfficialProfile?: boolean;

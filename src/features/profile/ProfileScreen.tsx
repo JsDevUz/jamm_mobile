@@ -44,12 +44,19 @@ import {
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type {
+  NativeStackNavigationProp,
+  NativeStackScreenProps,
+} from "@react-navigation/native-stack";
 import { Avatar } from "../../components/Avatar";
 import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
-import { OfficialBadgeIcon, UserDisplayName } from "../../components/UserDisplayName";
+import {
+  OfficialBadgeIcon,
+  PremiumBadgeIcon,
+  UserDisplayName,
+} from "../../components/UserDisplayName";
 import { APP_LIMITS, countWords } from "../../constants/appLimits";
 import {
   articlesApi,
@@ -87,6 +94,8 @@ const APP_VERSION = String(appPackage?.version || "");
 
 type Props = MainTabScreenProps<"Profile">;
 type ProfilePaneProps = NativeStackScreenProps<RootStackParamList, ProfilePaneRouteName>;
+type ProfileEditProps = NativeStackScreenProps<RootStackParamList, "EditProfile">;
+type PremiumBenefitsProps = NativeStackScreenProps<RootStackParamList, "PremiumBenefits">;
 
 type ProfileTab =
   | null
@@ -228,6 +237,23 @@ const PROFILE_TAB_TOUR_KEYS: Partial<Record<Exclude<ProfileTab, null>, string>> 
   support: "profile-support-tab",
   favorites: "profile-favorites-tab",
 };
+
+type PremiumLimitValue = string | number;
+
+type PremiumSection = {
+  key: string;
+  title: string;
+  description: string;
+  items: Array<{
+    label: string;
+    ordinary: PremiumLimitValue;
+    premium: PremiumLimitValue;
+  }>;
+};
+
+function formatPremiumMegabytes(value: number) {
+  return `${Math.round(value / (1024 * 1024))}MB`;
+}
 
 function formatJoinedDate(value?: string | null) {
   if (!value) return "";
@@ -524,11 +550,13 @@ function ProfileEditModal({
   user,
   onClose,
   onSaved,
+  asScreen = false,
 }: {
   visible: boolean;
   user: User | null;
   onClose: () => void;
   onSaved: (nextUser: User) => Promise<void>;
+  asScreen?: boolean;
 }) {
   const [profile, setProfile] = useState({
     nickname: "",
@@ -552,7 +580,7 @@ function ProfileEditModal({
   const [saveStatus, setSaveStatus] = useState<null | "ok" | string>(null);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible && !asScreen) return;
 
     const normalized = {
       nickname: user?.nickname || "",
@@ -568,7 +596,7 @@ function ProfileEditModal({
     setSaving(false);
     setUploadingAvatar(false);
     setSaveStatus(null);
-  }, [user, visible]);
+  }, [asScreen, user, visible]);
 
   const hasChanges =
     profile.nickname !== initialProfile.nickname ||
@@ -684,11 +712,162 @@ function ProfileEditModal({
     }
   };
 
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlayStrong} onPress={onClose}>
-        <GuidedTourTarget targetKey="profile-edit-dialog">
-          <Pressable style={styles.profileEditCard} onPress={(event) => event.stopPropagation()}>
+  const content = (
+    <GuidedTourTarget targetKey="profile-edit-dialog" style={asScreen ? styles.profileEditScreenTarget : undefined}>
+      {asScreen ? (
+        <View style={[styles.profileEditCard, styles.profileEditCardScreen]}>
+          <View style={styles.profileEditHeader}>
+            <Text style={styles.profileEditTitle}>Profilni tahrirlash</Text>
+            <Pressable style={styles.profileEditClose} onPress={onClose}>
+              <X size={18} color={Colors.text} />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.profileEditBody}
+            contentContainerStyle={styles.profileEditBodyContent}
+            showsVerticalScrollIndicator={false}
+          >
+            <Pressable style={styles.profileEditAvatarWrap} onPress={() => void handlePickAvatar()}>
+              <Avatar
+                label={profile.nickname || profile.username || "?"}
+                uri={pendingAvatarUri || profile.avatar}
+                size={92}
+                shape="circle"
+              />
+              <View style={styles.profileEditAvatarOverlay}>
+                {uploadingAvatar ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Camera size={20} color="#fff" />
+                )}
+              </View>
+            </Pressable>
+
+            <View style={styles.profileEditField}>
+              <View style={styles.profileEditLabelRow}>
+                <Text style={styles.profileEditLabel}>Nickname</Text>
+                {profile.premiumStatus === "active" ? (
+                  <View style={styles.profileEditPremiumBadge}>
+                    <Text style={styles.profileEditPremiumBadgeText}>Premium</Text>
+                  </View>
+                ) : null}
+              </View>
+              <TextInput
+                value={profile.nickname}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    nickname: value.slice(0, APP_LIMITS.nicknameChars),
+                  }))
+                }
+                placeholder="Nickname"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditInput}
+              />
+            </View>
+
+            <View style={styles.profileEditField}>
+              <Text style={styles.profileEditLabel}>Username</Text>
+              <TextInput
+                value={profile.username}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    username: value
+                      .toLowerCase()
+                      .replace(/[^a-z0-9]/g, "")
+                      .slice(0, APP_LIMITS.usernameChars),
+                  }))
+                }
+                placeholder="username"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditInput}
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View style={styles.profileEditField}>
+              <View style={styles.profileEditCounterRow}>
+                <Text style={styles.profileEditLabel}>Haqida (Bio)</Text>
+                <Text
+                  style={[
+                    styles.profileEditCounter,
+                    (profile.bio?.length || 0) > APP_LIMITS.bioChars &&
+                      styles.profileEditCounterDanger,
+                  ]}
+                >
+                  {profile.bio?.length || 0}/{APP_LIMITS.bioChars}
+                </Text>
+              </View>
+              <TextInput
+                value={profile.bio || ""}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    bio: value.slice(0, APP_LIMITS.bioChars),
+                  }))
+                }
+                placeholder="O'zingiz haqingizda qisqacha yozing..."
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditTextArea}
+                multiline
+              />
+            </View>
+
+            <View style={styles.profileEditField}>
+              <Text style={styles.profileEditLabel}>Telefon raqam</Text>
+              <TextInput
+                value={profile.phone || "+998"}
+                onChangeText={(value) =>
+                  setProfile((prev) => ({
+                    ...prev,
+                    phone: formatPhone(value),
+                  }))
+                }
+                placeholder="+998 90 000 00 00"
+                placeholderTextColor={Colors.subtleText}
+                style={styles.profileEditInput}
+                keyboardType="phone-pad"
+              />
+            </View>
+          </ScrollView>
+
+          <View style={styles.profileEditSaveBar}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                (!hasChanges || saving || uploadingAvatar) && styles.primaryButtonDisabled,
+              ]}
+              disabled={!hasChanges || saving || uploadingAvatar}
+              onPress={() => void handleSave()}
+            >
+              {saving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <View style={styles.profileEditSaveInner}>
+                  <Check size={14} color="#fff" />
+                  <Text style={styles.primaryButtonText}>Saqlash</Text>
+                </View>
+              )}
+            </Pressable>
+            {saveStatus === "ok" ? (
+              <View style={styles.profileEditStatus}>
+                <Check size={13} color={Colors.accent} />
+                <Text style={styles.profileEditStatusText}>Muvaffaqiyatli saqlandi</Text>
+              </View>
+            ) : saveStatus ? (
+              <View style={styles.profileEditStatus}>
+                <AlertCircle size={13} color={Colors.danger} />
+                <Text style={[styles.profileEditStatusText, styles.profileEditStatusTextError]}>
+                  {saveStatus}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      ) : (
+        <Pressable style={styles.profileEditCard} onPress={(event) => event.stopPropagation()}>
             <View style={styles.profileEditHeader}>
               <Text style={styles.profileEditTitle}>Profilni tahrirlash</Text>
               <Pressable style={styles.profileEditClose} onPress={onClose}>
@@ -838,8 +1017,23 @@ function ProfileEditModal({
                 </View>
               ) : null}
             </View>
-          </Pressable>
-        </GuidedTourTarget>
+        </Pressable>
+      )}
+    </GuidedTourTarget>
+  );
+
+  if (asScreen) {
+    return (
+      <SafeAreaView style={styles.profileEditScreenSafeArea} edges={["top", "left", "right", "bottom"]}>
+        <View style={styles.profileEditScreenRoot}>{content}</View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalOverlayStrong} onPress={onClose}>
+        {content}
       </Pressable>
     </Modal>
   );
@@ -1044,7 +1238,6 @@ function ProfileScreenContent({
   const isViewingOwnProfile = Boolean(user) && isRequestedOwnProfile;
   const [composerOpen, setComposerOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<FeedPost | null>(null);
-  const [profileEditOpen, setProfileEditOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [securityModalOpen, setSecurityModalOpen] = useState(false);
   const [securityModalMode, setSecurityModalMode] = useState<SecurityPinMode>("setup");
@@ -1055,6 +1248,7 @@ function ProfileScreenContent({
   const [storagePagerWidth, setStoragePagerWidth] = useState(0);
   const [promoCode, setPromoCode] = useState("");
   const profileScrollY = useRef(new Animated.Value(0)).current;
+  const profileEditRouteOpenedRef = useRef(false);
   const storageScrollX = useRef(new Animated.Value(0)).current;
   const storagePagerRef = useRef<ScrollView>(null);
   const activeTab = forcedTab ?? null;
@@ -1492,19 +1686,34 @@ function ProfileScreenContent({
     extrapolate: "clamp",
   });
 
+  const openProfileEdit = useCallback(() => {
+    const rootNavigation = navigation as unknown as NativeStackNavigationProp<RootStackParamList>;
+    rootNavigation.navigate("EditProfile");
+  }, [navigation]);
+
+  const openPremiumBenefits = useCallback(() => {
+    const rootNavigation = navigation as unknown as NativeStackNavigationProp<RootStackParamList>;
+    rootNavigation.navigate("PremiumBenefits");
+  }, [navigation]);
+
   useEffect(() => {
-    if (!guidedTourActive || !isViewingOwnProfile) {
+    const shouldOpenProfileEdit =
+      guidedTourActive &&
+      isViewingOwnProfile &&
+      guidedTourStepKey === "profile-edit-dialog";
+
+    if (!shouldOpenProfileEdit) {
+      profileEditRouteOpenedRef.current = false;
       return;
     }
 
-    setProfileEditOpen(guidedTourStepKey === "profile-edit-dialog");
-  }, [guidedTourActive, guidedTourStepKey, isViewingOwnProfile]);
-
-  useEffect(() => {
-    if (!guidedTourActive && guidedTourStepKey === null) {
-      setProfileEditOpen(false);
+    if (profileEditRouteOpenedRef.current) {
+      return;
     }
-  }, [guidedTourActive, guidedTourStepKey]);
+
+    profileEditRouteOpenedRef.current = true;
+    openProfileEdit();
+  }, [guidedTourActive, guidedTourStepKey, isViewingOwnProfile, openProfileEdit]);
 
   const handleCreateOrUpdatePost = async (content: string) => {
     if (editingPost?._id) {
@@ -1733,7 +1942,7 @@ function ProfileScreenContent({
             <GuidedTourTarget targetKey="profile-edit-trigger">
               <Pressable
                 style={styles.coverAction}
-                onPress={() => setProfileEditOpen(true)}
+                onPress={openProfileEdit}
               >
                 <Pencil size={15} color="#fff" />
               </Pressable>
@@ -2209,32 +2418,6 @@ function ProfileScreenContent({
                       </Text>
                     </Pressable>
                   ) : null}
-                </View>
-
-                <Text style={styles.storageHeroDescription}>
-                  {t("profileUtility.storage.summaryDescription")}
-                </Text>
-
-                <View style={styles.storageHeroStats}>
-                  <View style={styles.storageStatPill}>
-                    <ImageIcon size={15} color="#22c55e" />
-                    <Text style={styles.storageStatLabel}>
-                      {t("profileUtility.storage.imagesTab")}
-                    </Text>
-                    <Text style={styles.storageStatValue}>
-                      {formatStorageBytes(storageUsage?.totals.feedImagesBytes)}
-                    </Text>
-                  </View>
-
-                  <View style={styles.storageStatPill}>
-                    <Video size={15} color="#f59e0b" />
-                    <Text style={styles.storageStatLabel}>
-                      {t("profileUtility.storage.videosTab")}
-                    </Text>
-                    <Text style={styles.storageStatValue}>
-                      {formatStorageBytes(storageUsage?.totals.courseVideosBytes)}
-                    </Text>
-                  </View>
                 </View>
               </>
             )}
@@ -2787,7 +2970,7 @@ function ProfileScreenContent({
               </View>
               <Pressable
                 style={styles.secondaryButton}
-                onPress={() => void handleOpenSupportChat("premium")}
+                onPress={openPremiumBenefits}
               >
                 <Sparkles size={14} color={Colors.text} />
                 <Text style={styles.secondaryButtonText}>
@@ -2911,7 +3094,7 @@ function ProfileScreenContent({
                           <View style={styles.decorationPreview}>
                             {decoration.key === "premium-badge" ? (
                               <View style={styles.decorationBadgeIconWrap}>
-                                <OfficialBadgeIcon size={22} color="#ff4fb3" />
+                                <PremiumBadgeIcon size={22} color="#ff4fb3" />
                               </View>
                             ) : (
                               <Text style={styles.decorationEmoji}>{decoration.emoji}</Text>
@@ -3289,14 +3472,6 @@ function ProfileScreenContent({
       </View>
 
      
-
-      <ProfileEditModal
-        visible={isViewingOwnProfile && profileEditOpen}
-        user={user}
-        onClose={() => setProfileEditOpen(false)}
-        onSaved={handleProfileSaved}
-      />
-
       <SecurityPinModal
         visible={isViewingOwnProfile && securityModalOpen}
         mode={securityModalMode}
@@ -3394,6 +3569,440 @@ export function ProfileScreen({ navigation, route }: Props) {
       navigation={navigation}
       routeParams={route.params}
     />
+  );
+}
+
+export function ProfileEditScreen({ navigation }: ProfileEditProps) {
+  const queryClient = useQueryClient();
+  const user = useAuthStore((state) => state.user);
+  const setUser = useAuthStore((state) => state.setUser);
+
+  const handleProfileSaved = useCallback(
+    async (updatedUser: User) => {
+      setUser(updatedUser);
+      await queryClient.invalidateQueries({ queryKey: ["profile-decorations"] });
+      await queryClient.invalidateQueries({ queryKey: ["liked-posts"] });
+      await queryClient.invalidateQueries({ queryKey: ["liked-articles"] });
+    },
+    [queryClient, setUser],
+  );
+
+  return (
+    <ProfileEditModal
+      visible
+      user={user}
+      onClose={() => navigation.goBack()}
+      onSaved={handleProfileSaved}
+      asScreen
+    />
+  );
+}
+
+export function PremiumBenefitsScreen({ navigation }: PremiumBenefitsProps) {
+  const { t } = useI18n();
+  const currentUser = useAuthStore((state) => state.user);
+  const isPremiumActive = currentUser?.premiumStatus === "active";
+
+  const formatChars = useCallback(
+    (value: number) => t("premiumModal.chars", { count: value }),
+    [t],
+  );
+  const formatWords = useCallback(
+    (value: number) => t("premiumModal.words", { count: value }),
+    [t],
+  );
+
+  const sections = useMemo<PremiumSection[]>(
+    () => [
+      {
+        key: "posts",
+        title: t("premiumModal.sections.posts.title"),
+        description: t("premiumModal.sections.posts.description"),
+        items: [
+          {
+            label: t("premiumModal.items.postsPerDay"),
+            ordinary: APP_LIMITS.postsPerDay.ordinary,
+            premium: APP_LIMITS.postsPerDay.premium,
+          },
+          {
+            label: t("premiumModal.items.postCommentsPerPost"),
+            ordinary: APP_LIMITS.postCommentsPerPost.ordinary,
+            premium: APP_LIMITS.postCommentsPerPost.premium,
+          },
+          {
+            label: t("premiumModal.items.postWords"),
+            ordinary: formatWords(APP_LIMITS.postWords),
+            premium: formatWords(APP_LIMITS.postWords),
+          },
+          {
+            label: t("premiumModal.items.postCommentChars"),
+            ordinary: formatChars(APP_LIMITS.postCommentChars),
+            premium: formatChars(APP_LIMITS.postCommentChars),
+          },
+        ],
+      },
+      {
+        key: "articles",
+        title: t("premiumModal.sections.articles.title"),
+        description: t("premiumModal.sections.articles.description"),
+        items: [
+          {
+            label: t("premiumModal.items.articlesPerUser"),
+            ordinary: APP_LIMITS.articlesPerUser.ordinary,
+            premium: APP_LIMITS.articlesPerUser.premium,
+          },
+          {
+            label: t("premiumModal.items.articleCommentsPerArticle"),
+            ordinary: APP_LIMITS.articleCommentsPerArticle.ordinary,
+            premium: APP_LIMITS.articleCommentsPerArticle.premium,
+          },
+          {
+            label: t("premiumModal.items.articleImagesPerArticle"),
+            ordinary: APP_LIMITS.articleImagesPerArticle.ordinary,
+            premium: APP_LIMITS.articleImagesPerArticle.premium,
+          },
+          {
+            label: t("premiumModal.items.articleWords"),
+            ordinary: formatWords(APP_LIMITS.articleWords.ordinary),
+            premium: formatWords(APP_LIMITS.articleWords.premium),
+          },
+          {
+            label: t("premiumModal.items.articleTitleChars"),
+            ordinary: formatChars(APP_LIMITS.articleTitleChars),
+            premium: formatChars(APP_LIMITS.articleTitleChars),
+          },
+          {
+            label: t("premiumModal.items.articleExcerptChars"),
+            ordinary: formatChars(APP_LIMITS.articleExcerptChars),
+            premium: formatChars(APP_LIMITS.articleExcerptChars),
+          },
+          {
+            label: t("premiumModal.items.articleTagChars"),
+            ordinary: `${APP_LIMITS.articleTagCount} × ${formatChars(APP_LIMITS.articleTagChars)}`,
+            premium: `${APP_LIMITS.articleTagCount} × ${formatChars(APP_LIMITS.articleTagChars)}`,
+          },
+          {
+            label: t("premiumModal.items.articleCommentChars"),
+            ordinary: formatChars(APP_LIMITS.articleCommentChars),
+            premium: formatChars(APP_LIMITS.articleCommentChars),
+          },
+        ],
+      },
+      {
+        key: "groups",
+        title: t("premiumModal.sections.groups.title"),
+        description: t("premiumModal.sections.groups.description"),
+        items: [
+          {
+            label: t("premiumModal.items.groupsCreated"),
+            ordinary: APP_LIMITS.groupsCreated.ordinary,
+            premium: APP_LIMITS.groupsCreated.premium,
+          },
+          {
+            label: t("premiumModal.items.groupsJoined"),
+            ordinary: APP_LIMITS.groupsJoined.ordinary,
+            premium: APP_LIMITS.groupsJoined.premium,
+          },
+          {
+            label: t("premiumModal.items.messageChars"),
+            ordinary: formatChars(APP_LIMITS.messageChars),
+            premium: formatChars(APP_LIMITS.messageChars),
+          },
+          {
+            label: t("premiumModal.items.groupNameChars"),
+            ordinary: formatChars(APP_LIMITS.groupNameChars),
+            premium: formatChars(APP_LIMITS.groupNameChars),
+          },
+          {
+            label: t("premiumModal.items.groupDescriptionChars"),
+            ordinary: formatChars(APP_LIMITS.groupDescriptionChars),
+            premium: formatChars(APP_LIMITS.groupDescriptionChars),
+          },
+        ],
+      },
+      {
+        key: "meets",
+        title: t("premiumModal.sections.meets.title"),
+        description: t("premiumModal.sections.meets.description"),
+        items: [
+          {
+            label: t("premiumModal.items.meetsCreated"),
+            ordinary: APP_LIMITS.meetsCreated.ordinary,
+            premium: APP_LIMITS.meetsCreated.premium,
+          },
+          {
+            label: t("premiumModal.items.meetParticipants"),
+            ordinary: APP_LIMITS.meetParticipants.ordinary,
+            premium: APP_LIMITS.meetParticipants.premium,
+          },
+          {
+            label: t("premiumModal.items.meetTitleChars"),
+            ordinary: formatChars(APP_LIMITS.meetTitleChars),
+            premium: formatChars(APP_LIMITS.meetTitleChars),
+          },
+          {
+            label: t("premiumModal.items.meetDescriptionChars"),
+            ordinary: formatChars(APP_LIMITS.meetDescriptionChars),
+            premium: formatChars(APP_LIMITS.meetDescriptionChars),
+          },
+        ],
+      },
+      {
+        key: "courses",
+        title: t("premiumModal.sections.courses.title"),
+        description: t("premiumModal.sections.courses.description"),
+        items: [
+          {
+            label: t("premiumModal.items.coursesCreated"),
+            ordinary: APP_LIMITS.coursesCreated.ordinary,
+            premium: APP_LIMITS.coursesCreated.premium,
+          },
+          {
+            label: t("premiumModal.items.lessonsPerCourse"),
+            ordinary: APP_LIMITS.lessonsPerCourse.ordinary,
+            premium: APP_LIMITS.lessonsPerCourse.premium,
+          },
+          {
+            label: t("premiumModal.items.lessonVideosPerLesson"),
+            ordinary: APP_LIMITS.lessonVideosPerLesson.ordinary,
+            premium: APP_LIMITS.lessonVideosPerLesson.premium,
+          },
+          {
+            label: t("premiumModal.items.lessonMediaBytes"),
+            ordinary: formatPremiumMegabytes(APP_LIMITS.lessonMediaBytes),
+            premium: formatPremiumMegabytes(APP_LIMITS.lessonMediaBytes),
+          },
+          {
+            label: t("premiumModal.items.lessonTestsPerLesson"),
+            ordinary: APP_LIMITS.lessonTestsPerLesson.ordinary,
+            premium: APP_LIMITS.lessonTestsPerLesson.premium,
+          },
+          {
+            label: t("premiumModal.items.lessonHomeworkPerLesson"),
+            ordinary: APP_LIMITS.lessonHomeworkPerLesson.ordinary,
+            premium: APP_LIMITS.lessonHomeworkPerLesson.premium,
+          },
+          {
+            label: t("premiumModal.items.homeworkTextChars"),
+            ordinary: formatChars(APP_LIMITS.homeworkTextChars),
+            premium: formatChars(APP_LIMITS.homeworkTextChars),
+          },
+          {
+            label: t("premiumModal.items.homeworkLinkChars"),
+            ordinary: formatChars(APP_LIMITS.homeworkLinkChars),
+            premium: formatChars(APP_LIMITS.homeworkLinkChars),
+          },
+          {
+            label: t("premiumModal.items.homeworkPhotoBytes"),
+            ordinary: formatPremiumMegabytes(APP_LIMITS.homeworkPhotoBytes),
+            premium: formatPremiumMegabytes(APP_LIMITS.homeworkPhotoBytes),
+          },
+          {
+            label: t("premiumModal.items.homeworkAudioBytes"),
+            ordinary: formatPremiumMegabytes(APP_LIMITS.homeworkAudioBytes),
+            premium: formatPremiumMegabytes(APP_LIMITS.homeworkAudioBytes),
+          },
+          {
+            label: t("premiumModal.items.homeworkVideoBytes"),
+            ordinary: formatPremiumMegabytes(APP_LIMITS.homeworkVideoBytes),
+            premium: formatPremiumMegabytes(APP_LIMITS.homeworkVideoBytes),
+          },
+          {
+            label: t("premiumModal.items.homeworkPdfBytes"),
+            ordinary: formatPremiumMegabytes(APP_LIMITS.homeworkPdfBytes),
+            premium: formatPremiumMegabytes(APP_LIMITS.homeworkPdfBytes),
+          },
+          {
+            label: t("premiumModal.items.courseNameChars"),
+            ordinary: formatChars(APP_LIMITS.courseNameChars),
+            premium: formatChars(APP_LIMITS.courseNameChars),
+          },
+          {
+            label: t("premiumModal.items.courseDescriptionChars"),
+            ordinary: formatChars(APP_LIMITS.courseDescriptionChars),
+            premium: formatChars(APP_LIMITS.courseDescriptionChars),
+          },
+          {
+            label: t("premiumModal.items.lessonTitleChars"),
+            ordinary: formatChars(APP_LIMITS.lessonTitleChars),
+            premium: formatChars(APP_LIMITS.lessonTitleChars),
+          },
+          {
+            label: t("premiumModal.items.lessonDescriptionChars"),
+            ordinary: formatChars(APP_LIMITS.lessonDescriptionChars),
+            premium: formatChars(APP_LIMITS.lessonDescriptionChars),
+          },
+        ],
+      },
+      {
+        key: "arena",
+        title: t("premiumModal.sections.arena.title"),
+        description: t("premiumModal.sections.arena.description"),
+        items: [
+          {
+            label: t("premiumModal.items.testsCreated"),
+            ordinary: APP_LIMITS.testsCreated.ordinary,
+            premium: APP_LIMITS.testsCreated.premium,
+          },
+          {
+            label: t("premiumModal.items.testShareLinksPerTest"),
+            ordinary: APP_LIMITS.testShareLinksPerTest.ordinary,
+            premium: APP_LIMITS.testShareLinksPerTest.premium,
+          },
+          {
+            label: t("premiumModal.items.flashcardsCreated"),
+            ordinary: APP_LIMITS.flashcardsCreated.ordinary,
+            premium: APP_LIMITS.flashcardsCreated.premium,
+          },
+          {
+            label: t("premiumModal.items.sentenceBuildersCreated"),
+            ordinary: APP_LIMITS.sentenceBuildersCreated.ordinary,
+            premium: APP_LIMITS.sentenceBuildersCreated.premium,
+          },
+          {
+            label: t("premiumModal.items.sentenceBuilderShareLinksPerDeck"),
+            ordinary: APP_LIMITS.sentenceBuilderShareLinksPerDeck.ordinary,
+            premium: APP_LIMITS.sentenceBuilderShareLinksPerDeck.premium,
+          },
+          {
+            label: t("premiumModal.items.testTitleChars"),
+            ordinary: formatChars(APP_LIMITS.testTitleChars),
+            premium: formatChars(APP_LIMITS.testTitleChars),
+          },
+          {
+            label: t("premiumModal.items.testDescriptionChars"),
+            ordinary: formatChars(APP_LIMITS.testDescriptionChars),
+            premium: formatChars(APP_LIMITS.testDescriptionChars),
+          },
+          {
+            label: t("premiumModal.items.testQuestionChars"),
+            ordinary: formatChars(APP_LIMITS.testQuestionChars),
+            premium: formatChars(APP_LIMITS.testQuestionChars),
+          },
+          {
+            label: t("premiumModal.items.testOptionChars"),
+            ordinary: formatChars(APP_LIMITS.testOptionChars),
+            premium: formatChars(APP_LIMITS.testOptionChars),
+          },
+          {
+            label: t("premiumModal.items.flashcardSideChars"),
+            ordinary: formatChars(APP_LIMITS.flashcardSideChars),
+            premium: formatChars(APP_LIMITS.flashcardSideChars),
+          },
+          {
+            label: t("premiumModal.items.sentenceBuilderPromptChars"),
+            ordinary: formatChars(APP_LIMITS.sentenceBuilderPromptChars),
+            premium: formatChars(APP_LIMITS.sentenceBuilderPromptChars),
+          },
+          {
+            label: t("premiumModal.items.sentenceBuilderAnswerChars"),
+            ordinary: formatChars(APP_LIMITS.sentenceBuilderAnswerChars),
+            premium: formatChars(APP_LIMITS.sentenceBuilderAnswerChars),
+          },
+        ],
+      },
+      {
+        key: "profile",
+        title: t("premiumModal.sections.profile.title"),
+        description: t("premiumModal.sections.profile.description"),
+        items: [
+          {
+            label: t("premiumModal.items.nicknameChars"),
+            ordinary: formatChars(APP_LIMITS.nicknameChars),
+            premium: formatChars(APP_LIMITS.nicknameChars),
+          },
+          {
+            label: t("premiumModal.items.usernameChars"),
+            ordinary: formatChars(APP_LIMITS.usernameChars),
+            premium: formatChars(APP_LIMITS.usernameChars),
+          },
+          {
+            label: t("premiumModal.items.bioChars"),
+            ordinary: formatChars(APP_LIMITS.bioChars),
+            premium: formatChars(APP_LIMITS.bioChars),
+          },
+        ],
+      },
+    ],
+    [formatChars, formatWords, t],
+  );
+
+  return (
+    <SafeAreaView style={styles.premiumBenefitsSafeArea} edges={["top", "left", "right", "bottom"]}>
+      <View style={styles.premiumBenefitsRoot}>
+        <View style={styles.premiumBenefitsHeader}>
+          <View style={styles.premiumBenefitsHero}>
+            <View style={styles.premiumBenefitsHeroRow}>
+              <PremiumBadgeIcon size={28} color="#ff4fb3" />
+              <Text style={styles.premiumBenefitsTitle}>{t("premiumModal.title")}</Text>
+            </View>
+            <Text style={styles.premiumBenefitsSubtitle}>{t("premiumModal.subtitle")}</Text>
+          </View>
+          <Pressable style={styles.premiumBenefitsClose} onPress={() => navigation.goBack()}>
+            <X size={18} color={Colors.text} />
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={styles.premiumBenefitsScroll}
+          contentContainerStyle={styles.premiumBenefitsContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {!isPremiumActive ? (
+            <View style={styles.premiumBenefitsPlans}>
+              <View style={styles.premiumPlanCard}>
+                <Text style={styles.premiumPlanName}>{t("premiumModal.freePlan")}</Text>
+                <Text style={styles.premiumPlanMeta}>{t("premiumModal.freePlanDescription")}</Text>
+              </View>
+              <View style={[styles.premiumPlanCard, styles.premiumPlanCardActive]}>
+                <View style={styles.premiumPlanPremiumRow}>
+                  <PremiumBadgeIcon size={18} color="#ff4fb3" />
+                  <Text style={styles.premiumPlanNameActive}>{t("premiumModal.premiumPlan")}</Text>
+                </View>
+                <Text style={styles.premiumPlanMeta}>{t("premiumModal.premiumPlanDescription")}</Text>
+              </View>
+            </View>
+          ) : null}
+
+          {sections.map((section) => (
+            <View key={section.key} style={styles.premiumSectionCard}>
+              <View style={styles.premiumSectionHeader}>
+                <Text style={styles.premiumSectionTitle}>{section.title}</Text>
+                <Text style={styles.premiumSectionDescription}>{section.description}</Text>
+              </View>
+
+              <View style={styles.premiumTableHead}>
+                <Text style={[styles.premiumTableHeadCell, styles.premiumTableLabelHead]}>
+                  {t("premiumModal.columns.feature")}
+                </Text>
+                <Text style={styles.premiumTableHeadCell}>{t("premiumModal.columns.free")}</Text>
+                <Text style={[styles.premiumTableHeadCell, styles.premiumTableHeadCellPremium]}>
+                  {t("premiumModal.columns.premium")}
+                </Text>
+              </View>
+
+              {section.items.map((item, index) => (
+                <View
+                  key={`${section.key}-${item.label}`}
+                  style={[
+                    styles.premiumTableRow,
+                    index === section.items.length - 1 && styles.premiumTableRowLast,
+                  ]}
+                >
+                  <Text style={styles.premiumTableLabel}>{item.label}</Text>
+                  <Text style={styles.premiumTableValue}>{String(item.ordinary)}</Text>
+                  <Text style={[styles.premiumTableValue, styles.premiumTableValuePremium]}>
+                    {String(item.premium)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ))}
+
+          <Text style={styles.premiumFooterNote}>{t("premiumModal.footerNote")}</Text>
+        </ScrollView>
+      </View>
+    </SafeAreaView>
   );
 }
 
@@ -4588,6 +5197,7 @@ const styles = StyleSheet.create({
   },
   storagePagerTrack: {
     width: "100%",
+    backgroundColor: "#2F3136",
   },
   storagePagerPage: {
     flex: 1,
@@ -4636,9 +5246,9 @@ const styles = StyleSheet.create({
   storageSummaryCard: {
     padding: 12,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.background,
+    // borderWidth: 1,
+    // borderColor: Colors.border,
+    // backgroundColor: Colors.background,
     gap: 6,
   },
   storageSummaryIcon: {
@@ -4802,6 +5412,26 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     overflow: "hidden",
   },
+  profileEditScreenSafeArea: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  profileEditScreenRoot: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    paddingTop: 12,
+  },
+  profileEditScreenTarget: {
+    flex: 1,
+  },
+  profileEditCardScreen: {
+    flex: 1,
+    maxWidth: undefined,
+    maxHeight: undefined,
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: Colors.surface,
+  },
   profileEditHeader: {
     minHeight: 60,
     paddingHorizontal: 20,
@@ -4929,6 +5559,190 @@ const styles = StyleSheet.create({
   },
   profileEditStatusTextError: {
     color: Colors.danger,
+  },
+  premiumBenefitsSafeArea: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  premiumBenefitsRoot: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  premiumBenefitsHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 16,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  premiumBenefitsHero: {
+    flex: 1,
+    gap: 8,
+  },
+  premiumBenefitsHeroRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  premiumBenefitsTitle: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  premiumBenefitsSubtitle: {
+    color: Colors.mutedText,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  premiumBenefitsClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  premiumBenefitsScroll: {
+    flex: 1,
+  },
+  premiumBenefitsContent: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 28,
+    gap: 14,
+  },
+  premiumBenefitsPlans: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  premiumPlanCard: {
+    flex: 1,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    padding: 16,
+    gap: 8,
+  },
+  premiumPlanCardActive: {
+    borderColor: "rgba(255,79,179,0.38)",
+    backgroundColor: "rgba(255,79,179,0.08)",
+  },
+  premiumPlanPremiumRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  premiumPlanName: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  premiumPlanNameActive: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  premiumPlanMeta: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  premiumSectionCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    overflow: "hidden",
+  },
+  premiumSectionHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+    gap: 4,
+  },
+  premiumSectionTitle: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  premiumSectionDescription: {
+    color: Colors.mutedText,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  premiumTableHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.input,
+  },
+  premiumTableHeadCell: {
+    width: 92,
+    textAlign: "right",
+    color: Colors.mutedText,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  premiumTableLabelHead: {
+    flex: 1,
+    width: undefined,
+    textAlign: "left",
+    paddingRight: 12,
+  },
+  premiumTableHeadCellPremium: {
+    color: "#ff4fb3",
+  },
+  premiumTableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  premiumTableRowLast: {
+    borderBottomWidth: 0,
+  },
+  premiumTableLabel: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+    paddingRight: 12,
+  },
+  premiumTableValue: {
+    width: 92,
+    textAlign: "right",
+    color: Colors.mutedText,
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  premiumTableValuePremium: {
+    color: Colors.text,
+    fontWeight: "800",
+  },
+  premiumFooterNote: {
+    color: Colors.mutedText,
+    fontSize: 12,
+    lineHeight: 18,
+    paddingHorizontal: 4,
+    paddingTop: 4,
   },
   modalHeader: {
     flexDirection: "row",
