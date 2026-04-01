@@ -21,6 +21,7 @@ import {
   Copy,
   Lock,
   Maximize2,
+  Minimize2,
   Mic,
   MicOff,
   Monitor,
@@ -79,6 +80,17 @@ type RemoteScreenShare = {
 type KnockRequest = {
   peerId: string;
   displayName: string;
+};
+type CallTile = {
+  tileId: string;
+  peerId: string;
+  label: string;
+  stream: MediaStream | null;
+  isLocal: boolean;
+  isScreenShare: boolean;
+  hasVideo: boolean;
+  audioMuted: boolean;
+  videoMuted: boolean;
 };
 
 const PEER_LEFT_GRACE_MS = 6500;
@@ -151,7 +163,7 @@ const CALL_QUALITY_PROFILES = {
 type QualityProfile = (typeof CALL_QUALITY_PROFILES)[keyof typeof CALL_QUALITY_PROFILES];
 
 export function GroupMeetScreen({ navigation, route }: Props) {
-  const { width: screenWidth } = useWindowDimensions();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const { roomId, title, isCreator, isPrivate } = route.params;
   const currentUser = useAuthStore((state) => state.user);
   const displayName =
@@ -180,6 +192,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     CALL_QUALITY_PROFILES.balanced,
   );
   const [selectedTileId, setSelectedTileId] = useState<string | null>(null);
+  const [fullscreenTileId, setFullscreenTileId] = useState<string | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const socketIdRef = useRef<string | null>(null);
@@ -245,15 +258,6 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (remoteScreenShares.length === 0) {
-      setSelectedTileId((current) => (current?.endsWith(":screen") ? null : current));
-      return;
-    }
-
-    setSelectedTileId((current) => current || `${remoteScreenShares[0].peerId}:screen`);
-  }, [remoteScreenShares]);
 
   const upsertRemotePeer = useCallback(
     (peerId: string, patch: Partial<RemotePeer>) => {
@@ -1419,13 +1423,22 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   };
 
   const participantsCount = remotePeers.length + 1;
-  const columns = getTileColumns(participantsCount);
+  const isLandscape = screenWidth > screenHeight;
   const tileWidth = useMemo(() => {
+    const tileCount = Math.max(1, remotePeers.length + 1 + remoteScreenShares.length + (screenStream ? 1 : 0));
+    const columns = getTileColumns(tileCount);
     const horizontalPadding = 28;
     const gap = 10;
     const contentWidth = screenWidth - horizontalPadding - gap * (columns - 1);
     return Math.max(120, Math.floor(contentWidth / columns));
-  }, [columns, screenWidth]);
+  }, [remotePeers.length, remoteScreenShares.length, screenStream, screenWidth]);
+  const compactTileWidth = useMemo(() => {
+    if (isLandscape) {
+      return 132;
+    }
+
+    return Math.max(112, Math.floor((screenWidth - 40) / 2));
+  }, [isLandscape, screenWidth]);
 
   const participantRows = useMemo(
     () => [
@@ -1453,73 +1466,142 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     [displayName, isCamOn, isMicOn, remotePeers],
   );
 
-  const remoteTiles = useMemo(
-    () => [
-      ...remotePeers.map((peer) => ({
-        tileId: peer.peerId,
-        peerId: peer.peerId,
-        label: peer.displayName,
-        stream: peer.stream,
-      })),
-      ...remoteScreenShares.map((peer) => ({
-        tileId: `${peer.peerId}:screen`,
-        peerId: peer.peerId,
-        label: `${peer.displayName} · Ekran`,
-        stream: peer.stream,
-      })),
-    ],
-    [remotePeers, remoteScreenShares],
-  );
-  const localPreviewStream = isScreenSharing ? screenStream || localStream : localStream;
+  const callTiles = useMemo<CallTile[]>(
+    () => {
+      const tiles: CallTile[] = [
+        {
+          tileId: "local",
+          peerId: "local",
+          label: `${displayName} (Sen)`,
+          stream: localStream,
+          isLocal: true,
+          isScreenShare: false,
+          hasVideo: Boolean(localStream) && isCamOn,
+          audioMuted: !isMicOn,
+          videoMuted: !isCamOn,
+        },
+      ];
 
-  const spotlightTile = useMemo(() => {
-    if (!selectedTileId || selectedTileId === "local") {
-      return null;
+      if (screenStream) {
+        tiles.unshift({
+          tileId: "local:screen",
+          peerId: "local",
+          label: `${displayName} · Ekran`,
+          stream: screenStream,
+          isLocal: true,
+          isScreenShare: true,
+          hasVideo: true,
+          audioMuted: true,
+          videoMuted: false,
+        });
+      }
+
+      remotePeers.forEach((peer) => {
+        const hasRemoteVideo = peer.hasVideo !== false && peer.videoMuted !== true;
+        tiles.push({
+          tileId: peer.peerId,
+          peerId: peer.peerId,
+          label: peer.displayName,
+          stream: peer.stream,
+          isLocal: false,
+          isScreenShare: false,
+          hasVideo: Boolean(peer.stream) && hasRemoteVideo,
+          audioMuted: peer.audioMuted === true,
+          videoMuted: !hasRemoteVideo,
+        });
+      });
+
+      remoteScreenShares.forEach((peer) => {
+        tiles.unshift({
+          tileId: `${peer.peerId}:screen`,
+          peerId: peer.peerId,
+          label: `${peer.displayName} · Ekran`,
+          stream: peer.stream,
+          isLocal: false,
+          isScreenShare: true,
+          hasVideo: Boolean(peer.stream),
+          audioMuted: true,
+          videoMuted: false,
+        });
+      });
+
+      return tiles;
+    },
+    [displayName, isCamOn, isMicOn, localStream, remotePeers, remoteScreenShares, screenStream],
+  );
+
+  const defaultStageTileId =
+    callTiles.find((tile) => tile.isScreenShare && tile.hasVideo)?.tileId || null;
+
+  useEffect(() => {
+    setSelectedTileId((current) =>
+      current && callTiles.some((tile) => tile.tileId === current) ? current : null,
+    );
+  }, [callTiles]);
+
+  useEffect(() => {
+    setFullscreenTileId((current) => {
+      if (!current) return null;
+      const tile = callTiles.find((entry) => entry.tileId === current);
+      return tile?.hasVideo ? current : null;
+    });
+  }, [callTiles]);
+
+  const activeStageTileId = fullscreenTileId || selectedTileId || defaultStageTileId;
+  const activeStageTile = callTiles.find((tile) => tile.tileId === activeStageTileId) || null;
+  const sideTiles = callTiles.filter((tile) => tile.tileId !== activeStageTileId);
+  const hasSpotlight = Boolean(activeStageTile);
+
+  const handleSelectTile = useCallback((tileId: string) => {
+    setSelectedTileId((current) => (current === tileId ? null : tileId));
+    setFullscreenTileId((current) => (current === tileId ? null : current));
+  }, []);
+
+  const handleToggleTileFullscreen = useCallback((tile: CallTile) => {
+    if (!tile.hasVideo) {
+      return;
     }
 
-    return remoteTiles.find((tile) => tile.tileId === selectedTileId) || null;
-  }, [remoteTiles, selectedTileId]);
+    setSelectedTileId(tile.tileId);
+    setFullscreenTileId((current) => (current === tile.tileId ? null : tile.tileId));
+  }, []);
 
-  const spotlightStream =
-    selectedTileId === "local" ? localPreviewStream : spotlightTile?.stream || null;
-  const spotlightLabel =
-    selectedTileId === "local"
-      ? `${displayName} (Sen)`
-      : spotlightTile?.label || "";
-  const spotlightIsLocal = selectedTileId === "local";
-  const canRenderSpotlightStream = spotlightIsLocal
-    ? isScreenSharing
-      ? Boolean(spotlightStream)
-      : Boolean(spotlightStream) && isCamOn
-    : Boolean(spotlightStream);
-  const spotlightStreamUrl = spotlightStream?.toURL() || null;
-  const hasSpotlight = Boolean(selectedTileId && (selectedTileId === "local" || spotlightTile));
-  const spotlightPeerIds = new Set(selectedTileId ? [selectedTileId] : []);
+  const handleResetStage = useCallback(() => {
+    setSelectedTileId(null);
+    setFullscreenTileId(null);
+  }, []);
 
   const renderTile = (
-    key: string,
-    label: string,
-    stream: MediaStream | null,
-    isLocalTile = false,
+    tile: CallTile,
+    options?: {
+      compact?: boolean;
+      isStage?: boolean;
+    },
   ) => {
-    const initial = label.slice(0, 1).toUpperCase();
-    const isScreenTile = key.endsWith(":screen");
-    const shouldContain = isScreenTile || (isLocalTile && isScreenSharing);
-    const canRenderStream = isLocalTile
-      ? isScreenSharing
-        ? Boolean(stream)
-        : Boolean(stream) && isCamOn
-      : Boolean(stream);
-    const streamUrl = stream?.toURL() || null;
+    const compact = Boolean(options?.compact);
+    const isStage = Boolean(options?.isStage);
+    const initial = tile.label.slice(0, 1).toUpperCase();
+    const streamUrl = tile.stream?.toURL() || null;
+    const canRenderStream = tile.hasVideo && Boolean(streamUrl);
 
     return (
-      <View key={key} style={[styles.tile, { width: tileWidth }]}>
+      <View
+        key={tile.tileId}
+        style={[
+          styles.tile,
+          compact && styles.tileCompact,
+          isStage && styles.tileStage,
+          !isStage && {
+            width: compact ? compactTileWidth : tileWidth,
+          },
+        ]}
+      >
         {canRenderStream && streamUrl ? (
           <RTCView
             streamURL={streamUrl}
             style={styles.tileVideo}
-            objectFit={shouldContain ? "contain" : "cover"}
-            mirror={isLocalTile && !isScreenSharing}
+            objectFit={tile.isScreenShare ? "contain" : "cover"}
+            mirror={tile.isLocal && !tile.isScreenShare}
           />
         ) : (
           <View style={styles.tileFallback}>
@@ -1528,27 +1610,37 @@ export function GroupMeetScreen({ navigation, route }: Props) {
             </View>
           </View>
         )}
-        <View style={styles.tileFooter}>
-          <Text style={styles.tileLabel} numberOfLines={1}>
-            {label}
+
+        {!isStage && tile.hasVideo ? (
+          <Pressable
+            style={styles.tileExpandButton}
+            onPress={(event) => {
+              event.stopPropagation?.();
+              handleToggleTileFullscreen(tile);
+            }}
+          >
+            <Maximize2 size={14} color="#fff" />
+          </Pressable>
+        ) : null}
+
+        <View style={[styles.tileFooter, compact && styles.tileFooterCompact]}>
+          <Text style={[styles.tileLabel, compact && styles.tileLabelCompact]} numberOfLines={1}>
+            {tile.label}
           </Text>
           <View style={styles.tileBadges}>
-            {isLocalTile ? (
-              <>
-                {isMicOn ? (
-                  <Mic size={12} color={Colors.accent} />
-                ) : (
-                  <MicOff size={12} color={Colors.danger} />
-                )}
-                {isCamOn ? (
-                  <Video size={12} color={Colors.accent} />
-                ) : (
-                  <CameraOff size={12} color={Colors.danger} />
-                )}
-                {micLocked || camLocked ? <Lock size={12} color={Colors.warning} /> : null}
-              </>
+            {tile.audioMuted ? (
+              <MicOff size={compact ? 11 : 12} color={Colors.danger} />
+            ) : (
+              <Mic size={compact ? 11 : 12} color={Colors.accent} />
+            )}
+            {tile.videoMuted && !tile.isScreenShare ? (
+              <CameraOff size={compact ? 11 : 12} color={Colors.danger} />
+            ) : tile.hasVideo ? (
+              <Video size={compact ? 11 : 12} color={Colors.accent} />
             ) : null}
-            <Maximize2 size={12} color="#fff" />
+            {tile.isLocal && (micLocked || camLocked) ? (
+              <Lock size={compact ? 11 : 12} color={Colors.warning} />
+            ) : null}
           </View>
         </View>
       </View>
@@ -1556,13 +1648,15 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   };
 
   const renderSelectableTile = (
-    key: string,
-    label: string,
-    stream: MediaStream | null,
-    isLocalTile = false,
+    tile: CallTile,
+    options?: {
+      compact?: boolean;
+    },
   ) => (
-    <Pressable key={key} onPress={() => setSelectedTileId((current) => (current === key ? null : key))}>
-      {renderTile(key, label, stream, isLocalTile)}
+    <Pressable key={tile.tileId} onPress={() => handleSelectTile(tile.tileId)}>
+      {renderTile(tile, {
+        compact: options?.compact,
+      })}
     </Pressable>
   );
 
@@ -1646,57 +1740,78 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           ) : (
             <>
               {hasSpotlight ? (
-                <View style={styles.spotlightWrap}>
-                  <View style={styles.spotlightHeader}>
-                    <Text style={styles.spotlightTitle} numberOfLines={1}>
-                      {spotlightLabel}
-                    </Text>
-                    <Pressable
-                      style={styles.spotlightClose}
-                      onPress={() => setSelectedTileId(null)}
+                <View
+                  style={[
+                    styles.spotlightWrap,
+                    fullscreenTileId ? styles.spotlightWrapFullscreen : null,
+                  ]}
+                >
+                  {!fullscreenTileId ? (
+                    <View style={styles.spotlightHeader}>
+                      <Text style={styles.spotlightTitle} numberOfLines={1}>
+                        {activeStageTile?.label}
+                      </Text>
+                      {selectedTileId ? (
+                        <Pressable style={styles.spotlightClose} onPress={handleResetStage}>
+                          <X size={14} color={Colors.text} />
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ) : null}
+
+                  <View style={styles.spotlightStageWrap}>
+                    {activeStageTile ? renderTile(activeStageTile, { isStage: true }) : null}
+
+                    <View style={styles.stageActionRow}>
+                      {activeStageTile?.hasVideo ? (
+                        <Pressable
+                          style={styles.stageActionButton}
+                          onPress={() => handleToggleTileFullscreen(activeStageTile)}
+                        >
+                          {fullscreenTileId ? (
+                            <Minimize2 size={16} color="#fff" />
+                          ) : (
+                            <Maximize2 size={16} color="#fff" />
+                          )}
+                        </Pressable>
+                      ) : null}
+                    </View>
+
+                    {fullscreenTileId && sideTiles.length > 0 ? (
+                      <ScrollView
+                        style={styles.floatingRail}
+                        contentContainerStyle={styles.floatingRailContent}
+                        showsVerticalScrollIndicator={false}
+                        bounces={false}
+                      >
+                        {sideTiles.map((tile) =>
+                          renderSelectableTile(tile, {
+                            compact: true,
+                          }),
+                        )}
+                      </ScrollView>
+                    ) : null}
+                  </View>
+
+                  {!fullscreenTileId ? (
+                    <ScrollView
+                      horizontal={isLandscape}
+                      style={[styles.spotlightRail, isLandscape && styles.spotlightRailLandscape]}
+                      contentContainerStyle={[
+                        styles.spotlightRailContent,
+                        !isLandscape && styles.spotlightRailGridContent,
+                      ]}
+                      showsHorizontalScrollIndicator={false}
+                      showsVerticalScrollIndicator={false}
+                      bounces={false}
                     >
-                      <X size={14} color={Colors.text} />
-                    </Pressable>
-                  </View>
-                  <View style={styles.spotlightTile}>
-                    {canRenderSpotlightStream && spotlightStreamUrl ? (
-                      <RTCView
-                        streamURL={spotlightStreamUrl}
-                        style={styles.spotlightVideo}
-                        objectFit={selectedTileId?.endsWith(":screen") ? "contain" : "cover"}
-                        mirror={spotlightIsLocal && !isScreenSharing}
-                      />
-                    ) : (
-                      <View style={styles.tileFallback}>
-                        <View style={styles.tileAvatar}>
-                          <Text style={styles.tileAvatarText}>
-                            {spotlightLabel.slice(0, 1).toUpperCase()}
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-                  </View>
-                  <ScrollView
-                    horizontal
-                    style={styles.spotlightRail}
-                    contentContainerStyle={styles.spotlightRailContent}
-                    showsHorizontalScrollIndicator={false}
-                    bounces={false}
-                  >
-                    {!spotlightPeerIds.has("local")
-                      ? [renderSelectableTile("local", displayName, localPreviewStream, true)]
-                      : []}
-                    {remoteTiles
-                      .filter((peer) => !spotlightPeerIds.has(peer.tileId))
-                      .map((peer) =>
-                        renderSelectableTile(
-                          peer.tileId,
-                          peer.label,
-                          peer.stream,
-                          false,
-                        ),
+                      {sideTiles.map((tile) =>
+                        renderSelectableTile(tile, {
+                          compact: true,
+                        }),
                       )}
-                  </ScrollView>
+                    </ScrollView>
+                  ) : null}
                 </View>
               ) : (
                 <ScrollView
@@ -1704,10 +1819,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                   showsVerticalScrollIndicator={false}
                   bounces={false}
                 >
-                  {renderSelectableTile("local", displayName, localPreviewStream, true)}
-                  {remoteTiles.map((peer) =>
-                    renderSelectableTile(peer.tileId, peer.label, peer.stream, false),
-                  )}
+                  {callTiles.map((tile) => renderSelectableTile(tile))}
                 </ScrollView>
               )}
             </>
@@ -2073,6 +2185,10 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 8,
   },
+  spotlightWrapFullscreen: {
+    paddingTop: 10,
+    paddingBottom: 0,
+  },
   spotlightHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -2094,24 +2210,57 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.08)",
   },
-  spotlightTile: {
+  spotlightStageWrap: {
     flex: 1,
-    borderRadius: 24,
-    overflow: "hidden",
-    backgroundColor: "#161a22",
+    position: "relative",
   },
-  spotlightVideo: {
-    width: "100%",
-    height: "100%",
-    backgroundColor: "#000",
+  stageActionRow: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    zIndex: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  stageActionButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.58)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
   },
   spotlightRail: {
     flexGrow: 0,
     marginTop: 12,
   },
+  spotlightRailLandscape: {
+    marginTop: 10,
+  },
   spotlightRailContent: {
     gap: 10,
     paddingRight: 6,
+  },
+  spotlightRailGridContent: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    paddingBottom: 4,
+  },
+  floatingRail: {
+    position: "absolute",
+    top: 18,
+    right: 14,
+    width: 144,
+    maxHeight: "76%",
+    zIndex: 4,
+  },
+  floatingRailContent: {
+    gap: 8,
+    paddingBottom: 12,
   },
   centerState: {
     flex: 1,
@@ -2156,6 +2305,19 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     overflow: "hidden",
     backgroundColor: "#161a22",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  tileCompact: {
+    height: 118,
+    borderRadius: 18,
+  },
+  tileStage: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    borderRadius: 26,
+    borderColor: "rgba(255,255,255,0.1)",
   },
   tileVideo: {
     width: "100%",
@@ -2195,16 +2357,41 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
   },
+  tileFooterCompact: {
+    left: 8,
+    right: 8,
+    bottom: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
   tileLabel: {
     flex: 1,
     color: "#fff",
     fontSize: 14,
     fontWeight: "700",
   },
+  tileLabelCompact: {
+    fontSize: 12,
+  },
   tileBadges: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+  },
+  tileExpandButton: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.56)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    zIndex: 4,
   },
   controlsScroll: {
     flexGrow: 0,
