@@ -46,14 +46,28 @@ const updateChatPushNotificationsInList = (
   chatId: string,
   enabled: boolean,
 ) =>
-  (current || []).map((chat) =>
-    getEntityId(chat) === chatId
-      ? {
-          ...chat,
-          pushNotificationsEnabled: enabled,
-        }
-      : chat,
-  );
+  current
+    ? current.map((chat) =>
+        getEntityId(chat) === chatId
+          ? {
+              ...chat,
+              pushNotificationsEnabled: enabled,
+            }
+          : chat,
+      )
+    : current;
+
+const updateChatPushNotificationsInSingleChat = (
+  current: ChatSummary | undefined,
+  chatId: string,
+  enabled: boolean,
+) =>
+  current && getEntityId(current) === chatId
+    ? {
+        ...current,
+        pushNotificationsEnabled: enabled,
+      }
+    : current;
 
 const isMatchingOptimisticMessage = (
   message: Message,
@@ -382,15 +396,36 @@ export function useChatMessagesData({
       chatsApi.updatePushNotifications(nextChatId, enabled),
     onMutate: async ({ chatId: nextChatId, enabled }) => {
       const previousChats = queryClient.getQueryData<ChatSummary[]>(["chats"]);
-      queryClient.setQueryData<ChatSummary[]>(
-        ["chats"],
-        updateChatPushNotificationsInList(previousChats, nextChatId, enabled),
+      const previousChat = queryClient.getQueryData<ChatSummary>(["chat", nextChatId]);
+      if (previousChats) {
+        queryClient.setQueryData<ChatSummary[]>(
+          ["chats"],
+          updateChatPushNotificationsInList(previousChats, nextChatId, enabled),
+        );
+      }
+      if (previousChat) {
+        queryClient.setQueryData<ChatSummary | undefined>(
+          ["chat", nextChatId],
+          updateChatPushNotificationsInSingleChat(previousChat, nextChatId, enabled),
+        );
+      }
+      return { previousChats, previousChat };
+    },
+    onSuccess: (result, variables) => {
+      const nextEnabled = result.enabled ?? variables.enabled;
+      queryClient.setQueryData<ChatSummary[] | undefined>(["chats"], (current) =>
+        updateChatPushNotificationsInList(current, variables.chatId, nextEnabled),
       );
-      return { previousChats };
+      queryClient.setQueryData<ChatSummary | undefined>(["chat", variables.chatId], (current) =>
+        updateChatPushNotificationsInSingleChat(current, variables.chatId, nextEnabled),
+      );
     },
     onError: (error, _variables, context) => {
       if (context?.previousChats) {
         queryClient.setQueryData(["chats"], context.previousChats);
+      }
+      if (context?.previousChat) {
+        queryClient.setQueryData(["chat", _variables.chatId], context.previousChat);
       }
       Alert.alert(
         "Bildirishnoma sozlanmadi",

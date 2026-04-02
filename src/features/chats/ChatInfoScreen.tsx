@@ -41,14 +41,28 @@ const updateChatPushNotificationsInList = (
   chatId: string,
   enabled: boolean,
 ) =>
-  (current || []).map((chat) =>
-    getEntityId(chat) === chatId
-      ? {
-          ...chat,
-          pushNotificationsEnabled: enabled,
-        }
-      : chat,
-  );
+  current
+    ? current.map((chat) =>
+        getEntityId(chat) === chatId
+          ? {
+              ...chat,
+              pushNotificationsEnabled: enabled,
+            }
+          : chat,
+      )
+    : current;
+
+const updateChatPushNotificationsInSingleChat = (
+  current: ChatSummary | undefined,
+  chatId: string,
+  enabled: boolean,
+) =>
+  current && getEntityId(current) === chatId
+    ? {
+        ...current,
+        pushNotificationsEnabled: enabled,
+      }
+    : current;
 
 export function ChatInfoScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
@@ -124,24 +138,41 @@ export function ChatInfoScreen({ navigation, route }: Props) {
       chatsApi.updatePushNotifications(chatId, enabled),
     onMutate: async ({ enabled }) => {
       const previousChats = queryClient.getQueryData<ChatSummary[]>(["chats"]);
-      queryClient.setQueryData<ChatSummary[]>(
-        ["chats"],
-        updateChatPushNotificationsInList(previousChats, chatId, enabled),
-      );
-      return { previousChats };
+      const previousChat = queryClient.getQueryData<ChatSummary>(["chat", chatId]);
+      if (previousChats) {
+        queryClient.setQueryData<ChatSummary[]>(
+          ["chats"],
+          updateChatPushNotificationsInList(previousChats, chatId, enabled),
+        );
+      }
+      if (previousChat) {
+        queryClient.setQueryData<ChatSummary | undefined>(
+          ["chat", chatId],
+          updateChatPushNotificationsInSingleChat(previousChat, chatId, enabled),
+        );
+      }
+      return { previousChats, previousChat };
     },
     onError: (error, _variables, context) => {
       if (context?.previousChats) {
         queryClient.setQueryData(["chats"], context.previousChats);
+      }
+      if (context?.previousChat) {
+        queryClient.setQueryData(["chat", chatId], context.previousChat);
       }
       Alert.alert(
         "Bildirishnoma sozlanmadi",
         error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
       );
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["chats"] });
-      await queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+    onSuccess: (result, variables) => {
+      const nextEnabled = result.enabled ?? variables.enabled;
+      queryClient.setQueryData<ChatSummary[] | undefined>(["chats"], (current) =>
+        updateChatPushNotificationsInList(current, chatId, nextEnabled),
+      );
+      queryClient.setQueryData<ChatSummary | undefined>(["chat", chatId], (current) =>
+        updateChatPushNotificationsInSingleChat(current, chatId, nextEnabled),
+      );
     },
   });
 
@@ -180,11 +211,36 @@ export function ChatInfoScreen({ navigation, route }: Props) {
     void Haptics.selectionAsync();
   }, [groupLinkUrl]);
 
-  const handleMentionPress = useCallback((username: string) => {
-    void openJammProfileMention(username).catch(() => {
-      Alert.alert("Profil ochilmadi", `@${username}`);
-    });
-  }, []);
+  const handleMentionPress = useCallback(
+    (username: string) => {
+      const normalizedUsername = String(username || "").trim().replace(/^@+/, "").toLowerCase();
+      const currentUsername = String(user?.username || "").trim().toLowerCase();
+
+      if (normalizedUsername && currentUsername && normalizedUsername === currentUsername) {
+        const savedMessagesChat =
+          queryClient
+            .getQueryData<ChatSummary[]>(["chats"])
+            ?.find((chat) => chat.isSavedMessages) || null;
+
+        if (savedMessagesChat) {
+          const savedChatId = getEntityId(savedMessagesChat);
+          if (savedChatId) {
+            navigation.push("ChatRoom", {
+              chatId: savedChatId,
+              title: getChatTitle(savedMessagesChat, currentUserId, user),
+              isGroup: false,
+            });
+            return;
+          }
+        }
+      }
+
+      void openJammProfileMention(username).catch(() => {
+        Alert.alert("Profil ochilmadi", `@${username}`);
+      });
+    },
+    [currentUserId, navigation, queryClient, user],
+  );
 
   const handleOpenLink = useCallback((url: string) => {
     void openJammAwareLink(url).catch(() => {
@@ -200,12 +256,6 @@ export function ChatInfoScreen({ navigation, route }: Props) {
       }
 
       if (memberId === currentUserId) {
-        navigation.push("ChatInfo", {
-          chatId,
-          title: route.params.title,
-          isGroup: route.params.isGroup,
-          userId: memberId,
-        });
         return;
       }
 

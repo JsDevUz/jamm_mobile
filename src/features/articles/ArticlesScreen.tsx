@@ -1551,6 +1551,61 @@ function ArticlesScreenContent({
 
   const likeMutation = useMutation({
     mutationFn: (identifier: string) => articlesApi.likeArticle(identifier),
+    onMutate: async (identifier) => {
+      await queryClient.cancelQueries({ queryKey: ["article", identifier] });
+      await queryClient.cancelQueries({ queryKey: ["articles"] });
+
+      const previousArticle = queryClient.getQueryData<ArticleSummary>(["article", identifier]);
+      const previousArticles = queryClient.getQueryData<{ data?: ArticleSummary[] }>(["articles"]);
+
+      queryClient.setQueryData<ArticleSummary | undefined>(["article", identifier], (previous) => {
+        if (!previous) {
+          return previous;
+        }
+
+        const nextLiked = !previous.liked;
+        const currentLikes = Number(previous.likes || 0);
+        return {
+          ...previous,
+          liked: nextLiked,
+          likes: Math.max(0, currentLikes + (nextLiked ? 1 : -1)),
+        };
+      });
+
+      queryClient.setQueryData<{ data?: ArticleSummary[] } | undefined>(["articles"], (previous) => {
+        if (!previous?.data) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          data: previous.data.map((item) => {
+            const itemIdentifier = item.slug || item._id;
+            if (itemIdentifier !== identifier) {
+              return item;
+            }
+
+            const nextLiked = !item.liked;
+            const currentLikes = Number(item.likes || 0);
+            return {
+              ...item,
+              liked: nextLiked,
+              likes: Math.max(0, currentLikes + (nextLiked ? 1 : -1)),
+            };
+          }),
+        };
+      });
+
+      return { previousArticle, previousArticles };
+    },
+    onError: (_error, identifier, context) => {
+      if (context?.previousArticle) {
+        queryClient.setQueryData(["article", identifier], context.previousArticle);
+      }
+      if (context?.previousArticles) {
+        queryClient.setQueryData(["articles"], context.previousArticles);
+      }
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["articles"] });
       if (selectedArticleIdentifier) {
@@ -1965,12 +2020,49 @@ function ArticlesScreenContent({
   ) : null;
 
   if (detailOnly) {
-    return detailOverlay ?? (
-      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-        <View style={styles.loaderState}>
-          <ActivityIndicator color={Colors.primary} />
-        </View>
-      </SafeAreaView>
+    return (
+      <>
+        {detailOverlay ?? (
+          <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+            <View style={styles.loaderState}>
+              <ActivityIndicator color={Colors.primary} />
+            </View>
+          </SafeAreaView>
+        )}
+        <ArticleCommentsModal
+          visible={commentsOpen}
+          article={currentArticle}
+          onClose={() => setCommentsOpen(false)}
+          onCommentsCountChange={(count) => {
+            queryClient.setQueryData<ArticleSummary | undefined>(
+              ["article", selectedArticleIdentifier],
+              (previous) => (previous ? { ...previous, comments: count } : previous),
+            );
+            void queryClient.invalidateQueries({ queryKey: ["articles"] });
+          }}
+        />
+
+        <ArticleEditorModal
+          visible={editorOpen}
+          articleWordLimit={articleWordLimit}
+          initialArticle={
+            editingArticle
+              ? {
+                  title: editingArticle.title || "",
+                  excerpt: editingArticle.excerpt || "",
+                  markdown: selectedArticleContentQuery.data?.content || "",
+                  coverImage: editingArticle.coverImage || "",
+                  tags: editingArticle.tags || [],
+                }
+              : null
+          }
+          onClose={() => {
+            setEditorOpen(false);
+            setEditingArticle(null);
+          }}
+          onSubmit={handleSubmitArticle}
+        />
+      </>
     );
   }
 
@@ -2033,6 +2125,7 @@ function ArticlesScreenContent({
                         remoteUri={article.coverImage}
                         style={styles.articleThumbImage}
                         requireManualDownload
+                        manualDownloadVariant="icon"
                       />
                     ) : null}
                   </View>

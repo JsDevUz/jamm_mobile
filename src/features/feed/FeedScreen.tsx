@@ -1799,6 +1799,7 @@ export function FeedScreen({ navigation }: Props) {
       navigation.navigate("Profile", {
         userId: authorId || undefined,
         jammId: authorJammId || undefined,
+        returnTo: "Feed",
       });
     },
     [currentUser?.jammId, currentUserId, navigation],

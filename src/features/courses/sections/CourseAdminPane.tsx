@@ -240,7 +240,7 @@ export function CourseAdminPane({
       <Animated.View style={[styles.backdropFade, { opacity: backdropOpacity }]}>
         <Pressable style={styles.backdrop} onPress={onClose} />
       </Animated.View>
-      <SafeAreaView style={styles.safeArea} edges={["left", "right", "bottom"]}>
+      <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
         {content}
       </SafeAreaView>
     </Animated.View>

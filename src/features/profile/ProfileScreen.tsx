@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import {
@@ -35,6 +36,8 @@ import {
   Palette,
   Pencil,
   Plus,
+  UserPlus,
+  UserCheck,
   Shield,
   Sparkles,
   Trash2,
@@ -77,6 +80,7 @@ import {
 import { setAppUnlockToken } from "../../lib/session";
 import { useI18n } from "../../i18n";
 import type {
+  MainTabsParamList,
   MainTabScreenProps,
   ProfilePaneRouteName,
   ProfilePaneSection,
@@ -1216,7 +1220,11 @@ function ProfileScreenContent({
   forcedTab,
 }: {
   navigation: Props["navigation"] | ProfilePaneProps["navigation"];
-  routeParams?: { userId?: string | null; jammId?: string | number | null };
+  routeParams?: {
+    userId?: string | null;
+    jammId?: string | number | null;
+    returnTo?: Exclude<keyof MainTabsParamList, "Profile"> | null;
+  };
   forcedTab?: ProfilePaneSection;
 }) {
   const queryClient = useQueryClient();
@@ -1230,6 +1238,7 @@ function ProfileScreenContent({
   const currentUserId = getEntityId(user);
   const requestedUserId = String(routeParams?.userId || "").trim();
   const requestedJammId = String(routeParams?.jammId || "").trim();
+  const requestedReturnTo = routeParams?.returnTo || "Feed";
   const requestedProfileIdentifier = requestedJammId || requestedUserId;
   const isRequestedOwnProfile =
     !requestedProfileIdentifier ||
@@ -1248,10 +1257,20 @@ function ProfileScreenContent({
   const [storagePagerWidth, setStoragePagerWidth] = useState(0);
   const [promoCode, setPromoCode] = useState("");
   const profileScrollY = useRef(new Animated.Value(0)).current;
+  const overviewScrollRef = useRef<ScrollView>(null);
   const profileEditRouteOpenedRef = useRef(false);
   const storageScrollX = useRef(new Animated.Value(0)).current;
   const storagePagerRef = useRef<ScrollView>(null);
   const activeTab = forcedTab ?? null;
+  const resetOverviewScroll = useCallback(() => {
+    const scrollTarget =
+      (overviewScrollRef.current as any)?.getNode?.() || overviewScrollRef.current;
+    scrollTarget?.scrollTo?.({
+      y: 0,
+      animated: false,
+    });
+    profileScrollY.setValue(0);
+  }, [profileScrollY]);
   const themeOptions = useMemo(
     () =>
       (["dark", "light"] as const).map((value) => ({
@@ -1793,6 +1812,88 @@ function ProfileScreenContent({
     }
   };
 
+  const followMutation = useMutation({
+    mutationFn: async () => {
+      const targetIdentifier = requestedProfileIdentifier || profileUserId;
+      if (!targetIdentifier) {
+        throw new Error("Foydalanuvchi topilmadi.");
+      }
+      return usersApi.toggleFollow(targetIdentifier);
+    },
+    onSuccess: ({ following, followersCount }) => {
+      if (!requestedProfileIdentifier) {
+        return;
+      }
+
+      queryClient.setQueryData<User | undefined>(
+        ["public-profile", requestedProfileIdentifier],
+        (previous) =>
+          previous
+            ? {
+                ...previous,
+                isFollowing: following,
+                followersCount,
+              }
+            : previous,
+      );
+    },
+    onError: (error) => {
+      Alert.alert(
+        "Obuna yangilanmadi",
+        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+      );
+    },
+  });
+
+  const handleToggleFollow = useCallback(() => {
+    if (isViewingOwnProfile || followMutation.isPending) {
+      return;
+    }
+
+    followMutation.mutate();
+  }, [followMutation, isViewingOwnProfile]);
+
+  const handleOpenDirectMessage = useCallback(async () => {
+    const targetUserId = getEntityId(displayUser);
+    if (!targetUserId) {
+      Alert.alert("Xabar ochilmadi", "Foydalanuvchi topilmadi.");
+      return;
+    }
+
+    try {
+      const privateChat = await chatsApi.createChat({
+        isGroup: false,
+        memberIds: [targetUserId],
+      });
+
+      queryClient.setQueryData<ChatSummary[]>(["chats"], (current) => {
+        const next = Array.isArray(current) ? [...current] : [];
+        const chatId = getEntityId(privateChat);
+        const existingIndex = next.findIndex((item) => getEntityId(item) === chatId);
+        if (existingIndex >= 0) {
+          next.splice(existingIndex, 1);
+        }
+        next.unshift(privateChat);
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
+
+      navigation.push("ChatRoom", {
+        chatId: getEntityId(privateChat),
+        title:
+          displayUser?.nickname ||
+          displayUser?.username ||
+          "Foydalanuvchi",
+        isGroup: false,
+      } as never);
+    } catch (error) {
+      Alert.alert(
+        "Xabar ochilmadi",
+        error instanceof Error ? error.message : "Noma'lum xatolik yuz berdi.",
+      );
+    }
+  }, [displayUser, navigation, queryClient]);
+
   const handleDeleteFeedStorage = (entryId: string) => {
     Alert.alert(
       t("profileUtility.storage.deleteFeedTitle"),
@@ -1896,6 +1997,22 @@ function ProfileScreenContent({
   };
 
   const closePane = () => {
+    if (!forcedTab && requestedProfileIdentifier && !isViewingOwnProfile) {
+      const tabNavigation = navigation as Props["navigation"];
+      const rootNavigation =
+        navigation as NativeStackScreenProps<RootStackParamList>["navigation"];
+
+      tabNavigation.setParams?.({
+        userId: undefined,
+        jammId: undefined,
+        returnTo: undefined,
+      } as never);
+      rootNavigation.navigate("MainTabs", {
+        screen: requestedReturnTo,
+      } as never);
+      return;
+    }
+
     if (forcedTab) {
       navigation.goBack();
       return;
@@ -1910,8 +2027,61 @@ function ProfileScreenContent({
     rootNavigation.navigate("MainTabs", { screen: "Feed" } as never);
   };
 
+  useEffect(() => {
+    if (forcedTab || !requestedProfileIdentifier || isViewingOwnProfile) {
+      return undefined;
+    }
+
+    const removableNavigation = navigation as Props["navigation"];
+    const unsubscribe = removableNavigation.addListener("beforeRemove", (event: any) => {
+      const actionType = event.data.action?.type;
+      if (actionType !== "GO_BACK" && actionType !== "POP" && actionType !== "POP_TO_TOP") {
+        return;
+      }
+
+      event.preventDefault();
+      closePane();
+    });
+
+    return unsubscribe;
+  }, [closePane, forcedTab, isViewingOwnProfile, navigation, requestedProfileIdentifier]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (forcedTab) {
+        return undefined;
+      }
+
+      const timeoutId = setTimeout(() => {
+        requestAnimationFrame(() => {
+          resetOverviewScroll();
+        });
+      }, 0);
+
+      return () => {
+        clearTimeout(timeoutId);
+      };
+    }, [forcedTab, resetOverviewScroll]),
+  );
+
+  useEffect(() => {
+    if (forcedTab) {
+      return undefined;
+    }
+
+    const tabNavigation = navigation as Props["navigation"];
+    const unsubscribe = tabNavigation.addListener("tabPress", () => {
+      requestAnimationFrame(() => {
+        resetOverviewScroll();
+      });
+    });
+
+    return unsubscribe;
+  }, [forcedTab, navigation, resetOverviewScroll]);
+
   const renderOverview = () => (
     <Animated.ScrollView
+      ref={overviewScrollRef as any}
       style={styles.overviewScroll}
       contentContainerStyle={styles.overviewContent}
       showsVerticalScrollIndicator={false}
@@ -2005,6 +2175,39 @@ function ProfileScreenContent({
             </View>
           ))}
         </View>
+
+        {!isViewingOwnProfile ? (
+          <View style={styles.publicProfileActions}>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                styles.publicProfileActionPrimary,
+                followMutation.isPending && styles.primaryButtonDisabled,
+              ]}
+              disabled={followMutation.isPending}
+              onPress={handleToggleFollow}
+            >
+              {followMutation.isPending ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : displayUser?.isFollowing ? (
+                <UserCheck size={16} color="#fff" />
+              ) : (
+                <UserPlus size={16} color="#fff" />
+              )}
+              <Text style={styles.primaryButtonText}>
+                {displayUser?.isFollowing ? "Obuna bo'lingan" : "Obuna bo'lish"}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.secondaryButton, styles.publicProfileActionSecondary]}
+              onPress={() => void handleOpenDirectMessage()}
+            >
+              <MessageSquare size={16} color={Colors.text} />
+              <Text style={styles.secondaryButtonText}>{t("common.contact")}</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </GuidedTourTarget>
 
       <View style={styles.tabRailContent}>
@@ -4180,6 +4383,18 @@ const styles = StyleSheet.create({
   statLabel: {
     color: Colors.mutedText,
     fontSize: 12,
+  },
+  publicProfileActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginHorizontal: 18,
+    marginTop: 14,
+  },
+  publicProfileActionPrimary: {
+    flex: 1,
+  },
+  publicProfileActionSecondary: {
+    flex: 1,
   },
   tabRailContent: {
     paddingBottom: 20,

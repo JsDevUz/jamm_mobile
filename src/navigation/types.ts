@@ -32,6 +32,7 @@ export type MainTabsParamList = {
     | {
         userId?: string | null;
         jammId?: string | number | null;
+        returnTo?: Exclude<keyof MainTabsParamList, "Profile"> | null;
       }
     | undefined;
 };

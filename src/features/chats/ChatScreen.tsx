@@ -54,6 +54,7 @@ import { Colors } from "../../theme/colors";
 import type { ChatSummary, Message, User } from "../../types/entities";
 import {
   getEntityId,
+  getChatTitle,
   normalizeReadByIds,
 } from "../../utils/chat";
 import type { MessageListItem, NormalizedMessage } from "../../utils/chat";
@@ -831,11 +832,36 @@ export function ChatScreen({ navigation, route }: Props) {
     },
   });
 
-  const handleMentionPress = (username: string) => {
-    void openJammProfileMention(username).catch(() => {
-      Alert.alert("Profil ochilmadi", `@${username}`);
-    });
-  };
+  const handleMentionPress = useCallback(
+    (username: string) => {
+      const normalizedUsername = String(username || "").trim().replace(/^@+/, "").toLowerCase();
+      const currentUsername = String(user?.username || "").trim().toLowerCase();
+
+      if (normalizedUsername && currentUsername && normalizedUsername === currentUsername) {
+        const savedMessagesChat =
+          queryClient
+            .getQueryData<ChatSummary[]>(["chats"])
+            ?.find((chat) => chat.isSavedMessages) || null;
+
+        if (savedMessagesChat) {
+          const savedChatId = getEntityId(savedMessagesChat);
+          if (savedChatId) {
+            navigation.push("ChatRoom", {
+              chatId: savedChatId,
+              title: getChatTitle(savedMessagesChat, currentUserId, user),
+              isGroup: false,
+            });
+            return;
+          }
+        }
+      }
+
+      void openJammProfileMention(username).catch(() => {
+        Alert.alert("Profil ochilmadi", `@${username}`);
+      });
+    },
+    [currentUserId, navigation, queryClient, user],
+  );
   const handleComposerLayout = useCallback(
     (nextHeight: number) => {
       if (lockComposerShellHeight) {

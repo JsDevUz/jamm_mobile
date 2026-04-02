@@ -115,7 +115,6 @@ export function useChatInfoActions({
       }
 
       if (memberId === currentUserId) {
-        handleOpenMemberInfo(member);
         return;
       }
 
@@ -172,7 +171,6 @@ export function useChatInfoActions({
     [
       currentUserId,
       dismissKeyboard,
-      handleOpenMemberInfo,
       navigation,
       queryClient,
       setAvatarPreviewOpen,

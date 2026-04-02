@@ -277,7 +277,11 @@ function RootNavigator() {
           <Stack.Screen
             name="MainTabs"
             component={MainTabsNavigator}
-            options={{ animation: "none" }}
+            options={{
+              animation: "none",
+              gestureEnabled: false,
+              fullScreenGestureEnabled: false,
+            }}
           />
           <Stack.Screen
             name="ProfileGroups"
