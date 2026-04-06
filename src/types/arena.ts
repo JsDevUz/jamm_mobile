@@ -143,6 +143,7 @@ export type ArenaFlashcardDeck = {
   _id?: string;
   urlSlug?: string;
   title?: string;
+  cardCount?: number;
   createdBy?: ArenaFlashcardUserRef;
   folderId?:
     | string

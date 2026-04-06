@@ -287,6 +287,12 @@
     "noExcerpt": "Tavsif yo'q",
     "author": "Muallif",
     "comments": "izoh",
+    "tabs": {
+      "newest": "Yangi",
+      "views": "Ko'p o'qilgan",
+      "likes": "Yoqtirilgan",
+      "commentsTop": "Bahsli"
+    },
     "coverClose": "Cover rasmni yopish",
     "emptyTitle": "Maqolalar topilmadi",
     "emptyDescription": "Qidiruvni o'zgartiring yoki yangi maqola yarating.",

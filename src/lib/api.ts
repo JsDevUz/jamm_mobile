@@ -27,6 +27,7 @@ import type {
   ArticleComment,
   ArticleCommentsResponse,
   ArticleContentResponse,
+  ArticleFeedSort,
   ArticlesResponse,
   ArticleSummary,
 } from "../types/articles";
@@ -743,8 +744,14 @@ export const postsApi = {
 };
 
 export const articlesApi = {
-  fetchArticles: (page = 1, limit = 20) =>
-    request<ArticlesResponse>(`/articles?page=${page}&limit=${limit}`),
+  fetchArticles: (page = 1, limit = 20, sort: ArticleFeedSort = "newest") =>
+    request<ArticlesResponse>(
+      `/articles?page=${page}&limit=${limit}&sort=${encodeURIComponent(sort)}`,
+    ),
+  searchArticles: (query: string, limit = 20) =>
+    request<ArticleSummary[]>(
+      `/articles/search?q=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
   fetchUserArticles: (identifier: string) =>
     request<ArticleSummary[]>(`/articles/user/${identifier}`),
   fetchLikedArticles: () => request<ArticleSummary[]>("/articles/liked"),
@@ -853,6 +860,10 @@ export const coursesApi = {
   fetchCourses: (page = 1, limit = 15) =>
     request<CoursesResponse>(
       `/courses?page=${page}&limit=${limit}`,
+    ),
+  searchCourses: (query: string, limit = 20) =>
+    request<Course[]>(
+      `/courses/search?q=${encodeURIComponent(query)}&limit=${limit}`,
     ),
   fetchLikedLessons: () =>
     request<

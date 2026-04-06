@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,8 +12,9 @@ import {
 import { Image as ImageIcon, Plus, Search, Trash2, X } from "lucide-react-native";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { TextInput } from "../../components/TextInput";
-import { APP_LIMITS } from "../../constants/appLimits";
+import { APP_LIMITS, getTierLimit } from "../../constants/appLimits";
 import { arenaApi } from "../../lib/api";
+import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import type {
   ArenaFlashcardCardInput,
@@ -46,6 +47,20 @@ function createEmptyCard(): ArenaFlashcardCardInput {
   };
 }
 
+function buildTemplateTextFromCards(cards: ArenaFlashcardCardInput[] = []) {
+  return cards
+    .map((card) => {
+      const front = String(card.front || "").trim();
+      const back = String(card.back || "").trim();
+      if (!front || !back) {
+        return "";
+      }
+      return `${front},${back};`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function ArenaFlashcardEditorSheet({
   visible,
   deck,
@@ -53,7 +68,12 @@ export function ArenaFlashcardEditorSheet({
   onClose,
   onSaved,
 }: Props) {
+  const user = useAuthStore((state) => state.user);
   const isEditing = Boolean(deck?._id);
+  const maxCardsPerDeck = useMemo(
+    () => getTierLimit(APP_LIMITS.flashcardsPerDeck, user?.premiumStatus),
+    [user?.premiumStatus],
+  );
   const [title, setTitle] = useState("");
   const [inputMode, setInputMode] = useState<InputMode>("manual");
   const [cards, setCards] = useState<ArenaFlashcardCardInput[]>([createEmptyCard()]);
@@ -88,7 +108,18 @@ export function ArenaFlashcardEditorSheet({
             }))
           : [createEmptyCard()],
       );
-      setTemplateText("");
+      setTemplateText(
+        buildTemplateTextFromCards(
+          Array.isArray(deck?.cards)
+            ? deck.cards.map((card) => ({
+                front: String(card.front || "").slice(0, APP_LIMITS.flashcardSideChars),
+                back: String(card.back || "").slice(0, APP_LIMITS.flashcardSideChars),
+                frontImage: String(card.frontImage || ""),
+                backImage: String(card.backImage || ""),
+              }))
+            : [],
+        ),
+      );
       setSelectedFolderId(
         typeof deck?.folderId === "string"
           ? deck.folderId
@@ -111,10 +142,10 @@ export function ArenaFlashcardEditorSheet({
   }, [deck, isEditing, visible]);
 
   const handleAddCard = () => {
-    if (cards.length >= APP_LIMITS.flashcardsPerDeck) {
+    if (cards.length >= maxCardsPerDeck) {
       Alert.alert(
         "Limitga yetildi",
-        `Maksimal ${APP_LIMITS.flashcardsPerDeck} ta so'z qo'shish mumkin.`,
+        `Maksimal ${maxCardsPerDeck} ta so'z qo'shish mumkin.`,
       );
       return;
     }
@@ -284,10 +315,10 @@ export function ArenaFlashcardEditorSheet({
       return;
     }
 
-    if (finalCards.length > APP_LIMITS.flashcardsPerDeck) {
+    if (finalCards.length > maxCardsPerDeck) {
       Alert.alert(
         "Limitga yetildi",
-        `Maksimal ${APP_LIMITS.flashcardsPerDeck} ta so'z qo'shish mumkin.`,
+        `Maksimal ${maxCardsPerDeck} ta so'z qo'shish mumkin.`,
       );
       return;
     }
@@ -565,26 +596,25 @@ export function ArenaFlashcardEditorSheet({
             <Pressable
               style={[
                 styles.addCardButton,
-                cards.length >= APP_LIMITS.flashcardsPerDeck && styles.addCardButtonDisabled,
+                cards.length >= maxCardsPerDeck && styles.addCardButtonDisabled,
               ]}
-              disabled={cards.length >= APP_LIMITS.flashcardsPerDeck}
+              disabled={cards.length >= maxCardsPerDeck}
               onPress={handleAddCard}
             >
               <Plus
                 size={18}
                 color={
-                  cards.length >= APP_LIMITS.flashcardsPerDeck ? Colors.subtleText : Colors.primary
+                  cards.length >= maxCardsPerDeck ? Colors.subtleText : Colors.primary
                 }
               />
               <Text
                 style={[
                   styles.addCardButtonText,
-                  cards.length >= APP_LIMITS.flashcardsPerDeck &&
-                    styles.addCardButtonTextDisabled,
+                  cards.length >= maxCardsPerDeck && styles.addCardButtonTextDisabled,
                 ]}
               >
-                {cards.length >= APP_LIMITS.flashcardsPerDeck
-                  ? `Limitga yetildi (${APP_LIMITS.flashcardsPerDeck}/${APP_LIMITS.flashcardsPerDeck})`
+                {cards.length >= maxCardsPerDeck
+                  ? `Limitga yetildi (${maxCardsPerDeck}/${maxCardsPerDeck})`
                   : "Yangi so'z qo'shish"}
               </Text>
             </Pressable>

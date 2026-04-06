@@ -9,8 +9,10 @@ import {
 import {
   ActivityIndicator,
   Animated,
+  ImageBackground,
   Platform,
   Pressable,
+  StyleSheet,
   Text,
   View,
 } from "react-native";
@@ -18,9 +20,20 @@ import { FlashList, type FlashListRef, type ViewToken } from "@shopify/flash-lis
 import { ChevronDown } from "lucide-react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { CHAT_AREA_BG_ASSET } from "../../../constants/assets";
 import { Colors } from "../../../theme/colors";
 import type { MessageListItem, NormalizedMessage } from "../../../utils/chat";
 import { ChatMessageRow } from "./ChatMessageRow";
+
+const CHAT_SKELETON_ITEMS = [
+  { id: "s1", own: false, width: "66%", height: 96 },
+  { id: "s2", own: false, width: "54%", height: 84 },
+  { id: "s3", own: true, width: "78%", height: 88 },
+  { id: "s4", own: false, width: "61%", height: 92 },
+  { id: "s5", own: true, width: "86%", height: 90 },
+  { id: "s6", own: false, width: "71%", height: 92 },
+  { id: "s7", own: true, width: "58%", height: 82 },
+] as const;
 
 export function ChatList({
   styles,
@@ -112,39 +125,6 @@ export function ChatList({
   const [viewportHeight, setViewportHeight] = useState(0);
   const [contentBodyHeight, setContentBodyHeight] = useState(0);
 
-  const finalizeInitialListLayout = useCallback(() => {
-    if (initialScrollDoneRef.current) {
-      requestAnimationFrame(onLoadComplete);
-      return;
-    }
-
-    initialScrollDoneRef.current = true;
-    requestAnimationFrame(() => {
-      const nextScrollOffset = scrollRestorePendingRef.current;
-      if (nextScrollOffset !== null) {
-        scrollOffsetRef.current = nextScrollOffset;
-        shouldStickToBottomRef.current = nextScrollOffset <= 96;
-        listRef.current?.scrollToOffset({
-          offset: nextScrollOffset,
-          animated: false,
-        });
-      } else {
-        shouldStickToBottomRef.current = true;
-        listRef.current?.scrollToEnd({ animated: false });
-      }
-
-      scrollRestorePendingRef.current = null;
-      requestAnimationFrame(onLoadComplete);
-    });
-  }, [
-    initialScrollDoneRef,
-    listRef,
-    onLoadComplete,
-    scrollOffsetRef,
-    scrollRestorePendingRef,
-    shouldStickToBottomRef,
-  ]);
-
   const effectiveBottomPadding =
     composerHeight + dockBottomSpacerHeight + (dockLiftVisible ? 8 : 20);
   const visualViewportHeight = dockLiftVisible
@@ -164,26 +144,79 @@ export function ChatList({
     ? Math.max(0, visualViewportHeight - contentBodyHeight)
     : 0;
   const hasPendingScrollRestore = scrollRestorePendingRef.current !== null;
-  const shouldHideUntilScrollRestore =
-    hasPendingScrollRestore && !messageListVisible;
+  const shouldHideUntilReady =
+    !messageListVisible && messageItems.length > 0;
+  const initialListMeasurementsReady =
+    viewportHeight > 0 && (messageItems.length === 0 || contentBodyHeight > 0);
+  const finalizeInitialListLayout = useCallback(() => {
+    if (initialScrollDoneRef.current) {
+      requestAnimationFrame(onLoadComplete);
+      return;
+    }
+
+    initialScrollDoneRef.current = true;
+    requestAnimationFrame(() => {
+      const nextScrollOffset = scrollRestorePendingRef.current;
+      if (nextScrollOffset !== null) {
+        const estimatedContentHeight =
+          topFillHeight + contentBodyHeight + effectiveBottomPadding;
+        const restoredDistanceToBottom = Math.max(
+          0,
+          estimatedContentHeight - viewportHeight - nextScrollOffset,
+        );
+        scrollOffsetRef.current = nextScrollOffset;
+        shouldStickToBottomRef.current = restoredDistanceToBottom <= 96;
+        listRef.current?.scrollToOffset({
+          offset: nextScrollOffset,
+          animated: false,
+        });
+      } else {
+        shouldStickToBottomRef.current = true;
+        listRef.current?.scrollToEnd({ animated: false });
+      }
+
+      scrollRestorePendingRef.current = null;
+      requestAnimationFrame(onLoadComplete);
+    });
+  }, [
+    contentBodyHeight,
+    effectiveBottomPadding,
+    initialScrollDoneRef,
+    listRef,
+    onLoadComplete,
+    scrollOffsetRef,
+    scrollRestorePendingRef,
+    shouldStickToBottomRef,
+    topFillHeight,
+    viewportHeight,
+  ]);
+
   const shouldAutofillInitialViewport =
+    initialListMeasurementsReady &&
     !initialScrollDoneRef.current &&
     !messageListVisible &&
     !hasPendingScrollRestore &&
     messageItems.length > 0 &&
-    viewportHeight > 0 &&
     !messagesQuery.isLoading &&
     !messagesQuery.isFetchingNextPage &&
     !shouldEnableScroll &&
     Boolean(messagesQuery.hasNextPage);
 
   const maybeFinalizeInitialListLayout = useCallback(() => {
+    if (!initialListMeasurementsReady) {
+      return;
+    }
+
     if (shouldAutofillInitialViewport) {
       return;
     }
 
     finalizeInitialListLayout();
-  }, [finalizeInitialListLayout, shouldAutofillInitialViewport]);
+  }, [
+    finalizeInitialListLayout,
+    initialListMeasurementsReady,
+    shouldAutofillInitialViewport,
+  ]);
 
   useEffect(() => {
     if (
@@ -241,6 +274,11 @@ export function ChatList({
     };
   }, [onFetchOlder, shouldAutofillInitialViewport]);
 
+  const showInitialSkeleton =
+    !chatCacheHydrated ||
+    !messagesCacheHydrated ||
+    (messagesQuery.isLoading && !hasMessagesSnapshot);
+
   return (
     <GestureDetector gesture={messagesTapGesture}>
       <Animated.View
@@ -248,25 +286,53 @@ export function ChatList({
           styles.messagesViewport,
           containerInsetStyle,
           containerTransformStyle,
-          shouldHideUntilScrollRestore ? styles.messagesListHidden : null,
+          shouldHideUntilReady ? styles.messagesListHidden : null,
         ]}
         onLayout={(event) => {
           setViewportHeight(Math.ceil(event.nativeEvent.layout.height || 0));
         }}
       >
+      <View pointerEvents="none" style={styles.chatBackgroundImage}>
+        <ImageBackground
+          source={CHAT_AREA_BG_ASSET}
+          style={styles.chatBackgroundImage}
+          imageStyle={styles.chatBackgroundTexture}
+          resizeMode="repeat"
+        />
+      </View>
       {messagesQuery.isFetchingNextPage ? (
-        <View style={styles.historyLoader}>
+        <View pointerEvents="none" style={styles.historyLoader}>
           <ActivityIndicator size="small" color={Colors.mutedText} />
           <Text style={styles.historyLoaderText}>Oldingi xabarlar yuklanmoqda...</Text>
         </View>
       ) : null}
 
-      {!chatCacheHydrated ||
-      !messagesCacheHydrated ||
-      (messagesQuery.isLoading && !hasMessagesSnapshot) ? (
-        <View style={styles.centerState}>
-          <ActivityIndicator color={Colors.primary} />
-          <Text style={styles.helperText}>Xabarlar yuklanmoqda...</Text>
+      {showInitialSkeleton ? (
+        <View style={localStyles.skeletonViewport}>
+          <View style={localStyles.skeletonContent}>
+            {CHAT_SKELETON_ITEMS.map((item) => (
+              <View
+                key={item.id}
+                style={[
+                  localStyles.skeletonRow,
+                  item.own ? localStyles.skeletonRowOwn : null,
+                ]}
+              >
+                {!item.own ? <View style={localStyles.skeletonAvatar} /> : null}
+                <View
+                  style={[
+                    localStyles.skeletonBubble,
+                    item.own ? localStyles.skeletonBubbleOwn : null,
+                    {
+                      width: item.width,
+                      height: item.height,
+                    },
+                  ]}
+                />
+                {item.own ? <View style={localStyles.skeletonAvatarSpacer} /> : null}
+              </View>
+            ))}
+          </View>
         </View>
       ) : messagesQuery.isError && !hasMessagesSnapshot ? (
         <View style={styles.centerState}>
@@ -321,7 +387,7 @@ export function ChatList({
             const measuredHeight = Math.ceil(height || 0);
             const nextContentBodyHeight = Math.max(
               0,
-              measuredHeight - topFillHeight,
+              measuredHeight - topFillHeight - effectiveBottomPadding,
             );
             setContentBodyHeight((previous) =>
               previous === nextContentBodyHeight
@@ -337,7 +403,7 @@ export function ChatList({
           viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
           scrollEventThrottle={16}
           onStartReached={() => {
-            if (shouldHideUntilScrollRestore) {
+            if (shouldHideUntilReady) {
               return;
             }
 
@@ -389,3 +455,48 @@ export function ChatList({
     </GestureDetector>
   );
 }
+
+const localStyles = StyleSheet.create({
+  skeletonViewport: {
+    flex: 1,
+    paddingHorizontal: 8,
+    paddingTop: 16,
+    paddingBottom: 20,
+  },
+  skeletonContent: {
+    flex: 1,
+    justifyContent: "flex-start",
+    gap: 12,
+  },
+  skeletonRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
+  },
+  skeletonRowOwn: {
+    justifyContent: "flex-end",
+  },
+  skeletonAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    flexShrink: 0,
+    marginBottom: 8,
+  },
+  skeletonAvatarSpacer: {
+    width: 34,
+    height: 1,
+    flexShrink: 0,
+  },
+  skeletonBubble: {
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.04)",
+    maxWidth: "88%",
+  },
+  skeletonBubbleOwn: {
+    alignSelf: "flex-end",
+  },
+});

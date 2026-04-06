@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   Animated,
   Keyboard,
@@ -56,6 +67,8 @@ export function DraggableBottomSheet({
   const currentHeightRef = useRef(0);
   const panStartHeightRef = useRef(0);
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const contentScrollOffsetRef = useRef(0);
+  const [contentCanStartDrag, setContentCanStartDrag] = useState(true);
 
   const animateSheetTo = useCallback(
     (toValue: number, opacity = 1, onDone?: () => void) => {
@@ -197,6 +210,22 @@ export function DraggableBottomSheet({
     [updateDraggedPosition],
   );
 
+  const handleContentGestureEvent = useCallback(
+    (event: { nativeEvent: { translationY: number } }) => {
+      if (contentScrollOffsetRef.current > 0) {
+        return;
+      }
+
+      const translationY = event.nativeEvent.translationY;
+      if (translationY <= 0) {
+        return;
+      }
+
+      updateDraggedPosition(translationY);
+    },
+    [updateDraggedPosition],
+  );
+
   const handleGestureStateChange = useCallback(
     (event: PanGestureHandlerStateChangeEvent) => {
       const { state, oldState, translationY, velocityY } = event.nativeEvent;
@@ -239,6 +268,74 @@ export function DraggableBottomSheet({
     },
     [animateSheetTo, collapsedHeight, handleClose, maxHeight, sheetHeightAnim],
   );
+
+  const handleContentGestureStateChange = useCallback(
+    (event: PanGestureHandlerStateChangeEvent) => {
+      if (contentScrollOffsetRef.current > 0) {
+        return;
+      }
+
+      handleGestureStateChange(event);
+    },
+    [handleGestureStateChange],
+  );
+
+  const handleTrackedScroll = useCallback(
+    (event: any, originalHandler?: ((event: any) => void) | null) => {
+      const nextOffset = Number(event?.nativeEvent?.contentOffset?.y || 0);
+      const normalizedOffset = nextOffset > 0 ? nextOffset : 0;
+      contentScrollOffsetRef.current = normalizedOffset;
+      setContentCanStartDrag((previous) => {
+        const nextValue = normalizedOffset <= 0;
+        return previous === nextValue ? previous : nextValue;
+      });
+      originalHandler?.(event);
+    },
+    [],
+  );
+
+  const renderTrackedChildren = useMemo(() => {
+    const childArray = Children.toArray(children);
+
+    if (childArray.length !== 1) {
+      return children;
+    }
+
+    const onlyChild = childArray[0];
+    if (!isValidElement(onlyChild)) {
+      return children;
+    }
+
+    const childType = onlyChild.type as { displayName?: string; name?: string };
+    const childProps = (onlyChild.props || {}) as Record<string, any>;
+    const typeName = String(childType?.displayName || childType?.name || "");
+    const isScrollable =
+      /ScrollView|FlatList|SectionList|FlashList/i.test(typeName) ||
+      typeof childProps.onScroll === "function" ||
+      childProps.scrollEventThrottle != null;
+
+    if (!isScrollable) {
+      return children;
+    }
+
+    const originalOnScroll = childProps.onScroll;
+
+    return cloneElement(onlyChild as ReactElement<any>, {
+      scrollEventThrottle: childProps.scrollEventThrottle ?? 16,
+      onScroll: (event: any) => {
+        handleTrackedScroll(event, originalOnScroll);
+      },
+      onScrollBeginDrag: (event: any) => {
+        handleTrackedScroll(event, childProps.onScrollBeginDrag);
+      },
+      onMomentumScrollEnd: (event: any) => {
+        handleTrackedScroll(event, childProps.onMomentumScrollEnd);
+      },
+      onScrollEndDrag: (event: any) => {
+        handleTrackedScroll(event, childProps.onScrollEndDrag);
+      },
+    });
+  }, [children, handleTrackedScroll]);
 
   if (!isMounted) {
     return null;
@@ -286,7 +383,16 @@ export function DraggableBottomSheet({
                 <X size={18} color={Colors.text} />
               </Pressable>
             </View>
-            <View style={styles.body}>{children}</View>
+            <PanGestureHandler
+              enabled={contentCanStartDrag}
+              activeOffsetY={10}
+              failOffsetX={[-24, 24]}
+              shouldCancelWhenOutside={false}
+              onGestureEvent={handleContentGestureEvent}
+              onHandlerStateChange={handleContentGestureStateChange}
+            >
+              <View style={styles.body}>{renderTrackedChildren}</View>
+            </PanGestureHandler>
             {footer ? <View style={styles.footer}>{footer}</View> : null}
             {overlay ? <View style={styles.overlay}>{overlay}</View> : null}
           </Animated.View>

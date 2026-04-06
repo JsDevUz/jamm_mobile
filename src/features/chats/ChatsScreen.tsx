@@ -27,7 +27,7 @@ import { Avatar } from "../../components/Avatar";
 import { GuidedTourTarget } from "../../components/GuidedTourTarget";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { CreateMeetDialog } from "../calls/CreateMeetDialog";
-import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
+import { SectionTopHeader } from "../../shared/ui/SectionTopHeader";
 import { useI18n } from "../../i18n";
 import { chatsApi, meetsApi } from "../../lib/api";
 import { loadCachedChats, saveCachedChats } from "../../lib/chat-cache";
@@ -644,26 +644,21 @@ export function ChatsScreen({ navigation }: Props) {
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
         <GuidedTourTarget targetKey="chats-search">
-          <SearchHeaderBar
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder={t("chatsSidebar.searchPlaceholder")}
-            rightSlot={
-              activeTab === "group" ? (
-                <Pressable
-                  style={styles.actionButton}
-                  onPress={() => rootNavigation?.navigate("CreateGroup")}
-                >
-                  <Plus size={18} color={Colors.text} />
-                </Pressable>
-              ) : (
-                <GuidedTourTarget targetKey="chats-video-tab">
-                  <Pressable style={styles.actionButton} onPress={handleOpenMeet}>
-                    <Video size={18} color={Colors.text} />
-                  </Pressable>
-                </GuidedTourTarget>
-              )
+          <SectionTopHeader
+            title={t("navigation.chats")}
+            onPressSearch={() =>
+              rootNavigation?.navigate("GlobalSearch", {
+                initialTab: activeTab === "group" ? "groups" : "private",
+              })
             }
+            onPressAdd={() => {
+              if (activeTab === "group") {
+                rootNavigation?.navigate("CreateGroup");
+                return;
+              }
+              void handleOpenMeet();
+            }}
+            addIcon={activeTab === "group" ? null : <Video size={18} color="#fff" />}
           />
         </GuidedTourTarget>
 
@@ -833,8 +828,6 @@ const styles = StyleSheet.create({
   },
   segmentedControl: {
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
     position: "relative",
     justifyContent:'space-around',
@@ -873,7 +866,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   segmentTextActive: {
-    color: Colors.text,
+    color: Colors.primary,
     fontWeight: "700",
   },
   segmentBadge: {
@@ -886,7 +879,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primarySoft,
   },
   segmentBadgeActive: {
-    backgroundColor: "rgba(255,255,255,0.18)",
+    backgroundColor: Colors.primary,
   },
   segmentBadgeText: {
     color: "#fff",

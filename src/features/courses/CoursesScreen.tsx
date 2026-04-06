@@ -19,6 +19,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useVideoPlayer, VideoView } from "expo-video";
+import { WebView } from "react-native-webview";
 import {
   ArrowLeft,
   AlertCircle,
@@ -87,7 +88,19 @@ import {
 } from "../../lib/secure-course-video-cache";
 import { openJammAwareLink } from "../../navigation/internalLinks";
 import type { MainTabScreenProps, RootStackParamList } from "../../navigation/types";
-import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
+import { SectionTopHeader } from "../../shared/ui/SectionTopHeader";
+
+function getYouTubeId(url?: string | null) {
+  if (!url) {
+    return null;
+  }
+
+  const regExp =
+    /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|shorts\/|watch\?v=|&v=)([^#&?]*).*/;
+  const match = url.match(regExp);
+
+  return match && match[2]?.length === 11 ? match[2] : null;
+}
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import { LinkedTestModal } from "./modals/LinkedTestModal";
@@ -132,6 +145,7 @@ type ArenaItem = {
   title: string;
   description: string;
   icon: typeof BookOpen;
+  gradientColors: readonly [string, string];
 };
 
 const LOCALE_BY_LANGUAGE = {
@@ -574,111 +588,130 @@ function CreateCourseModal({
     }
   };
 
+  const handleCloseByOverscroll = (event: {
+    nativeEvent?: { contentOffset?: { y?: number } };
+  }) => {
+    const offsetY = Number(event.nativeEvent?.contentOffset?.y || 0);
+    if (offsetY < -36) {
+      onClose();
+    }
+  };
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>{t("createCourse.title")}</Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
+    <DraggableBottomSheet
+      visible={visible}
+      title={t("createCourse.title")}
+      onClose={onClose}
+      minHeight={560}
+      initialHeightRatio={0.82}
+      maxHeightRatio={0.96}
+      footer={
+        <View style={styles.createFooter}>
+          <Pressable style={styles.secondaryButton} onPress={onClose}>
+            <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.primaryButton, (!name.trim() || saving) && styles.sendButtonDisabled]}
+            disabled={!name.trim() || saving}
+            onPress={() => void handleSubmit()}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.primaryButtonText}>{t("common.create")}</Text>
+            )}
+          </Pressable>
+        </View>
+      }
+    >
+      <ScrollView
+        contentContainerStyle={styles.createContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        bounces
+        alwaysBounceVertical
+        overScrollMode="always"
+        onScrollEndDrag={handleCloseByOverscroll}
+      >
+        <TextInput
+          value={name}
+          onChangeText={setName}
+          placeholder={t("createCourse.name")}
+          placeholderTextColor={Colors.subtleText}
+          style={styles.fieldInput}
+        />
+        <TextInput
+          value={description}
+          onChangeText={setDescription}
+          placeholder={t("createCourse.description")}
+          placeholderTextColor={Colors.subtleText}
+          style={[styles.fieldInput, styles.textArea]}
+          multiline
+        />
+        <TextInput
+          value={category}
+          onChangeText={setCategory}
+          placeholder={t("createCourse.category")}
+          placeholderTextColor={Colors.subtleText}
+          style={styles.fieldInput}
+        />
+        <TextInput
+          value={price}
+          onChangeText={setPrice}
+          placeholder={t("createCourse.price")}
+          placeholderTextColor={Colors.subtleText}
+          keyboardType="number-pad"
+          style={styles.fieldInput}
+        />
 
-          <ScrollView contentContainerStyle={styles.createContent} showsVerticalScrollIndicator={false}>
-            <TextInput
-              value={name}
-              onChangeText={setName}
-              placeholder={t("createCourse.name")}
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder={t("createCourse.description")}
-              placeholderTextColor={Colors.subtleText}
-              style={[styles.fieldInput, styles.textArea]}
-              multiline
-            />
-            <TextInput
-              value={category}
-              onChangeText={setCategory}
-              placeholder={t("createCourse.category")}
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={price}
-              onChangeText={setPrice}
-              placeholder={t("createCourse.price")}
-              placeholderTextColor={Colors.subtleText}
-              keyboardType="number-pad"
-              style={styles.fieldInput}
-            />
-
-            <View style={styles.accessRow}>
-              {[
-                { id: "free_request", label: t("createCourse.access.freeRequest") },
-                { id: "free_open", label: t("createCourse.access.freeOpen") },
-                { id: "paid", label: t("createCourse.access.paid") },
-              ].map((option) => (
-                <Pressable
-                  key={option.id}
-                  style={[
-                    styles.accessChip,
-                    accessType === option.id && styles.accessChipActive,
-                  ]}
-                  onPress={() =>
-                    setAccessType(option.id as "paid" | "free_request" | "free_open")
-                  }
-                >
-                  <Text
-                    style={[
-                      styles.accessChipText,
-                      accessType === option.id && styles.accessChipTextActive,
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <Pressable style={styles.mediaPicker} onPress={() => void handlePickImage()}>
-              <Text style={styles.mediaPickerText}>
-                {uploading ? t("common.loading") : image ? t("articles.editor.coverReady") : t("createCourse.imageChange")}
+        <View style={styles.accessRow}>
+          {[
+            { id: "free_request", label: t("createCourse.access.freeRequest") },
+            { id: "free_open", label: t("createCourse.access.freeOpen") },
+            { id: "paid", label: t("createCourse.access.paid") },
+          ].map((option) => (
+            <Pressable
+              key={option.id}
+              style={[
+                styles.accessChip,
+                accessType === option.id && styles.accessChipActive,
+              ]}
+              onPress={() =>
+                setAccessType(option.id as "paid" | "free_request" | "free_open")
+              }
+            >
+              <Text
+                style={[
+                  styles.accessChipText,
+                  accessType === option.id && styles.accessChipTextActive,
+                ]}
+              >
+                {option.label}
               </Text>
             </Pressable>
+          ))}
+        </View>
 
-            {image ? (
-              <PersistentCachedImage
-                remoteUri={image}
-                style={styles.coverPreview}
-                requireManualDownload
-              />
-            ) : null}
-          </ScrollView>
-
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, (!name.trim() || saving) && styles.sendButtonDisabled]}
-              disabled={!name.trim() || saving}
-              onPress={() => void handleSubmit()}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>{t("common.create")}</Text>
-              )}
-            </Pressable>
-          </View>
+        <Pressable style={styles.mediaPicker} onPress={() => void handlePickImage()}>
+          <Text style={styles.mediaPickerText}>
+            {uploading
+              ? t("common.loading")
+              : image
+                ? t("articles.editor.coverReady")
+                : t("createCourse.imageChange")}
+          </Text>
         </Pressable>
-      </Pressable>
-    </Modal>
+
+        {image ? (
+          <PersistentCachedImage
+            remoteUri={image}
+            style={styles.coverPreview}
+            requireManualDownload
+          />
+        ) : null}
+      </ScrollView>
+    </DraggableBottomSheet>
   );
 }
 
@@ -1071,30 +1104,35 @@ function CoursesScreenContent({
         title: t("courseSidebar.arena.testsTitle"),
         description: t("courseSidebar.arena.testsDescription"),
         icon: BookOpen,
+        gradientColors: ["#FF6B6B", "#FF8E53"],
       },
       {
         key: "flashcards",
         title: t("courseSidebar.arena.flashcardsTitle"),
         description: t("courseSidebar.arena.flashcardsDescription"),
         icon: Layers,
+        gradientColors: ["#4facfe", "#00f2fe"],
       },
       {
         key: "sentenceBuilders",
         title: t("courseSidebar.arena.sentencesTitle"),
         description: t("courseSidebar.arena.sentencesDescription"),
         icon: TypeIcon,
+        gradientColors: ["#22c55e", "#14b8a6"],
       },
       {
         key: "mnemonics",
         title: t("courseSidebar.arena.mnemonicsTitle"),
         description: t("courseSidebar.arena.mnemonicsDescription"),
         icon: Brain,
+        gradientColors: ["#64748b", "#334155"],
       },
       {
         key: "battles",
         title: t("courseSidebar.arena.battlesTitle"),
         description: t("courseSidebar.arena.battlesDescription"),
         icon: Swords,
+        gradientColors: ["#a18cd1", "#fbc2eb"],
       },
     ],
     [t],
@@ -1384,6 +1422,17 @@ function CoursesScreenContent({
     return [];
   }, [currentLesson]);
   const activeMediaItem = lessonMediaItems[activeMediaIndex] || lessonMediaItems[0] || null;
+  const youtubeVideoId = useMemo(
+    () => getYouTubeId(activeMediaItem?.videoUrl || currentLesson?.videoUrl || null),
+    [activeMediaItem?.videoUrl, currentLesson?.videoUrl],
+  );
+  const isYouTubeLesson = Boolean(youtubeVideoId);
+  const youtubeEmbedUrl = youtubeVideoId
+    ? `https://www.youtube.com/embed/${youtubeVideoId}?playsinline=1&rel=0&modestbranding=1&fs=1&controls=1`
+    : "";
+  const youtubeWatchUrl = youtubeVideoId
+    ? `https://www.youtube.com/watch?v=${youtubeVideoId}`
+    : "";
   const currentLessonHasMedia = Boolean(lessonMediaItems.length);
   const canAttemptProtectedPlayback = Boolean(
     currentLesson &&
@@ -1451,7 +1500,7 @@ function CoursesScreenContent({
   );
   const hasLessonMaterials = Boolean(lessonMaterials.length);
   const hasLessonTests = Boolean(linkedTests.length);
-  const hasHomeworkBadge = Boolean(homeworkAssignments.length);
+  const hasHomeworkBadge = homeworkAssignments.some((item) => item.enabled !== false);
   const hasLessonExtras = Boolean(hasLessonTests || hasHomeworkBadge);
   const canRenderLessonPlayer = canAttemptProtectedPlayback;
   const playbackSourceLabel = isUsingOfflinePlayback
@@ -1634,6 +1683,19 @@ function CoursesScreenContent({
   );
 
   useEffect(() => {
+    if (isYouTubeLesson) {
+      setPlaybackStreamUrl("");
+      setPlaybackStreamType("");
+      setPlaybackLoading(false);
+      setPlaybackError("");
+      setMediaCurrentTime(0);
+      setMediaDuration(0);
+      setMediaBufferedPosition(0);
+      setIsLessonVideoStarting(false);
+      clearVideoStartTimer();
+      return;
+    }
+
     if (!currentCourse?._id || !currentLesson?._id || !canAttemptProtectedPlayback) {
       setPlaybackStreamUrl("");
       setPlaybackStreamType("");
@@ -1724,6 +1786,7 @@ function CoursesScreenContent({
       cancelled = true;
     };
   }, [
+    clearVideoStartTimer,
     activeMediaItem?.mediaId,
     activeOfflinePlayback,
     canAttemptProtectedPlayback,
@@ -1731,6 +1794,7 @@ function CoursesScreenContent({
     currentCourse?._id,
     currentLesson?._id,
     isExpoWebPlaybackFallback,
+    isYouTubeLesson,
     lessonMediaItems.length,
     offlineLessonScopeKey,
     offlineLookupScopeKey,
@@ -1743,6 +1807,14 @@ function CoursesScreenContent({
     player.timeUpdateEventInterval = 0.25;
     player.keepScreenOnWhilePlaying = true;
   });
+
+  useEffect(() => {
+    if (!isYouTubeLesson) {
+      return;
+    }
+
+    lessonVideoPlayer.pause();
+  }, [isYouTubeLesson, lessonVideoPlayer]);
 
   useEffect(() => {
     lessonVideoPlayer.playbackRate = videoPlaybackRate;
@@ -2286,8 +2358,11 @@ function CoursesScreenContent({
 
   const handleCloseLessonAdminPanel = useCallback(
     (onClosed?: () => void) => {
+      const finalizeClose =
+        typeof onClosed === "function" ? onClosed : undefined;
+
       if (!lessonAdminPanelOpen) {
-        onClosed?.();
+        finalizeClose?.();
         return;
       }
 
@@ -2296,7 +2371,7 @@ function CoursesScreenContent({
       if (Platform.OS === "web") {
         setLessonAdminPanelOpen(false);
         adminPaneTranslateX.setValue(screenWidth);
-        onClosed?.();
+        finalizeClose?.();
         return;
       }
 
@@ -2310,7 +2385,7 @@ function CoursesScreenContent({
         }
         setLessonAdminPanelOpen(false);
         adminPaneTranslateX.setValue(screenWidth);
-        onClosed?.();
+        finalizeClose?.();
       });
     },
     [adminPaneTranslateX, lessonAdminPanelOpen, screenWidth],
@@ -2630,7 +2705,117 @@ function CoursesScreenContent({
 
     return (
       <View style={fullscreenMode ? styles.videoStageFullscreen : styles.videoStage}>
-        {!fullscreenMode && !playbackStreamUrl ? (
+        {isYouTubeLesson ? (
+          <>
+            <View pointerEvents="box-none" style={styles.videoStageOverlay}>
+              <LinearGradient
+                colors={["rgba(7,10,18,0.78)", "rgba(7,10,18,0.08)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.videoStageTopGradient}
+              >
+                <View style={styles.videoStageTopBar}>
+                  <Pressable style={styles.videoStageBackButton} onPress={handleStageBack}>
+                    <ArrowLeft size={18} color="#fff" />
+                  </Pressable>
+                  <View style={styles.videoStageTitleWrap}>
+                    <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+                      {currentLessonHeaderTitle}
+                    </Text>
+                    <Text style={styles.videoStageSubtitle} numberOfLines={1}>
+                      {currentCourse?.name || "Jamm Course"} · YouTube
+                    </Text>
+                  </View>
+                  <View style={styles.videoStageTopActions}>
+                    <Pressable
+                      style={styles.videoStageTopActionButton}
+                      onPress={handleEnterVideoFullscreen}
+                    >
+                      <Ionicons
+                        name={fullscreenMode ? "contract-outline" : "expand-outline"}
+                        size={17}
+                        color="#fff"
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+              </LinearGradient>
+            </View>
+            {playbackError ? (
+              <View style={styles.videoStageCenter}>
+                <AlertCircle size={30} color={Colors.warning} />
+                <Text style={styles.emptyTitle}>YouTube ochilmadi</Text>
+                <Text style={styles.emptyText}>{playbackError}</Text>
+                {youtubeWatchUrl ? (
+                  <Pressable
+                    style={[styles.secondaryButton, styles.videoStageFallbackButton]}
+                    onPress={() => {
+                      void Linking.openURL(youtubeWatchUrl);
+                    }}
+                  >
+                    <Text style={styles.secondaryButtonText}>YouTube'da ochish</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : (
+              <WebView
+                source={{
+                  uri: youtubeEmbedUrl,
+                  headers: {
+                    Referer: APP_BASE_URL,
+                    Origin: APP_BASE_URL,
+                  },
+                }}
+                style={fullscreenMode ? styles.videoViewFullscreen : styles.videoView}
+                originWhitelist={["*"]}
+                allowsFullscreenVideo
+                allowsInlineMediaPlayback
+                mediaPlaybackRequiresUserAction={false}
+                javaScriptEnabled
+                domStorageEnabled
+                setSupportMultipleWindows={false}
+                applicationNameForUserAgent="JammMobile"
+                onLoadStart={() => {
+                  setPlaybackError("");
+                }}
+                startInLoadingState
+                renderLoading={() => (
+                  <View style={styles.videoStageCenter}>
+                    <ActivityIndicator color={Colors.primary} />
+                  </View>
+                )}
+                onHttpError={(event) => {
+                  const statusCode = Number(event.nativeEvent?.statusCode || 0);
+                  setPlaybackError(
+                    statusCode
+                      ? `YouTube embed xatosi (${statusCode}).`
+                      : "YouTube videoni ochib bo'lmadi.",
+                  );
+                }}
+                onError={() => {
+                  setPlaybackError("YouTube videoni ochib bo'lmadi.");
+                }}
+                onShouldStartLoadWithRequest={(request) => {
+                  const nextUrl = String(request?.url || "");
+                  if (
+                    nextUrl.startsWith("https://www.youtube.com/embed/") ||
+                    nextUrl.startsWith("https://www.youtube.com/watch") ||
+                    nextUrl.startsWith("https://m.youtube.com/") ||
+                    nextUrl.startsWith("https://www.youtube-nocookie.com/") ||
+                    nextUrl.startsWith("about:blank")
+                  ) {
+                    return true;
+                  }
+
+                  if (nextUrl) {
+                    void Linking.openURL(nextUrl);
+                  }
+                  return false;
+                }}
+              />
+            )}
+          </>
+        ) : !fullscreenMode && !playbackStreamUrl ? (
           <View style={styles.videoStageTopBar}>
             <Pressable
               style={styles.videoStageBackButton}
@@ -2686,225 +2871,227 @@ function CoursesScreenContent({
             ) : null}
           </View>
         ) : null}
-        {playbackLoading ? (
-          <View style={styles.videoStageCenter}>
-            <ActivityIndicator color={Colors.primary} />
-          </View>
-        ) : playbackError ? (
-          <View style={styles.videoStageCenter}>
-            <AlertCircle size={30} color={Colors.warning} />
-            <Text style={styles.emptyTitle}>Video ochilmadi</Text>
-            <Text style={styles.emptyText}>{playbackError}</Text>
-          </View>
-        ) : playbackStreamUrl ? (
-          <>
-            <VideoView
-              player={lessonVideoPlayer}
-              style={fullscreenMode ? styles.videoViewFullscreen : styles.videoView}
-              nativeControls={false}
-              contentFit="contain"
-              surfaceType={Platform.OS === "android" ? "textureView" : undefined}
-            />
-            <Pressable style={styles.videoStageTouchLayer} onPress={handleVideoSurfacePress} />
-            {videoChromeVisible ? (
-              <View pointerEvents="box-none" style={styles.videoStageOverlay}>
-                <LinearGradient
-                  colors={["rgba(7,10,18,0.78)", "rgba(7,10,18,0.08)"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 0, y: 1 }}
-                  style={styles.videoStageTopGradient}
-                >
-                  <View style={styles.videoStageTopBar}>
-                    <Pressable style={styles.videoStageBackButton} onPress={handleStageBack}>
-                      <ArrowLeft size={18} color="#fff" />
-                    </Pressable>
-                    <View style={styles.videoStageTitleWrap}>
-                      <Text style={styles.videoStageTopTitle} numberOfLines={1}>
-                        {currentLessonHeaderTitle}
-                      </Text>
-                      <Text style={styles.videoStageSubtitle} numberOfLines={1}>
-                        {currentCourse?.name || "Jamm Course"} · {playbackSourceLabel}
-                      </Text>
-                    </View>
-                    <View style={styles.videoStageTopActions}>
-                      {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
-                        <View style={styles.videoStageTopActionAnchor}>
-                          {offlineTooltipVisible ? (
-                            <View style={styles.videoStageTooltip}>
-                              <Text style={styles.videoStageTooltipText}>{offlineButtonLabel}</Text>
-                            </View>
-                          ) : null}
-                          <Pressable
-                            style={[
-                              styles.videoStageTopActionButton,
-                              isLessonFullyOffline && styles.videoStageTopActionButtonReady,
-                              offlineBusy && styles.sendButtonDisabled,
-                            ]}
-                            disabled={offlineBusy}
-                            delayLongPress={260}
-                            onLongPress={() => {
-                              offlineTooltipSuppressPressRef.current = true;
-                              showOfflineTooltip();
-                            }}
-                            onPress={() => {
-                              if (offlineTooltipSuppressPressRef.current) {
-                                offlineTooltipSuppressPressRef.current = false;
-                                return;
-                              }
-                              setOfflineTooltipVisible(false);
-                              clearOfflineTooltipTimer();
-                              showVideoChrome();
-                              void handleToggleLessonOffline();
-                            }}
-                          >
-                            {offlineBusy ? (
-                              <ActivityIndicator size="small" color="#fff" />
-                            ) : (
-                              <Ionicons
-                                name={isLessonFullyOffline ? "cloud-done-outline" : "arrow-down"}
-                                size={17}
-                                color="#fff"
-                              />
-                            )}
-                          </Pressable>
-                        </View>
-                      ) : null}
-                    </View>
-                  </View>
-                </LinearGradient>
-
-                <View style={styles.videoStageCenterControls}>
-                  <Pressable
-                    style={styles.videoStageSeekButton}
-                    onPress={() => handleSeekRelative(-10)}
+        {!isYouTubeLesson ? (
+          playbackLoading ? (
+            <View style={styles.videoStageCenter}>
+              <ActivityIndicator color={Colors.primary} />
+            </View>
+          ) : playbackError ? (
+            <View style={styles.videoStageCenter}>
+              <AlertCircle size={30} color={Colors.warning} />
+              <Text style={styles.emptyTitle}>Video ochilmadi</Text>
+              <Text style={styles.emptyText}>{playbackError}</Text>
+            </View>
+          ) : playbackStreamUrl ? (
+            <>
+              <VideoView
+                player={lessonVideoPlayer}
+                style={fullscreenMode ? styles.videoViewFullscreen : styles.videoView}
+                nativeControls={false}
+                contentFit="contain"
+                surfaceType={Platform.OS === "android" ? "textureView" : undefined}
+              />
+              <Pressable style={styles.videoStageTouchLayer} onPress={handleVideoSurfacePress} />
+              {videoChromeVisible ? (
+                <View pointerEvents="box-none" style={styles.videoStageOverlay}>
+                  <LinearGradient
+                    colors={["rgba(7,10,18,0.78)", "rgba(7,10,18,0.08)"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.videoStageTopGradient}
                   >
-                    <Ionicons name="play-back" size={22} color="#fff" />
-                  </Pressable>
-                  <Pressable
-                    style={styles.videoStagePlayButton}
-                    onPress={handleToggleVideoPlayback}
-                  >
-                    {isLessonVideoStarting ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <Ionicons
-                        name={isLessonVideoPlaying ? "pause" : "play"}
-                        size={24}
-                        color="#fff"
-                        style={!isLessonVideoPlaying ? styles.videoStagePlayIcon : undefined}
-                      />
-                    )}
-                  </Pressable>
-                  <Pressable
-                    style={styles.videoStageSeekButton}
-                    onPress={() => handleSeekRelative(10)}
-                  >
-                    <Ionicons name="play-forward" size={22} color="#fff" />
-                  </Pressable>
-                </View>
-
-                <LinearGradient
-                  colors={["rgba(7,10,18,0.08)", "rgba(7,10,18,0.9)"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 0, y: 1 }}
-                  style={[styles.videoStageBottomBar, { paddingBottom: fullscreenMode ? 12 : 4 }]}
-                >
-                  <View
-                    style={styles.videoStageProgressTrack}
-                    onLayout={(event) => setVideoProgressTrackWidth(event.nativeEvent.layout.width)}
-                    onStartShouldSetResponder={() => true}
-                    onMoveShouldSetResponder={() => true}
-                    onResponderGrant={(event) => {
-                      showVideoChrome();
-                      updateVideoScrubPreview(event.nativeEvent.locationX);
-                    }}
-                    onResponderMove={(event) => {
-                      updateVideoScrubPreview(event.nativeEvent.locationX);
-                    }}
-                    onResponderRelease={(event) => {
-                      showVideoChrome();
-                      finishVideoScrub(event.nativeEvent.locationX);
-                    }}
-                    onResponderTerminate={() => {
-                      setVideoScrubPercent(null);
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.videoStageProgressBuffered,
-                        { width: `${bufferedProgressPercent}%` },
-                      ]}
-                    />
-                    <View
-                      style={[
-                        styles.videoStageProgressElapsed,
-                        { width: `${displayedProgressPercent}%` },
-                      ]}
-                    />
-                    <View
-                      style={[
-                        styles.videoStageProgressThumb,
-                        { left: `${displayedProgressPercent}%` },
-                      ]}
-                    />
-                    {segmentBoundaries.map((boundary, index) => (
-                      <View
-                        key={`segment-${index}`}
-                        style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
-                      />
-                    ))}
-                  </View>
-
-                  <View style={styles.videoStageControlsRow}>
-                    <View style={styles.videoStageMetaRow}>
-                      <View style={styles.videoStageMetaBadge}>
-                        <Text style={styles.videoStageMetaBadgeText}>
-                          {activeMediaIndex + 1}/{Math.max(lessonMediaItems.length, 1)}
+                    <View style={styles.videoStageTopBar}>
+                      <Pressable style={styles.videoStageBackButton} onPress={handleStageBack}>
+                        <ArrowLeft size={18} color="#fff" />
+                      </Pressable>
+                      <View style={styles.videoStageTitleWrap}>
+                        <Text style={styles.videoStageTopTitle} numberOfLines={1}>
+                          {currentLessonHeaderTitle}
+                        </Text>
+                        <Text style={styles.videoStageSubtitle} numberOfLines={1}>
+                          {currentCourse?.name || "Jamm Course"} · {playbackSourceLabel}
                         </Text>
                       </View>
+                      <View style={styles.videoStageTopActions}>
+                        {canUseOfflineLessonCache && lessonMediaItems.length > 0 ? (
+                          <View style={styles.videoStageTopActionAnchor}>
+                            {offlineTooltipVisible ? (
+                              <View style={styles.videoStageTooltip}>
+                                <Text style={styles.videoStageTooltipText}>{offlineButtonLabel}</Text>
+                              </View>
+                            ) : null}
+                            <Pressable
+                              style={[
+                                styles.videoStageTopActionButton,
+                                isLessonFullyOffline && styles.videoStageTopActionButtonReady,
+                                offlineBusy && styles.sendButtonDisabled,
+                              ]}
+                              disabled={offlineBusy}
+                              delayLongPress={260}
+                              onLongPress={() => {
+                                offlineTooltipSuppressPressRef.current = true;
+                                showOfflineTooltip();
+                              }}
+                              onPress={() => {
+                                if (offlineTooltipSuppressPressRef.current) {
+                                  offlineTooltipSuppressPressRef.current = false;
+                                  return;
+                                }
+                                setOfflineTooltipVisible(false);
+                                clearOfflineTooltipTimer();
+                                showVideoChrome();
+                                void handleToggleLessonOffline();
+                              }}
+                            >
+                              {offlineBusy ? (
+                                <ActivityIndicator size="small" color="#fff" />
+                              ) : (
+                                <Ionicons
+                                  name={isLessonFullyOffline ? "cloud-done-outline" : "arrow-down"}
+                                  size={17}
+                                  color="#fff"
+                                />
+                              )}
+                            </Pressable>
+                          </View>
+                        ) : null}
+                      </View>
                     </View>
-                    <Text style={styles.videoStageTimeText}>
-                      {formatPlaybackClock(overallCurrentTime)} /{" "}
-                      {formatPlaybackClock(totalLessonDuration)}
-                    </Text>
+                  </LinearGradient>
 
+                  <View style={styles.videoStageCenterControls}>
                     <Pressable
-                      style={styles.videoStageControlButtonWide}
-                      onPress={() => setPlayerSettingsOpen(true)}
+                      style={styles.videoStageSeekButton}
+                      onPress={() => handleSeekRelative(-10)}
                     >
-                      <Ionicons name="options-outline" size={16} color="#fff" />
-                      <Text style={styles.videoStageControlButtonText}>Sozlamalar</Text>
+                      <Ionicons name="play-back" size={22} color="#fff" />
                     </Pressable>
-
                     <Pressable
-                      style={styles.videoStageControlButton}
-                      onPress={handleEnterVideoFullscreen}
+                      style={styles.videoStagePlayButton}
+                      onPress={handleToggleVideoPlayback}
                     >
-                      <Ionicons
-                        name={fullscreenMode ? "contract-outline" : "expand-outline"}
-                        size={16}
-                        color="#fff"
-                      />
+                      {isLessonVideoStarting ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Ionicons
+                          name={isLessonVideoPlaying ? "pause" : "play"}
+                          size={24}
+                          color="#fff"
+                          style={!isLessonVideoPlaying ? styles.videoStagePlayIcon : undefined}
+                        />
+                      )}
+                    </Pressable>
+                    <Pressable
+                      style={styles.videoStageSeekButton}
+                      onPress={() => handleSeekRelative(10)}
+                    >
+                      <Ionicons name="play-forward" size={22} color="#fff" />
                     </Pressable>
                   </View>
-                </LinearGradient>
-              </View>
-            ) : (
-              <View pointerEvents="none" style={styles.videoStageMiniProgressWrap}>
-                <View
-                  style={[
-                    styles.videoStageMiniProgress,
-                    { width: `${overallProgressPercent}%` },
-                  ]}
-                />
-              </View>
-            )}
-          </>
-        ) : (
-          <View style={styles.videoStageCenter}>
-            <ActivityIndicator color={Colors.primary} />
-          </View>
-        )}
+
+                  <LinearGradient
+                    colors={["rgba(7,10,18,0.08)", "rgba(7,10,18,0.9)"]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={[styles.videoStageBottomBar, { paddingBottom: fullscreenMode ? 12 : 4 }]}
+                  >
+                    <View
+                      style={styles.videoStageProgressTrack}
+                      onLayout={(event) => setVideoProgressTrackWidth(event.nativeEvent.layout.width)}
+                      onStartShouldSetResponder={() => true}
+                      onMoveShouldSetResponder={() => true}
+                      onResponderGrant={(event) => {
+                        showVideoChrome();
+                        updateVideoScrubPreview(event.nativeEvent.locationX);
+                      }}
+                      onResponderMove={(event) => {
+                        updateVideoScrubPreview(event.nativeEvent.locationX);
+                      }}
+                      onResponderRelease={(event) => {
+                        showVideoChrome();
+                        finishVideoScrub(event.nativeEvent.locationX);
+                      }}
+                      onResponderTerminate={() => {
+                        setVideoScrubPercent(null);
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.videoStageProgressBuffered,
+                          { width: `${bufferedProgressPercent}%` },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.videoStageProgressElapsed,
+                          { width: `${displayedProgressPercent}%` },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.videoStageProgressThumb,
+                          { left: `${displayedProgressPercent}%` },
+                        ]}
+                      />
+                      {segmentBoundaries.map((boundary, index) => (
+                        <View
+                          key={`segment-${index}`}
+                          style={[styles.videoStageProgressMarker, { left: `${boundary}%` }]}
+                        />
+                      ))}
+                    </View>
+
+                    <View style={styles.videoStageControlsRow}>
+                      <View style={styles.videoStageMetaRow}>
+                        <View style={styles.videoStageMetaBadge}>
+                          <Text style={styles.videoStageMetaBadgeText}>
+                            {activeMediaIndex + 1}/{Math.max(lessonMediaItems.length, 1)}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.videoStageTimeText}>
+                        {formatPlaybackClock(overallCurrentTime)} /{" "}
+                        {formatPlaybackClock(totalLessonDuration)}
+                      </Text>
+
+                      <Pressable
+                        style={styles.videoStageControlButtonWide}
+                        onPress={() => setPlayerSettingsOpen(true)}
+                      >
+                        <Ionicons name="options-outline" size={16} color="#fff" />
+                        <Text style={styles.videoStageControlButtonText}>Sozlamalar</Text>
+                      </Pressable>
+
+                      <Pressable
+                        style={styles.videoStageControlButton}
+                        onPress={handleEnterVideoFullscreen}
+                      >
+                        <Ionicons
+                          name={fullscreenMode ? "contract-outline" : "expand-outline"}
+                          size={16}
+                          color="#fff"
+                        />
+                      </Pressable>
+                    </View>
+                  </LinearGradient>
+                </View>
+              ) : (
+                <View pointerEvents="none" style={styles.videoStageMiniProgressWrap}>
+                  <View
+                    style={[
+                      styles.videoStageMiniProgress,
+                      { width: `${overallProgressPercent}%` },
+                    ]}
+                  />
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={styles.videoStageCenter}>
+              <ActivityIndicator color={Colors.primary} />
+            </View>
+          )
+        ) : null}
       </View>
     );
   };
@@ -2998,6 +3185,14 @@ function CoursesScreenContent({
             : undefined
         }
         onCopy={() => void handleCopyLessonLink(currentLesson)}
+        onOpenComments={() => setCommentsOpen(true)}
+        commentsCount={
+          Number(
+            currentLesson.commentsCount ??
+              currentLesson.comments?.length ??
+              0,
+          ) || 0
+        }
         description={currentLesson.description}
         onOpenDescription={() => setLessonDescriptionSheetOpen(true)}
         mediaCount={lessonMediaItems.length}
@@ -3328,7 +3523,7 @@ function CoursesScreenContent({
         approvedMembersCount={approvedMembers.length}
         activeTab={adminActiveTab}
         onTabChange={setAdminActiveTab}
-        onClose={handleCloseLessonAdminPanel}
+        onClose={() => handleCloseLessonAdminPanel()}
         onEdit={handleOpenAdminLessonEditor}
         onPublish={() => void handlePublishCurrentLesson()}
         onDelete={(lesson) => void handleDeleteLesson(lesson)}
@@ -3568,9 +3763,14 @@ function CoursesScreenContent({
               style={styles.arenaItem}
               onPress={() => handleOpenArenaItem(item)}
             >
-              <View style={styles.arenaThumb}>
-                <Icon size={20} color="#fff" />
-              </View>
+              <LinearGradient
+                colors={DEFAULT_COURSE_GRADIENT}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.sidebarCourseThumbFallback}
+              >
+                <Icon size={19} color="#fff" />
+              </LinearGradient>
               <View style={styles.arenaBody}>
                 <Text style={styles.arenaItemTitle}>{item.title}</Text>
                 <Text style={styles.arenaItemDescription} numberOfLines={2}>
@@ -3586,23 +3786,18 @@ function CoursesScreenContent({
   const mainContent = (
     <View style={styles.container}>
       <GuidedTourTarget targetKey="courses-search">
-        <SearchHeaderBar
-          value={query}
-          onChangeText={setQuery}
-          placeholder={
+        <SectionTopHeader
+          title={
             viewMode === "arena"
-              ? t("courseSidebar.arenaSearchPlaceholder")
-              : t("courseSidebar.searchPlaceholder")
+              ? t("courseSidebar.tabs.arena")
+              : t("navigation.courses")
           }
-          rightSlot={
-            viewMode === "courses" ? (
-              <GuidedTourTarget targetKey="courses-create">
-                <Pressable style={styles.sidebarActionButton} onPress={() => setCreateOpen(true)}>
-                  <Plus size={18} color={Colors.text} />
-                </Pressable>
-              </GuidedTourTarget>
-            ) : null
+          onPressSearch={() =>
+            (navigation as any).navigate("GlobalSearch", {
+              initialTab: "courses",
+            })
           }
+          onPressAdd={() => setCreateOpen(true)}
         />
       </GuidedTourTarget>
 
@@ -3629,10 +3824,6 @@ function CoursesScreenContent({
           style={styles.coursesTab}
           onPress={() => animateToViewMode("courses", true)}
         >
-          <BookOpen
-            size={16}
-            color={viewMode === "courses" ? Colors.text : Colors.mutedText}
-          />
           <Text style={[styles.coursesTabText, viewMode === "courses" && styles.coursesTabTextActive]}>
             {t("courseSidebar.tabs.courses")}
           </Text>
@@ -3641,10 +3832,6 @@ function CoursesScreenContent({
           style={styles.coursesTab}
           onPress={() => animateToViewMode("arena", true)}
         >
-          <Swords
-            size={16}
-            color={viewMode === "arena" ? Colors.text : Colors.mutedText}
-          />
           <Text style={[styles.coursesTabText, viewMode === "arena" && styles.coursesTabTextActive]}>
             {t("courseSidebar.tabs.arena")}
           </Text>
@@ -3960,6 +4147,17 @@ function CoursesScreenContent({
           style={styles.lessonDescriptionSheetScroll}
           contentContainerStyle={styles.lessonDescriptionSheetContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          bounces
+          alwaysBounceVertical
+          overScrollMode="always"
+          onScrollEndDrag={(event) => {
+            const offsetY = Number(event.nativeEvent.contentOffset?.y || 0);
+            if (offsetY < -36) {
+              setLessonDescriptionSheetOpen(false);
+            }
+          }}
         >
          
           <Text style={styles.lessonDescriptionSheetBody}>
@@ -4217,8 +4415,6 @@ const styles = StyleSheet.create<Record<string, any>>({
   coursesTabsRow: {
     position: "relative",
     flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
   },
   coursesTabsTrack: {
@@ -4237,18 +4433,16 @@ const styles = StyleSheet.create<Record<string, any>>({
   coursesTab: {
     flex: 1,
     minHeight: 50,
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
   },
   coursesTabText: {
-    color: Colors.mutedText,
+    color: Colors.subtleText,
     fontSize: 14,
     fontWeight: "500",
   },
   coursesTabTextActive: {
-    color: Colors.text,
+    color: Colors.primary,
     fontWeight: "700",
   },
   topBar: {
@@ -4527,21 +4721,6 @@ const styles = StyleSheet.create<Record<string, any>>({
     backgroundColor: "transparent",
     minHeight: 72,
   },
-  arenaThumb: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: "#32343a",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.09)",
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-  },
   arenaBody: {
     flex: 1,
     minWidth: 0,
@@ -4799,6 +4978,9 @@ const styles = StyleSheet.create<Record<string, any>>({
     justifyContent: "center",
     paddingHorizontal: 28,
     gap: 10,
+  },
+  videoStageFallbackButton: {
+    marginTop: 6,
   },
   videoView: {
     flex: 1,

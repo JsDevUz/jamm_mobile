@@ -79,7 +79,10 @@ export function ChatComposer({
         style={[
           styles.composerShell,
           {
-            height: lockComposerShellHeight ? composerHeight : undefined,
+            minHeight:
+              lockComposerShellHeight && composerContentMessage
+                ? composerHeight
+                : undefined,
             paddingBottom: composerShellBottomPadding,
           },
         ]}

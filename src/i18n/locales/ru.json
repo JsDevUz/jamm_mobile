@@ -287,6 +287,12 @@
     "noExcerpt": "Нет описания",
     "author": "Автор",
     "comments": "комментарии",
+    "tabs": {
+      "newest": "Новые",
+      "views": "Читают",
+      "likes": "Лайки",
+      "commentsTop": "Обсуждают"
+    },
     "coverClose": "Закрыть обложку",
     "emptyTitle": "Статьи не найдены",
     "emptyDescription": "Измените поиск или создайте новую статью.",

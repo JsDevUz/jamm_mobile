@@ -55,6 +55,7 @@ import { Avatar } from "../../components/Avatar";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
+import { SectionTopHeader } from "../../shared/ui/SectionTopHeader";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import {
   APP_LIMITS,
@@ -2069,12 +2070,6 @@ export function FeedScreen({ navigation }: Props) {
       onViewableItemsChanged={handleViewableItemsChanged.current as never}
       viewabilityConfig={{ itemVisiblePercentThreshold: 60 }}
       contentContainerStyle={styles.feedListContent}
-      ListHeaderComponent={
-        <Pressable onPress={() => setComposeOpen(true)} style={styles.composeBar}>
-          <Avatar label={displayName} uri={currentUser?.avatar} size={42} />
-          <Text style={styles.composePlaceholder}>{t("feed.composePlaceholder")}</Text>
-        </Pressable>
-      }
       ListEmptyComponent={
         !feedCacheHydrated || query.isLoading ? (
           <View style={styles.emptyState}>
@@ -2136,55 +2131,49 @@ export function FeedScreen({ navigation }: Props) {
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
         <View style={styles.feedHeader}>
-          <View style={styles.feedHeaderInner}>
-            <View style={styles.feedTitleRow}>
-              <Text style={styles.feedTitle}>{t("feed.title")}</Text>
-              <Pressable
-                onPress={() => setComposeOpen(true)}
-                style={styles.plusButton}
-              >
-                <Plus size={14} color={Colors.text} />
-              </Pressable>
-            </View>
+          <SectionTopHeader
+            title={t("feed.title")}
+            onPressSearch={() => navigation.navigate("GlobalSearch", { initialTab: "private" })}
+            onPressAdd={() => setComposeOpen(true)}
+          />
 
-            <View
-              style={styles.tabsRow}
-              onLayout={(event) => setTabsRowWidth(event.nativeEvent.layout.width)}
+          <View
+            style={styles.tabsRow}
+            onLayout={(event) => setTabsRowWidth(event.nativeEvent.layout.width)}
+          >
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.tabIndicator,
+                tabsRowWidth > 0
+                  ? {
+                      width: tabsRowWidth / 2,
+                      transform: [{ translateX: indicatorTranslateX as any }],
+                    }
+                  : null,
+              ]}
+            />
+            <Pressable
+              style={styles.tab}
+              onPress={() => animateToTab("foryou", true)}
             >
-              <Animated.View
-                pointerEvents="none"
+              <Text style={[styles.tabText, activeTab === "foryou" && styles.tabTextActive]}>
+                {t("feed.tabs.forYou")}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={styles.tab}
+              onPress={() => animateToTab("following", true)}
+            >
+              <Text
                 style={[
-                  styles.tabIndicator,
-                  tabsRowWidth > 0
-                    ? {
-                        width: tabsRowWidth / 2,
-                        transform: [{ translateX: indicatorTranslateX as any }],
-                      }
-                    : null,
+                  styles.tabText,
+                  activeTab === "following" && styles.tabTextActive,
                 ]}
-              />
-              <Pressable
-                style={styles.tab}
-                onPress={() => animateToTab("foryou", true)}
               >
-                <Text style={[styles.tabText, activeTab === "foryou" && styles.tabTextActive]}>
-                  {t("feed.tabs.forYou")}
-                </Text>
-              </Pressable>
-              <Pressable
-                style={styles.tab}
-                onPress={() => animateToTab("following", true)}
-              >
-                <Text
-                  style={[
-                    styles.tabText,
-                    activeTab === "following" && styles.tabTextActive,
-                  ]}
-                >
-                  {t("feed.tabs.following")}
-                </Text>
-              </Pressable>
-            </View>
+                {t("feed.tabs.following")}
+              </Text>
+            </Pressable>
           </View>
         </View>
 
@@ -2346,12 +2335,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
   },
   feedHeader: {
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
     backgroundColor: Colors.surface,
-  },
-  feedHeaderInner: {
-    paddingHorizontal: 16,
   },
   feedTitleRow: {
     paddingTop: 16,
@@ -2374,30 +2358,33 @@ const styles = StyleSheet.create({
   },
   tabsRow: {
     flexDirection: "row",
-    marginTop: 12,
+    backgroundColor: Colors.surface,
     position: "relative",
+    justifyContent: "space-around",
+    minHeight: 50,
   },
   tab: {
     flex: 1,
-    paddingVertical: 12,
     alignItems: "center",
+    justifyContent: "center",
+    minHeight: 50,
     zIndex: 1,
   },
   tabIndicator: {
     position: "absolute",
     left: 0,
     bottom: 0,
-    height: 3,
+    height: 2,
     borderRadius: 999,
     backgroundColor: Colors.primary,
   },
   tabText: {
     color: Colors.subtleText,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "500",
   },
   tabTextActive: {
-    color: Colors.text,
+    color: Colors.primary,
     fontWeight: "700",
   },
   feedBody: {

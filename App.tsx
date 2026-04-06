@@ -1,6 +1,6 @@
 import "react-native-gesture-handler";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -8,6 +8,7 @@ import {
   Dimensions,
   Easing,
   FlatList,
+  InteractionManager,
   Linking,
   Platform,
   Pressable,
@@ -19,11 +20,13 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { Asset } from "expo-asset";
 import * as Notifications from "expo-notifications";
 import {
   NavigationContainer,
   DarkTheme,
   createNavigationContainerRef,
+  useFocusEffect,
 } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
@@ -38,6 +41,7 @@ import {
 } from "react-native-safe-area-context";
 import { BottomNav } from "./src/components/BottomNav";
 import { GlobalToast } from "./src/components/GlobalToast";
+import { CHAT_AREA_BG_ASSET } from "./src/constants/assets";
 import { Colors } from "./src/theme/colors";
 import { useI18n } from "./src/i18n";
 import useAuthStore from "./src/store/auth-store";
@@ -52,6 +56,7 @@ import { EditGroupScreen } from "./src/features/chats/EditGroupScreen";
 import { GroupPreviewScreen } from "./src/features/chats/GroupPreviewScreen";
 import { GroupMeetRoute } from "./src/features/calls/GroupMeetRoute";
 import { PrivateMeetRoute } from "./src/features/calls/PrivateMeetRoute";
+import { GlobalSearchScreen } from "./src/features/search/GlobalSearchScreen";
 import { FeedScreen } from "./src/features/feed/FeedScreen";
 import {
   ProfileEditScreen,
@@ -84,7 +89,7 @@ import { getAuthToken, setAppUnlockToken } from "./src/lib/session";
 import { parseJammDeepLink, type JammDeepLinkTarget } from "./src/navigation/deepLinks";
 import { setJammInternalLinkOpener } from "./src/navigation/internalLinks";
 import type { ChatSummary } from "./src/types/entities";
-import { getEntityId } from "./src/utils/chat";
+import { getChatTitle, getEntityId } from "./src/utils/chat";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<MainTabsParamList>();
@@ -97,6 +102,7 @@ const APP_LOCK_FOOTER = "PIN faqat serverda tekshiriladi.";
 const APP_LOCK_FORGOT_HELP =
   "PIN unutdingizmi? Unda dasturdan chiqib ketib qayta kirishingiz mumkin, shunda parol so'ralmaydi.";
 const APP_LOCK_LOGOUT_ACTION = "Log out";
+const FIRST_VISIT_MASK_MIN_MS = 320;
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -200,12 +206,141 @@ function LaunchScreen() {
   );
 }
 
+type FirstVisitMaskKind = "feed" | "chats" | "articles" | "courses" | "profile";
+
+function TabFirstVisitMask({ kind }: { kind: FirstVisitMaskKind }) {
+  const isGrid = kind === "feed" || kind === "profile";
+  const isList = kind === "chats" || kind === "articles" || kind === "courses";
+
+  return (
+    <SafeAreaView style={styles.tabMaskSafeArea} edges={["top", "left", "right", "bottom"]}>
+      <View style={styles.tabMaskScreen}>
+        <View style={styles.tabMaskHeader}>
+          <View style={styles.tabMaskTitle} />
+          <View style={styles.tabMaskHeaderActions}>
+            <View style={styles.tabMaskIcon} />
+            <View style={[styles.tabMaskIcon, styles.tabMaskIconPrimary]} />
+          </View>
+        </View>
+
+        {isList ? (
+          <>
+            <View style={styles.tabMaskTabs}>
+              <View style={[styles.tabMaskTab, styles.tabMaskTabWide]} />
+              <View style={styles.tabMaskTab} />
+            </View>
+            <View style={styles.tabMaskList}>
+              {[0, 1, 2, 3, 4].map((item) => (
+                <View key={item} style={styles.tabMaskRow}>
+                  <View style={styles.tabMaskAvatar} />
+                  <View style={styles.tabMaskRowBody}>
+                    <View style={[styles.tabMaskLine, styles.tabMaskLineShort]} />
+                    <View style={[styles.tabMaskLine, styles.tabMaskLineMedium]} />
+                  </View>
+                </View>
+              ))}
+            </View>
+          </>
+        ) : null}
+
+        {isGrid ? (
+          <>
+            <View style={styles.tabMaskHero} />
+            <View style={styles.tabMaskSectionTitle} />
+            <View style={styles.tabMaskGrid}>
+              {[0, 1, 2, 3].map((item) => (
+                <View key={item} style={styles.tabMaskCard} />
+              ))}
+            </View>
+          </>
+        ) : null}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function withFirstFocusMask<P extends object>(
+  Component: ComponentType<P>,
+  kind: FirstVisitMaskKind,
+) {
+  return function WrappedScreen(props: P) {
+    const [showMask, setShowMask] = useState(true);
+    const hasCompletedRef = useRef(false);
+    const maskShownAtRef = useRef(0);
+
+    useFocusEffect(
+      useCallback(() => {
+        if (hasCompletedRef.current) {
+          setShowMask(false);
+          return undefined;
+        }
+
+        setShowMask(true);
+        maskShownAtRef.current = Date.now();
+
+        let cancelled = false;
+        let minDelayTimeout: ReturnType<typeof setTimeout> | null = null;
+        const interactionTask = InteractionManager.runAfterInteractions(() => {
+          const finishMask = () => {
+            const elapsed = Date.now() - maskShownAtRef.current;
+            const remaining = Math.max(0, FIRST_VISIT_MASK_MIN_MS - elapsed);
+
+            minDelayTimeout = setTimeout(() => {
+              if (!cancelled) {
+                hasCompletedRef.current = true;
+                setShowMask(false);
+              }
+            }, remaining);
+          };
+
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (!cancelled) {
+                finishMask();
+              }
+            });
+          });
+        });
+
+        return () => {
+          cancelled = true;
+          if (minDelayTimeout) {
+            clearTimeout(minDelayTimeout);
+          }
+          interactionTask.cancel?.();
+        };
+      }, []),
+    );
+
+    return (
+      <View style={styles.tabMaskHost}>
+        <Component {...props} />
+        {showMask ? (
+          <View pointerEvents="none" style={styles.tabMaskOverlay}>
+            <TabFirstVisitMask kind={kind} />
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+}
+
+const FeedTabScreen = withFirstFocusMask(FeedScreen, "feed");
+const ChatsTabScreen = withFirstFocusMask(ChatsScreen, "chats");
+const ArticlesTabScreen = withFirstFocusMask(ArticlesScreen, "articles");
+const CoursesTabScreen = withFirstFocusMask(CoursesScreen, "courses");
+const ProfileTabScreen = withFirstFocusMask(ProfileScreen, "profile");
+
 function MainTabsNavigator() {
   return (
     <Tabs.Navigator
       screenOptions={{
         headerShown: false,
         animation: "none",
+        lazy: false,
+        sceneStyle: {
+          backgroundColor: Colors.background,
+        },
       }}
       tabBar={({ navigation, state, descriptors }) => {
         const activeKey = state.routes[state.index]?.key;
@@ -225,11 +360,11 @@ function MainTabsNavigator() {
         );
       }}
     >
-      <Tabs.Screen name="Feed" component={FeedScreen} />
-      <Tabs.Screen name="Chats" component={ChatsScreen} />
-      <Tabs.Screen name="Articles" component={ArticlesScreen} />
-      <Tabs.Screen name="Courses" component={CoursesScreen} />
-      <Tabs.Screen name="Profile" component={ProfileScreen} />
+      <Tabs.Screen name="Feed" component={FeedTabScreen} />
+      <Tabs.Screen name="Chats" component={ChatsTabScreen} />
+      <Tabs.Screen name="Articles" component={ArticlesTabScreen} />
+      <Tabs.Screen name="Courses" component={CoursesTabScreen} />
+      <Tabs.Screen name="Profile" component={ProfileTabScreen} />
     </Tabs.Navigator>
   );
 }
@@ -405,6 +540,11 @@ function RootNavigator() {
             name="GroupPreview"
             component={GroupPreviewScreen}
             options={{ animation: "slide_from_right", headerShown: false }}
+          />
+          <Stack.Screen
+            name="GlobalSearch"
+            component={GlobalSearchScreen}
+            options={{ animation: "slide_from_right" }}
           />
           <Stack.Screen
             name="ArenaQuizList"
@@ -1508,6 +1648,27 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
     });
   }, []);
 
+  const openSavedMessagesChat = useCallback(async () => {
+    let chats = queryClient.getQueryData<ChatSummary[]>(["chats"]) || [];
+    let savedMessagesChat = chats.find((chat) => chat.isSavedMessages) || null;
+
+    if (!savedMessagesChat) {
+      chats = await syncChatsCache();
+      savedMessagesChat = chats.find((chat) => chat.isSavedMessages) || null;
+    }
+
+    if (!savedMessagesChat) {
+      return false;
+    }
+
+    openChatRoom(
+      savedMessagesChat,
+      getChatTitle(savedMessagesChat, currentUserId, user),
+      false,
+    );
+    return true;
+  }, [currentUserId, openChatRoom, queryClient, syncChatsCache, user]);
+
   const resolvePrivateChat = useCallback(
     async (identifier: string) => {
       const resolved = await chatsApi.resolveSlug(identifier);
@@ -1604,6 +1765,29 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
           openCoursesTab();
           return;
         case "profile":
+          if (target.identifier) {
+            const normalizedIdentifier = String(target.identifier || "")
+              .trim()
+              .replace(/^@+/, "")
+              .toLowerCase();
+            const currentUserIdentifiers = [
+              String(currentUserId || "").trim().toLowerCase(),
+              String(user?._id || user?.id || "").trim().toLowerCase(),
+              String(user?.jammId || "").trim().toLowerCase(),
+              String(user?.username || "").trim().replace(/^@+/, "").toLowerCase(),
+            ].filter(Boolean);
+
+            if (
+              normalizedIdentifier &&
+              currentUserIdentifiers.includes(normalizedIdentifier)
+            ) {
+              const openedSavedMessages = await openSavedMessagesChat();
+              if (openedSavedMessages) {
+                return;
+              }
+            }
+          }
+
           navigationRef.navigate(
             "MainTabs",
             {
@@ -1694,13 +1878,19 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
       }
     },
     [
+      currentUserId,
       openArticlesTab,
       openChatRoom,
       openChatsTab,
       openCoursesTab,
+      openSavedMessagesChat,
       resolveGenericChat,
       resolveExistingGroupChat,
       resolvePrivateChat,
+      user?._id,
+      user?.id,
+      user?.jammId,
+      user?.username,
     ],
   );
 
@@ -1850,6 +2040,10 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
 
 export default function App() {
   const [navigationReady, setNavigationReady] = useState(false);
+
+  useEffect(() => {
+    void Asset.loadAsync([CHAT_AREA_BG_ASSET]);
+  }, []);
 
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -2215,6 +2409,131 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     fontWeight: "700",
+  },
+  tabMaskHost: {
+    flex: 1,
+  },
+  tabMaskOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+  },
+  tabMaskSafeArea: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  tabMaskScreen: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  tabMaskHeader: {
+    minHeight: 74,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  tabMaskTitle: {
+    width: 148,
+    height: 34,
+    borderRadius: 16,
+    backgroundColor: Colors.surfaceMuted,
+  },
+  tabMaskHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  tabMaskIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: Colors.input,
+  },
+  tabMaskIconPrimary: {
+    backgroundColor: "rgba(88, 101, 242, 0.55)",
+  },
+  tabMaskTabs: {
+    flexDirection: "row",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  tabMaskTab: {
+    width: 92,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: Colors.input,
+  },
+  tabMaskTabWide: {
+    width: 118,
+  },
+  tabMaskList: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+  },
+  tabMaskRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+  },
+  tabMaskAvatar: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceMuted,
+  },
+  tabMaskRowBody: {
+    flex: 1,
+    gap: 10,
+  },
+  tabMaskLine: {
+    height: 14,
+    borderRadius: 8,
+    backgroundColor: Colors.input,
+  },
+  tabMaskLineShort: {
+    width: "42%",
+  },
+  tabMaskLineMedium: {
+    width: "68%",
+  },
+  tabMaskHero: {
+    height: 132,
+    marginHorizontal: 16,
+    marginTop: 16,
+    borderRadius: 22,
+    backgroundColor: Colors.surface,
+  },
+  tabMaskSectionTitle: {
+    width: 160,
+    height: 18,
+    borderRadius: 9,
+    marginHorizontal: 16,
+    marginTop: 18,
+    marginBottom: 14,
+    backgroundColor: Colors.input,
+  },
+  tabMaskGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    paddingHorizontal: 16,
+  },
+  tabMaskCard: {
+    width: (Dimensions.get("window").width - 44) / 2,
+    height: 136,
+    borderRadius: 20,
+    backgroundColor: Colors.surface,
   },
   launchScreen: {
     flex: 1,

@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Image } from "expo-image";
@@ -24,6 +24,7 @@ export const Avatar = memo(function Avatar({
   statusColor,
   shape = "card",
 }: AvatarProps) {
+  const [imageFailed, setImageFailed] = useState(false);
   const borderRadius = shape === "circle" ? Math.round(size / 2) : Math.round(size / 3);
   const fallbackColors: readonly [string, string] = isSavedMessages
     ? [Colors.primary, Colors.primary]
@@ -31,7 +32,11 @@ export const Avatar = memo(function Avatar({
       ? [Colors.surfaceMuted, Colors.surfaceMuted]
       : [Colors.primary, Colors.primary];
 
-  if (uri) {
+  useEffect(() => {
+    setImageFailed(false);
+  }, [uri]);
+
+  if (uri && !imageFailed) {
     return (
       <View style={styles.root}>
         <Image
@@ -39,6 +44,7 @@ export const Avatar = memo(function Avatar({
           style={[styles.image, { width: size, height: size, borderRadius }]}
           contentFit="cover"
           transition={180}
+          onError={() => setImageFailed(true)}
         />
         {statusColor ? (
           <View style={[styles.statusDot, { backgroundColor: statusColor }]} />

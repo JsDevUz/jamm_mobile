@@ -193,7 +193,16 @@ function getDeckFolderIdentifierCandidates(deck?: ArenaFlashcardDeck | null) {
 }
 
 function getDeckCardCount(deck?: ArenaFlashcardDeck | null) {
+  if (typeof deck?.cardCount === "number") {
+    return deck.cardCount;
+  }
+
   return Array.isArray(deck?.cards) ? deck.cards.length : 0;
+}
+
+function getDeckCreatedAtValue(deck?: ArenaFlashcardDeck | null) {
+  const timestamp = new Date(deck?.createdAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function getDeckCover(deck?: ArenaFlashcardDeck | null) {
@@ -286,7 +295,9 @@ function mergeFlashcardDecks(
     const key = String(deck._id || deck.urlSlug || `deck-${index}`);
     nextMap.set(key, deck);
   });
-  return Array.from(nextMap.values());
+  return Array.from(nextMap.values()).sort(
+    (left, right) => getDeckCreatedAtValue(right) - getDeckCreatedAtValue(left),
+  );
 }
 
 function mergeFlashcardFolders(
@@ -1797,6 +1808,10 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.folderChipList}
           >
+            <Pressable style={styles.folderAddButton} onPress={handleOpenCreateFolder}>
+              <Plus size={16} color={Colors.text} />
+            </Pressable>
+
             <Pressable
               style={[
                 styles.folderChip,
@@ -1834,10 +1849,6 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
               );
             })}
           </ScrollView>
-
-          <Pressable style={styles.folderAddButton} onPress={handleOpenCreateFolder}>
-            <Plus size={16} color={Colors.text} />
-          </Pressable>
         </View>
 
         {initialLoading ? (

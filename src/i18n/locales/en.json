@@ -287,6 +287,12 @@
     "noExcerpt": "No description",
     "author": "Author",
     "comments": "comments",
+    "tabs": {
+      "newest": "Newest",
+      "views": "Most read",
+      "likes": "Liked",
+      "commentsTop": "Discussed"
+    },
     "coverClose": "Close cover image",
     "emptyTitle": "No articles found",
     "emptyDescription": "Try changing the search or create a new article.",

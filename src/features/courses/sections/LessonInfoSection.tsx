@@ -1,14 +1,16 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { Copy, Eye, Heart, ListVideo } from "lucide-react-native";
+import { Copy, Eye, Heart, ListVideo, MessageCircle } from "lucide-react-native";
 import { Colors } from "../../../theme/colors";
 
 type Props = {
   visible: boolean;
   views: number;
   likes: number;
+  commentsCount: number;
   liked: boolean;
   onLike: () => void;
   onCopy: () => void;
+  onOpenComments: () => void;
   description?: string | null;
   onOpenDescription: () => void;
   mediaCount: number;
@@ -19,9 +21,11 @@ export function LessonInfoSection({
   visible,
   views,
   likes,
+  commentsCount,
   liked,
   onLike,
   onCopy,
+  onOpenComments,
   description,
   onOpenDescription,
   mediaCount,
@@ -49,6 +53,10 @@ export function LessonInfoSection({
         <Pressable style={styles.metaItem} onPress={onCopy}>
           <Copy size={14} color={Colors.subtleText} />
           <Text style={styles.metaText}>Nusxalash</Text>
+        </Pressable>
+        <Pressable style={styles.metaItem} onPress={onOpenComments}>
+          <MessageCircle size={14} color={Colors.subtleText} />
+          <Text style={styles.metaText}>{commentsCount} izoh</Text>
         </Pressable>
         {description ? (
           <Pressable style={styles.descriptionCard} onPress={onOpenDescription}>

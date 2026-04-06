@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import {
+  ActionSheetIOS,
   Alert,
   Animated,
   Easing,
@@ -62,7 +63,6 @@ import { AvatarPreviewModal } from "./components/AvatarPreviewModal";
 import { ChatBody } from "./components/ChatBody";
 import { ChatHeader } from "./components/ChatHeader";
 import { ChatInfoDrawer } from "./components/ChatInfoDrawer";
-import { ChatMenuModal } from "./components/ChatMenuModal";
 import { MessageContextMenuOverlay } from "./components/MessageContextMenuOverlay";
 import { OutgoingCallModal } from "./components/OutgoingCallModal";
 import { useChatConversationMeta } from "./hooks/useChatConversationMeta";
@@ -107,7 +107,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
   const [composerHeight, setComposerHeight] = useState(66);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [infoDrawerOpen, setInfoDrawerOpen] = useState(false);
   const [infoDrawerUserId, setInfoDrawerUserId] = useState<string | null>(null);
   const [infoPageMounted, setInfoPageMounted] = useState(false);
@@ -136,11 +135,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const composerFocusedRef = useRef(false);
   const routeGestureHadKeyboardRef = useRef(false);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const openInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingMenuInfoRef = useRef<{
-    queued: boolean;
-    targetUser?: User | null;
-  }>({ queued: false, targetUser: undefined });
   const initialScrollDoneRef = useRef(false);
   const scrollOffsetRef = useRef(0);
   const scrollRestorePendingRef = useRef<number | null>(null);
@@ -698,9 +692,7 @@ export function ChatScreen({ navigation, route }: Props) {
   });
 
   const {
-    openInfoPage,
     handleOpenInfo,
-    handleOpenInfoFromMenu,
     handleCloseInfoDrawer,
     handleOpenPrivateChatWithMember,
     handleBackToGroupInfo,
@@ -712,8 +704,6 @@ export function ChatScreen({ navigation, route }: Props) {
     navigation,
     queryClient,
     dismissKeyboard,
-    pendingMenuInfoRef,
-    setMenuOpen,
     setAvatarPreviewOpen,
     setInfoDrawerUserId,
     setInfoDrawerOpen,
@@ -725,6 +715,100 @@ export function ChatScreen({ navigation, route }: Props) {
     queryClient,
     navigation,
   });
+
+  const handleEditGroupFromMenu = useCallback(() => {
+    dismissKeyboard();
+    navigation.push("EditGroup", { chatId: route.params.chatId });
+  }, [dismissKeyboard, navigation, route.params.chatId]);
+
+  const handleOpenHeaderMenu = useCallback(() => {
+    dismissKeyboard();
+    closeDockAndKeyboard(200);
+    void Haptics.selectionAsync().catch(() => {});
+
+    const currentChatIsGroup = Boolean(currentChat?.isGroup);
+    const infoLabel = currentChatIsGroup
+      ? "Guruh ma'lumotlari"
+      : "Foydalanuvchi ma'lumotlari";
+    const destructiveLabel = isGroupOwnerLeaving
+      ? "Guruhni tark etish"
+      : "Suhbatni o'chirish";
+
+    if (Platform.OS === "ios") {
+      const options = [
+        "Bekor qilish",
+        infoLabel,
+        ...(canEditGroup ? ["Guruhni tahrirlash"] : []),
+        destructiveLabel,
+      ];
+      const cancelButtonIndex = 0;
+      const infoButtonIndex = 1;
+      const editButtonIndex = canEditGroup ? 2 : -1;
+      const destructiveButtonIndex = options.length - 1;
+
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options,
+          cancelButtonIndex,
+          destructiveButtonIndex,
+          userInterfaceStyle: "dark",
+        },
+        (buttonIndex) => {
+          if (buttonIndex === infoButtonIndex) {
+            handleOpenInfo();
+            return;
+          }
+
+          if (buttonIndex === editButtonIndex) {
+            handleEditGroupFromMenu();
+            return;
+          }
+
+          if (buttonIndex === destructiveButtonIndex) {
+            handleDeleteOrLeave();
+          }
+        },
+      );
+      return;
+    }
+
+    Alert.alert(
+      currentChatIsGroup ? "Guruh amallari" : "Suhbat amallari",
+      undefined,
+      [
+        {
+          text: infoLabel,
+          onPress: () => handleOpenInfo(),
+        },
+        ...(canEditGroup
+          ? [
+              {
+                text: "Guruhni tahrirlash",
+                onPress: handleEditGroupFromMenu,
+              },
+            ]
+          : []),
+        {
+          text: destructiveLabel,
+          style: "destructive",
+          onPress: handleDeleteOrLeave,
+        },
+        {
+          text: "Bekor qilish",
+          style: "cancel",
+        },
+      ],
+    );
+  }, [
+    canEditGroup,
+    closeDockAndKeyboard,
+    currentChat?.isGroup,
+    dismissKeyboard,
+    handleDeleteOrLeave,
+    handleEditGroupFromMenu,
+    handleOpenInfo,
+    isGroupOwnerLeaving,
+  ]);
 
   const infoPagePanResponder = useMemo(
     () =>
@@ -864,7 +948,14 @@ export function ChatScreen({ navigation, route }: Props) {
   );
   const handleComposerLayout = useCallback(
     (nextHeight: number) => {
-      if (lockComposerShellHeight) {
+      const hasComposerContext = Boolean(replyingToId || editingMessageId);
+      const canShrinkWhileLocked = !hasComposerContext;
+
+      if (
+        lockComposerShellHeight &&
+        nextHeight <= composerHeight &&
+        !canShrinkWhileLocked
+      ) {
         return;
       }
 
@@ -873,7 +964,7 @@ export function ChatScreen({ navigation, route }: Props) {
         setComposerHeight(nextHeight);
       }
     },
-    [composerHeight, lockComposerShellHeight],
+    [composerHeight, editingMessageId, lockComposerShellHeight, replyingToId],
   );
 
   const {
@@ -1118,33 +1209,12 @@ export function ChatScreen({ navigation, route }: Props) {
 
   useEffect(() => {
     return () => {
-      if (openInfoTimeoutRef.current) {
-        clearTimeout(openInfoTimeoutRef.current);
-      }
-
       if (scrollPersistTimeoutRef.current) {
         clearTimeout(scrollPersistTimeoutRef.current);
         scrollPersistTimeoutRef.current = null;
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (menuOpen || !pendingMenuInfoRef.current.queued) {
-      return;
-    }
-
-    if (openInfoTimeoutRef.current) {
-      clearTimeout(openInfoTimeoutRef.current);
-    }
-
-    openInfoTimeoutRef.current = setTimeout(() => {
-      const { targetUser } = pendingMenuInfoRef.current;
-      pendingMenuInfoRef.current = { queued: false, targetUser: undefined };
-      openInfoPage(targetUser);
-      openInfoTimeoutRef.current = null;
-    }, 120);
-  }, [menuOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1579,8 +1649,7 @@ export function ChatScreen({ navigation, route }: Props) {
               void handleStartVideoCall();
             }}
             onOpenMenu={() => {
-              closeDockAndKeyboard(200);
-              setMenuOpen(true);
+              handleOpenHeaderMenu();
             }}
           />
 
@@ -1593,24 +1662,6 @@ export function ChatScreen({ navigation, route }: Props) {
       </Animated.View>
 
       {Platform.OS !== "ios" ? messageMenuOverlayContent : null}
-
-      <ChatMenuModal
-        styles={styles}
-        visible={menuOpen}
-        currentChatIsGroup={Boolean(currentChat?.isGroup)}
-        canEditGroup={canEditGroup}
-        isGroupOwnerLeaving={isGroupOwnerLeaving}
-        onClose={() => setMenuOpen(false)}
-        onOpenInfo={() => {
-          handleOpenInfoFromMenu();
-        }}
-        onEditGroup={() => {
-          setMenuOpen(false);
-          navigation.push("EditGroup", { chatId: route.params.chatId });
-        }}
-        onDeleteOrLeave={handleDeleteOrLeave}
-      />
-
       <ChatInfoDrawer
         styles={styles}
         mounted={infoPageMounted}
@@ -1762,8 +1813,11 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   historyLoader: {
-    paddingTop: 8,
-    paddingBottom: 12,
+    position: "absolute",
+    top: 8,
+    left: 0,
+    right: 0,
+    zIndex: 7,
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
@@ -1771,6 +1825,10 @@ const styles = StyleSheet.create({
   historyLoaderText: {
     color: Colors.mutedText,
     fontSize: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: Colors.surface,
   },
   chatBodyHost: {
     flex: 1,
@@ -1779,6 +1837,12 @@ const styles = StyleSheet.create({
   messagesViewport: {
     flex: 1,
     position: "relative",
+  },
+  chatBackgroundImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  chatBackgroundTexture: {
+    opacity: 1,
   },
   chatBody: {
     flex: 1,
@@ -2161,10 +2225,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: Colors.border,
     borderLeftWidth: 3,
     borderLeftColor: Colors.primary,
-    backgroundColor: "rgba(32, 34, 37, 0.72)",
+    backgroundColor: Colors.input,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 8,

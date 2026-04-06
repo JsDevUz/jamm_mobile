@@ -1,5 +1,5 @@
 import { Alert } from "react-native";
-import { useCallback, type MutableRefObject } from "react";
+import { useCallback } from "react";
 import * as Haptics from "expo-haptics";
 import type { QueryClient } from "@tanstack/react-query";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -16,8 +16,6 @@ export function useChatInfoActions({
   navigation,
   queryClient,
   dismissKeyboard,
-  pendingMenuInfoRef,
-  setMenuOpen,
   setAvatarPreviewOpen,
   setInfoDrawerUserId,
   setInfoDrawerOpen,
@@ -29,11 +27,6 @@ export function useChatInfoActions({
   navigation: NativeStackNavigationProp<RootStackParamList, "ChatRoom">;
   queryClient: QueryClient;
   dismissKeyboard: () => void;
-  pendingMenuInfoRef: MutableRefObject<{
-    queued: boolean;
-    targetUser?: User | null;
-  }>;
-  setMenuOpen: (value: boolean) => void;
   setAvatarPreviewOpen: (value: boolean) => void;
   setInfoDrawerUserId: (value: string | null) => void;
   setInfoDrawerOpen: (value: boolean) => void;
@@ -75,22 +68,9 @@ export function useChatInfoActions({
 
   const handleOpenInfo = useCallback(
     (targetUser?: User | null) => {
-      setMenuOpen(false);
       openInfoPage(targetUser);
     },
-    [openInfoPage, setMenuOpen],
-  );
-
-  const handleOpenInfoFromMenu = useCallback(
-    (targetUser?: User | null) => {
-      dismissKeyboard();
-      pendingMenuInfoRef.current = {
-        queued: true,
-        targetUser,
-      };
-      setMenuOpen(false);
-    },
-    [dismissKeyboard, pendingMenuInfoRef, setMenuOpen],
+    [openInfoPage],
   );
 
   const handleCloseInfoDrawer = useCallback(() => {
@@ -188,7 +168,6 @@ export function useChatInfoActions({
   return {
     openInfoPage,
     handleOpenInfo,
-    handleOpenInfoFromMenu,
     handleCloseInfoDrawer,
     handleOpenMemberInfo,
     handleOpenPrivateChatWithMember,

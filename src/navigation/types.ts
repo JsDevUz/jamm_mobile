@@ -150,6 +150,10 @@ export type RootStackParamList = {
     isCreator: boolean;
     isPrivate: boolean;
   };
+  GlobalSearch: {
+    initialTab?: "private" | "groups" | "articles" | "courses";
+    initialQuery?: string;
+  };
 };
 
 export type MainTabScreenProps<RouteName extends keyof MainTabsParamList> =

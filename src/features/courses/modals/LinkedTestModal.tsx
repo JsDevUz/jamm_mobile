@@ -2,14 +2,12 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
+  ScrollView,
   Text,
   View,
 } from "react-native";
-import { X } from "lucide-react-native";
+import { DraggableBottomSheet } from "../../../components/DraggableBottomSheet";
 import { TextInput } from "../../../components/TextInput";
 import { coursesApi } from "../../../lib/api";
 import { Colors } from "../../../theme/colors";
@@ -63,59 +61,57 @@ export function LinkedTestModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.modalKeyboardAvoid}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <Pressable style={styles.modalOverlay} onPress={onClose}>
-          <Pressable style={styles.smallModal} onPress={(event) => event.stopPropagation()}>
-            <View style={styles.createHeader}>
-              <Text style={styles.createTitle}>Arena mashqi qo'shish</Text>
-              <Pressable style={styles.iconCircle} onPress={onClose}>
-                <X size={18} color={Colors.mutedText} />
-              </Pressable>
-            </View>
-            <View style={styles.createContent}>
-              <TextInput
-                value={url}
-                onChangeText={setUrl}
-                placeholder="Arena test yoki sentence-builder URL"
-                placeholderTextColor={Colors.subtleText}
-                style={styles.fieldInput}
-              />
-              <TextInput
-                value={minimumScore}
-                onChangeText={setMinimumScore}
-                placeholder="Minimum score"
-                placeholderTextColor={Colors.subtleText}
-                keyboardType="number-pad"
-                style={styles.fieldInput}
-              />
-              <Pressable style={styles.inlineToggle} onPress={() => setRequired((value) => !value)}>
-                <View style={[styles.checkbox, required && styles.checkboxActive]} />
-                <Text style={styles.inlineToggleText}>Keyingi darsni ochish uchun majburiy</Text>
-              </Pressable>
-            </View>
-            <View style={styles.createFooter}>
-              <Pressable style={styles.secondaryButton} onPress={onClose}>
-                <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.primaryButton, (!url.trim() || saving) && styles.sendButtonDisabled]}
-                disabled={!url.trim() || saving}
-                onPress={() => void handleSave()}
-              >
-                {saving ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>Saqlash</Text>
-                )}
-              </Pressable>
-            </View>
+    <DraggableBottomSheet
+      visible={visible}
+      title="Arena mashqi qo'shish"
+      onClose={onClose}
+      minHeight={420}
+      initialHeightRatio={0.58}
+      maxHeightRatio={0.86}
+      footer={
+        <View style={styles.createFooter}>
+          <Pressable style={styles.secondaryButton} onPress={onClose}>
+            <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
           </Pressable>
+          <Pressable
+            style={[styles.primaryButton, (!url.trim() || saving) && styles.sendButtonDisabled]}
+            disabled={!url.trim() || saving}
+            onPress={() => void handleSave()}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.primaryButtonText}>Saqlash</Text>
+            )}
+          </Pressable>
+        </View>
+      }
+    >
+      <ScrollView
+        contentContainerStyle={styles.createContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <TextInput
+          value={url}
+          onChangeText={setUrl}
+          placeholder="Arena test yoki sentence-builder URL"
+          placeholderTextColor={Colors.subtleText}
+          style={styles.fieldInput}
+        />
+        <TextInput
+          value={minimumScore}
+          onChangeText={setMinimumScore}
+          placeholder="Minimum score"
+          placeholderTextColor={Colors.subtleText}
+          keyboardType="number-pad"
+          style={styles.fieldInput}
+        />
+        <Pressable style={styles.inlineToggle} onPress={() => setRequired((value) => !value)}>
+          <View style={[styles.checkbox, required && styles.checkboxActive]} />
+          <Text style={styles.inlineToggleText}>Keyingi darsni ochish uchun majburiy</Text>
         </Pressable>
-      </KeyboardAvoidingView>
-    </Modal>
+      </ScrollView>
+    </DraggableBottomSheet>
   );
 }

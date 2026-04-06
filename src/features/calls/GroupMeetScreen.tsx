@@ -161,6 +161,33 @@ const CALL_QUALITY_PROFILES = {
 } as const;
 
 type QualityProfile = (typeof CALL_QUALITY_PROFILES)[keyof typeof CALL_QUALITY_PROFILES];
+type StatsReport = Record<string, unknown>;
+
+const SPEAKER_POLL_INTERVAL_MS = 900;
+const SPEAKER_LEVEL_THRESHOLD = 0.03;
+
+const getStatsNumber = (report: StatsReport, key: string) => {
+  const value = report[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+};
+
+const readAudioLevel = (report: StatsReport) => {
+  const mediaKind = report.kind || report.mediaType;
+  if (mediaKind !== "audio") {
+    return null;
+  }
+
+  const audioLevel = getStatsNumber(report, "audioLevel");
+  if (audioLevel !== null) {
+    return audioLevel;
+  }
+
+  if (report.voiceActivityFlag === true) {
+    return 1;
+  }
+
+  return null;
+};
 
 export function GroupMeetScreen({ navigation, route }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -193,6 +220,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   );
   const [selectedTileId, setSelectedTileId] = useState<string | null>(null);
   const [fullscreenTileId, setFullscreenTileId] = useState<string | null>(null);
+  const [lastSpeakerPeerId, setLastSpeakerPeerId] = useState<string | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const socketIdRef = useRef<string | null>(null);
@@ -487,16 +515,22 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           upsertRemotePeer(peerId, {
             stream,
             displayName: knownPeerNamesRef.current[peerId] || peerDisplayName || peerId,
-            hasVideo: videoTracks.length > 0,
-            hasAudio: audioTracks.length > 0,
-            videoMuted: videoTracks.some(
-              (track: MediaStreamTrack) =>
-                track.readyState !== "live" || track.muted === true || track.enabled === false,
-            ),
-            audioMuted: audioTracks.some(
-              (track: MediaStreamTrack) =>
-                track.readyState !== "live" || track.muted === true || track.enabled === false,
-            ),
+            hasVideo: videoTracks.some((track: MediaStreamTrack) => track.readyState === "live"),
+            hasAudio: audioTracks.some((track: MediaStreamTrack) => track.readyState === "live"),
+            videoMuted:
+              videoTracks.length > 0
+                ? videoTracks.every(
+                    (track: MediaStreamTrack) =>
+                      track.readyState !== "live" || track.muted === true,
+                  )
+                : true,
+            audioMuted:
+              audioTracks.length > 0
+                ? audioTracks.every(
+                    (track: MediaStreamTrack) =>
+                      track.readyState !== "live" || track.muted === true,
+                  )
+                : true,
           });
         };
 
@@ -796,6 +830,11 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         stream.getTracks().forEach((track) => track.stop());
         throw new Error("Screen stream topilmadi");
       }
+      try {
+        await videoTrack.applyConstraints?.(SCREEN_SHARE_MEDIA_CONSTRAINTS.video);
+      } catch {
+        // Some devices ignore display track constraints; keep the stream alive anyway.
+      }
 
       screenStreamRef.current = stream;
       setScreenStream(stream);
@@ -883,7 +922,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   }, []);
 
   useEffect(() => {
-    const peerCount = remotePeers.length + 1;
+    const peerCount = remotePeers.length + 1 + (isScreenSharing ? 2 : 0);
     const nextProfile =
       peerCount >= 6
         ? CALL_QUALITY_PROFILES.poor
@@ -897,11 +936,80 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       }
       return nextProfile;
     });
-  }, [remotePeers.length]);
+  }, [isScreenSharing, remotePeers.length]);
 
   useEffect(() => {
     void applyMediaOptimization(qualityProfile);
   }, [applyMediaOptimization, qualityProfile]);
+
+  useEffect(() => {
+    if (joinStatus !== "joined" || remotePeers.length === 0) {
+      setLastSpeakerPeerId(null);
+      return;
+    }
+
+    let disposed = false;
+
+    const detectActiveSpeaker = async () => {
+      const candidates = await Promise.all(
+        remotePeers.map(async (peer) => {
+          if (peer.audioMuted) {
+            return null;
+          }
+
+          const connection = peerConnectionsRef.current[peer.peerId];
+          if (!connection) {
+            return null;
+          }
+
+          try {
+            const stats = await connection.getStats();
+            const reports =
+              stats instanceof Map ? Array.from(stats.values()) : Array.isArray(stats) ? stats : [];
+
+            let strongestLevel = 0;
+            reports.forEach((entry) => {
+              const level = readAudioLevel(entry as StatsReport);
+              if (level !== null) {
+                strongestLevel = Math.max(strongestLevel, level);
+              }
+            });
+
+            return {
+              peerId: peer.peerId,
+              level: strongestLevel,
+            };
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      if (disposed) {
+        return;
+      }
+
+      const strongestPeer = candidates
+        .filter((candidate): candidate is { peerId: string; level: number } => Boolean(candidate))
+        .sort((left, right) => right.level - left.level)[0];
+
+      if (strongestPeer && strongestPeer.level >= SPEAKER_LEVEL_THRESHOLD) {
+        setLastSpeakerPeerId((current) =>
+          current === strongestPeer.peerId ? current : strongestPeer.peerId,
+        );
+      }
+    };
+
+    void detectActiveSpeaker();
+    const intervalId = setInterval(() => {
+      void detectActiveSpeaker();
+    }, SPEAKER_POLL_INTERVAL_MS);
+
+    return () => {
+      disposed = true;
+      clearInterval(intervalId);
+    };
+  }, [joinStatus, remotePeers]);
 
   useEffect(() => {
     if (!localStream) {
@@ -1202,20 +1310,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       });
 
       socket.on("allow-mic", () => {
-        const track = localStreamRef.current?.getAudioTracks?.()[0];
-        if (track) {
-          track.enabled = true;
-          setIsMicOn(true);
-        }
         setMicLocked(false);
       });
 
       socket.on("allow-cam", () => {
-        const track = localStreamRef.current?.getVideoTracks?.()[0];
-        if (track) {
-          track.enabled = true;
-          setIsCamOn(true);
-        }
         setCamLocked(false);
       });
 
@@ -1439,6 +1537,12 @@ export function GroupMeetScreen({ navigation, route }: Props) {
 
     return Math.max(112, Math.floor((screenWidth - 40) / 2));
   }, [isLandscape, screenWidth]);
+  const floatingTileWidth = useMemo(
+    () => Math.max(88, Math.min(126, Math.floor(screenWidth * 0.28))),
+    [screenWidth],
+  );
+  const controlIconSize = screenWidth < 390 ? 18 : 20;
+  const controlLockSize = screenWidth < 390 ? 9 : 10;
 
   const participantRows = useMemo(
     () => [
@@ -1551,6 +1655,45 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const activeStageTile = callTiles.find((tile) => tile.tileId === activeStageTileId) || null;
   const sideTiles = callTiles.filter((tile) => tile.tileId !== activeStageTileId);
   const hasSpotlight = Boolean(activeStageTile);
+  const immersiveTiles = useMemo(() => {
+    if (!fullscreenTileId || !hasSpotlight) {
+      return [];
+    }
+
+    const activePeerId = activeStageTile?.peerId || null;
+    const nextTiles: CallTile[] = [];
+    const pushUnique = (tile: CallTile | null) => {
+      if (!tile || nextTiles.some((entry) => entry.tileId === tile.tileId)) {
+        return;
+      }
+      nextTiles.push(tile);
+    };
+
+    pushUnique(
+      sideTiles.find(
+        (tile) =>
+          !tile.isLocal &&
+          !tile.isScreenShare &&
+          tile.peerId !== activePeerId &&
+          tile.peerId === lastSpeakerPeerId,
+      ) || null,
+    );
+    pushUnique(
+      sideTiles.find(
+        (tile) => !tile.isLocal && !tile.isScreenShare && tile.peerId !== activePeerId,
+      ) || null,
+    );
+    pushUnique(sideTiles.find((tile) => !tile.isLocal && tile.peerId !== activePeerId) || null);
+    pushUnique(sideTiles.find((tile) => tile.isLocal && tile.peerId !== activePeerId) || null);
+
+    sideTiles.forEach((tile) => {
+      if (tile.peerId !== activePeerId || tile.isScreenShare) {
+        pushUnique(tile);
+      }
+    });
+
+    return nextTiles.slice(0, 2);
+  }, [activeStageTile?.peerId, fullscreenTileId, hasSpotlight, lastSpeakerPeerId, sideTiles]);
 
   const handleSelectTile = useCallback((tileId: string) => {
     setSelectedTileId((current) => (current === tileId ? null : tileId));
@@ -1576,10 +1719,12 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     options?: {
       compact?: boolean;
       isStage?: boolean;
+      floatingCompact?: boolean;
     },
   ) => {
     const compact = Boolean(options?.compact);
     const isStage = Boolean(options?.isStage);
+    const floatingCompact = Boolean(options?.floatingCompact);
     const initial = tile.label.slice(0, 1).toUpperCase();
     const streamUrl = tile.stream?.toURL() || null;
     const canRenderStream = tile.hasVideo && Boolean(streamUrl);
@@ -1590,9 +1735,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         style={[
           styles.tile,
           compact && styles.tileCompact,
+          floatingCompact && styles.tileFloatingCompact,
           isStage && styles.tileStage,
           !isStage && {
-            width: compact ? compactTileWidth : tileWidth,
+            width: floatingCompact ? floatingTileWidth : compact ? compactTileWidth : tileWidth,
           },
         ]}
       >
@@ -1600,7 +1746,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           <RTCView
             streamURL={streamUrl}
             style={styles.tileVideo}
-            objectFit={tile.isScreenShare ? "contain" : "cover"}
+            objectFit={isStage || compact || tile.isScreenShare ? "contain" : "cover"}
             mirror={tile.isLocal && !tile.isScreenShare}
           />
         ) : (
@@ -1651,11 +1797,13 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     tile: CallTile,
     options?: {
       compact?: boolean;
+      floatingCompact?: boolean;
     },
   ) => (
     <Pressable key={tile.tileId} onPress={() => handleSelectTile(tile.tileId)}>
       {renderTile(tile, {
         compact: options?.compact,
+        floatingCompact: options?.floatingCompact,
       })}
     </Pressable>
   );
@@ -1777,16 +1925,18 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                       ) : null}
                     </View>
 
-                    {fullscreenTileId && sideTiles.length > 0 ? (
+                    {fullscreenTileId && immersiveTiles.length > 0 ? (
                       <ScrollView
                         style={styles.floatingRail}
                         contentContainerStyle={styles.floatingRailContent}
-                        showsVerticalScrollIndicator={false}
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
                         bounces={false}
                       >
-                        {sideTiles.map((tile) =>
+                        {immersiveTiles.map((tile) =>
                           renderSelectableTile(tile, {
                             compact: true,
+                            floatingCompact: true,
                           }),
                         )}
                       </ScrollView>
@@ -1795,14 +1945,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
 
                   {!fullscreenTileId ? (
                     <ScrollView
-                      horizontal={isLandscape}
-                      style={[styles.spotlightRail, isLandscape && styles.spotlightRailLandscape]}
-                      contentContainerStyle={[
-                        styles.spotlightRailContent,
-                        !isLandscape && styles.spotlightRailGridContent,
-                      ]}
+                      horizontal
+                      style={styles.spotlightRail}
+                      contentContainerStyle={styles.spotlightRailContent}
                       showsHorizontalScrollIndicator={false}
-                      showsVerticalScrollIndicator={false}
                       bounces={false}
                     >
                       {sideTiles.map((tile) =>
@@ -1834,46 +1980,70 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           bounces={false}
         >
           <Pressable
-            style={[styles.controlButton, !isMicOn && styles.controlButtonMuted]}
+            style={[
+              styles.controlButton,
+              !isMicOn ? styles.controlButtonOff : null,
+              micLocked && styles.controlButtonDisabled,
+            ]}
             onPress={handleToggleMic}
             disabled={micLocked}
           >
             {isMicOn ? (
-              <Mic size={20} color="#fff" />
+              <Mic size={controlIconSize} color="#f5f5f5" />
             ) : (
-              <MicOff size={20} color="#fff" />
+              <MicOff size={controlIconSize} color="#7b241f" />
             )}
-            {micLocked ? <Lock size={10} color="#fff" style={styles.controlLock} /> : null}
+            {micLocked ? (
+              <Lock
+                size={controlLockSize}
+                color={isMicOn ? "#fff" : "#7b241f"}
+                style={styles.controlLock}
+              />
+            ) : null}
           </Pressable>
           <Pressable
-            style={[styles.controlButton, !isCamOn && styles.controlButtonMuted]}
+            style={[
+              styles.controlButton,
+              !isCamOn ? styles.controlButtonOff : null,
+              camLocked && styles.controlButtonDisabled,
+            ]}
             onPress={handleToggleCam}
             disabled={camLocked}
           >
             {isCamOn ? (
-              <CameraIcon size={20} color="#fff" />
+              <CameraIcon size={controlIconSize} color="#f5f5f5" />
             ) : (
-              <CameraOff size={20} color="#fff" />
+              <CameraOff size={controlIconSize} color="#7b241f" />
             )}
-            {camLocked ? <Lock size={10} color="#fff" style={styles.controlLock} /> : null}
+            {camLocked ? (
+              <Lock
+                size={controlLockSize}
+                color={isCamOn ? "#fff" : "#7b241f"}
+                style={styles.controlLock}
+              />
+            ) : null}
           </Pressable>
           {canScreenShare ? (
             <Pressable
-              style={[styles.controlButton, isScreenSharing && styles.controlButtonActive]}
+              style={[
+                styles.controlButton,
+                isScreenSharing ? styles.controlButtonAccent : null,
+              ]}
               onPress={() => void handleToggleScreenShare()}
             >
               {isScreenSharing ? (
-                <Monitor size={20} color="#fff" />
+                <Monitor size={controlIconSize} color={Colors.warning} />
               ) : (
-                <MonitorOff size={20} color="#fff" />
+                <MonitorOff size={controlIconSize} color="#f5f5f5" />
               )}
             </Pressable>
           ) : null}
           <Pressable style={styles.controlButton} onPress={handleSwitchCamera}>
-            <RefreshCcw size={20} color="#fff" />
+            <RefreshCcw size={controlIconSize} color="#f5f5f5" />
           </Pressable>
+          <View style={styles.controlDivider} />
           <Pressable style={[styles.controlButton, styles.controlButtonDanger]} onPress={() => void handleLeave()}>
-            <PhoneOff size={20} color="#fff" />
+            <PhoneOff size={controlIconSize} color="#fff" />
           </Pressable>
         </ScrollView>
 
@@ -2237,30 +2407,22 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     marginTop: 12,
   },
-  spotlightRailLandscape: {
-    marginTop: 10,
-  },
   spotlightRailContent: {
+    flexDirection: "row",
     gap: 10,
     paddingRight: 6,
-  },
-  spotlightRailGridContent: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
     paddingBottom: 4,
   },
   floatingRail: {
     position: "absolute",
     top: 18,
-    right: 14,
-    width: 144,
-    maxHeight: "76%",
-    zIndex: 4,
+    right: 62,
+    maxWidth: "72%",
+    zIndex: 6,
   },
   floatingRailContent: {
+    flexDirection: "row",
     gap: 8,
-    paddingBottom: 12,
   },
   centerState: {
     flex: 1,
@@ -2310,6 +2472,10 @@ const styles = StyleSheet.create({
   },
   tileCompact: {
     height: 118,
+    borderRadius: 18,
+  },
+  tileFloatingCompact: {
+    height: 92,
     borderRadius: 18,
   },
   tileStage: {
@@ -2397,36 +2563,65 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   controls: {
-    minWidth: "100%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 14,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 18,
+    gap: 10,
+    alignSelf: "center",
+    marginHorizontal: 8,
+    marginTop: 6,
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(24,24,27,0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    borderRadius: 26,
+    shadowColor: "#000",
+    shadowOpacity: 0.32,
+    shadowRadius: 22,
+    shadowOffset: {
+      width: 0,
+      height: 12,
+    },
+    elevation: 10,
   },
   controlButton: {
     width: 54,
-    height: 54,
-    borderRadius: 27,
+    height: 50,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(54,54,56,0.98)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
   },
-  controlButtonMuted: {
-    backgroundColor: "rgba(255,255,255,0.08)",
+  controlButtonOff: {
+    backgroundColor: "rgba(247,200,204,0.96)",
+    borderColor: "rgba(244,114,182,0.16)",
   },
-  controlButtonActive: {
-    backgroundColor: "rgba(82, 196, 26, 0.28)",
+  controlButtonAccent: {
+    borderColor: "rgba(250,166,26,0.18)",
   },
   controlButtonDanger: {
-    backgroundColor: Colors.danger,
+    width: 74,
+    borderRadius: 20,
+    backgroundColor: "#d64a3a",
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  controlButtonDisabled: {
+    opacity: 0.72,
+  },
+  controlDivider: {
+    width: 1,
+    height: 28,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.12)",
   },
   controlLock: {
     position: "absolute",
     right: 10,
-    bottom: 10,
+    bottom: 9,
   },
   drawerOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   Pressable,
   ScrollView,
   Text,
   View,
 } from "react-native";
 import type { DocumentPickerAsset } from "expo-document-picker";
-import { Upload, X } from "lucide-react-native";
+import { Upload } from "lucide-react-native";
+import { DraggableBottomSheet } from "../../../components/DraggableBottomSheet";
 import { TextInput } from "../../../components/TextInput";
 import { useI18n } from "../../../i18n";
 import { coursesApi } from "../../../lib/api";
@@ -160,112 +160,111 @@ export function LessonEditorModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>
-              {lesson ? t("addLesson.editTitle") : t("addLesson.title")}
+    <DraggableBottomSheet
+      visible={visible}
+      title={lesson ? t("addLesson.editTitle") : t("addLesson.title")}
+      onClose={onClose}
+      minHeight={620}
+      initialHeightRatio={0.84}
+      maxHeightRatio={0.96}
+      footer={
+        <View style={styles.createFooter}>
+          <Pressable style={styles.secondaryButton} onPress={onClose}>
+            <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.secondaryAccentButton, (!title.trim() || saving) && styles.sendButtonDisabled]}
+            disabled={!title.trim() || saving}
+            onPress={() => void handleSave(false)}
+          >
+            <Text style={styles.secondaryAccentButtonText}>
+              {saving && !uploading ? t("common.saving") : t("addLesson.saveDraft")}
             </Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.createContent} showsVerticalScrollIndicator={false}>
-            <TextInput
-              value={title}
-              onChangeText={setTitle}
-              placeholder={t("addLesson.lessonName")}
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder={t("addLesson.description")}
-              placeholderTextColor={Colors.subtleText}
-              style={[styles.fieldInput, styles.textArea]}
-              multiline
-            />
-
-            <View style={styles.accessRow}>
-              {[
-                { id: "upload", label: t("addLesson.uploadTab") },
-                { id: "url", label: "URL" },
-              ].map((option) => (
-                <Pressable
-                  key={option.id}
-                  style={[styles.accessChip, mode === option.id && styles.accessChipActive]}
-                  onPress={() => setMode(option.id as LessonMediaMode)}
-                >
-                  <Text
-                    style={[
-                      styles.accessChipText,
-                      mode === option.id && styles.accessChipTextActive,
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {mode === "url" ? (
-              <TextInput
-                value={videoUrl}
-                onChangeText={setVideoUrl}
-                placeholder="https://..."
-                placeholderTextColor={Colors.subtleText}
-                style={styles.fieldInput}
-              />
+          </Pressable>
+          <Pressable
+            style={[
+              styles.primaryButton,
+              (!title.trim() || saving || uploading) && styles.sendButtonDisabled,
+            ]}
+            disabled={!title.trim() || saving || uploading}
+            onPress={() => void handleSave(true)}
+          >
+            {saving || uploading ? (
+              <ActivityIndicator size="small" color="#fff" />
             ) : (
-              <Pressable style={styles.mediaPicker} onPress={() => void handlePickVideo()}>
-                <Upload size={16} color={Colors.primary} />
-                <Text style={styles.mediaPickerText}>
-                  {selectedFile ? selectedFile.name : t("addLesson.fileLabel")}
-                </Text>
-              </Pressable>
+              <Text style={styles.primaryButtonText}>{t("addLesson.publish")}</Text>
             )}
+          </Pressable>
+        </View>
+      }
+    >
+      <ScrollView
+        contentContainerStyle={styles.createContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <TextInput
+          value={title}
+          onChangeText={setTitle}
+          placeholder={t("addLesson.lessonName")}
+          placeholderTextColor={Colors.subtleText}
+          style={styles.fieldInput}
+        />
+        <TextInput
+          value={description}
+          onChangeText={setDescription}
+          placeholder={t("addLesson.description")}
+          placeholderTextColor={Colors.subtleText}
+          style={[styles.fieldInput, styles.textArea]}
+          multiline
+        />
 
-            {selectedFile ? (
-              <View style={styles.fileInfoCard}>
-                <Text style={styles.fileInfoTitle}>{selectedFile.name}</Text>
-                <Text style={styles.fileInfoMeta}>{formatFileSize(selectedFile.size)}</Text>
-              </View>
-            ) : null}
-          </ScrollView>
-
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>{t("common.cancel")}</Text>
-            </Pressable>
+        <View style={styles.accessRow}>
+          {[
+            { id: "upload", label: t("addLesson.uploadTab") },
+            { id: "url", label: "URL" },
+          ].map((option) => (
             <Pressable
-              style={[styles.secondaryAccentButton, (!title.trim() || saving) && styles.sendButtonDisabled]}
-              disabled={!title.trim() || saving}
-              onPress={() => void handleSave(false)}
+              key={option.id}
+              style={[styles.accessChip, mode === option.id && styles.accessChipActive]}
+              onPress={() => setMode(option.id as LessonMediaMode)}
             >
-              <Text style={styles.secondaryAccentButtonText}>
-                {saving && !uploading ? t("common.saving") : t("addLesson.saveDraft")}
+              <Text
+                style={[
+                  styles.accessChipText,
+                  mode === option.id && styles.accessChipTextActive,
+                ]}
+              >
+                {option.label}
               </Text>
             </Pressable>
-            <Pressable
-              style={[
-                styles.primaryButton,
-                (!title.trim() || saving || uploading) && styles.sendButtonDisabled,
-              ]}
-              disabled={!title.trim() || saving || uploading}
-              onPress={() => void handleSave(true)}
-            >
-              {saving || uploading ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>{t("addLesson.publish")}</Text>
-              )}
-            </Pressable>
+          ))}
+        </View>
+
+        {mode === "url" ? (
+          <TextInput
+            value={videoUrl}
+            onChangeText={setVideoUrl}
+            placeholder="https://..."
+            placeholderTextColor={Colors.subtleText}
+            style={styles.fieldInput}
+          />
+        ) : (
+          <Pressable style={styles.mediaPicker} onPress={() => void handlePickVideo()}>
+            <Upload size={16} color={Colors.primary} />
+            <Text style={styles.mediaPickerText}>
+              {selectedFile ? selectedFile.name : t("addLesson.fileLabel")}
+            </Text>
+          </Pressable>
+        )}
+
+        {selectedFile ? (
+          <View style={styles.fileInfoCard}>
+            <Text style={styles.fileInfoTitle}>{selectedFile.name}</Text>
+            <Text style={styles.fileInfoMeta}>{formatFileSize(selectedFile.size)}</Text>
           </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        ) : null}
+      </ScrollView>
+    </DraggableBottomSheet>
   );
 }

@@ -138,6 +138,8 @@ export type CourseLesson = {
   views?: number;
   likes?: number;
   liked?: boolean;
+  commentsCount?: number;
+  comments?: CourseComment[];
   isUnlocked?: boolean;
   accessLockedByTests?: Array<{
     lessonId?: string;

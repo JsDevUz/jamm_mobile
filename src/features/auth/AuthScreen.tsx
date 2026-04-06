@@ -246,13 +246,6 @@ export function AuthScreen(_: Props) {
         >
           <View style={styles.shell}>
             <View style={styles.heroSection}>
-              <View style={styles.logoBadge}>
-                <Image
-                  source={require("../../../assets/icon.png")}
-                  style={styles.logoImage}
-                  contentFit="cover"
-                />
-              </View>
               <Text style={styles.logoText}>Jamm</Text>
               <Text style={styles.title}>{title}</Text>
               <Text style={styles.subtitle}>{subtitle}</Text>

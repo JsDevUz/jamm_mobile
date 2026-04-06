@@ -3,19 +3,18 @@ import type { ComponentType } from "react";
 import { Keyboard, Pressable, StyleSheet, Text, View } from "react-native";
 import type { ParamListBase } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
+import { MaterialIcons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
-import {
-  Flame,
-  GraduationCap,
-  MessagesSquare,
-  Newspaper,
-} from "lucide-react-native";
 import { chatsApi } from "../lib/api";
 import type { MainTabsParamList } from "../navigation/types";
 import useAuthStore from "../store/auth-store";
 import { Colors } from "../theme/colors";
+import {
+  ChatsSolidIcon,
+  FeedSolidIcon,
+} from "./NavSolidIcons";
 
 type BottomNavProps = {
   activeRoute: keyof MainTabsParamList;
@@ -26,13 +25,14 @@ type BottomNavProps = {
 
 const items: Array<{
   route: keyof MainTabsParamList;
-  icon: ComponentType<{ size?: number; color?: string }>;
+  icon: ComponentType<any>;
+  iconName?: string;
   label: string;
 }> = [
-  { route: "Feed", icon: Flame, label: "Feed" },
-  { route: "Chats", icon: MessagesSquare, label: "Chats" },
-  { route: "Articles", icon: Newspaper, label: "Articles" },
-  { route: "Courses", icon: GraduationCap, label: "Courses" },
+  { route: "Feed", icon: FeedSolidIcon, label: "Feed" },
+  { route: "Chats", icon: ChatsSolidIcon, label: "Chats" },
+  { route: "Articles", icon: MaterialIcons, iconName: "article", label: "Articles" },
+  { route: "Courses", icon: MaterialIcons, iconName: "school", label: "Courses" },
 ];
 
 export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
@@ -96,8 +96,9 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
             >
               <View style={styles.iconSlot}>
                 <Icon
+                  {...(item.iconName ? { name: item.iconName } : null)}
                   size={21}
-                  color={isActive ? "#fff" : Colors.mutedText}
+                  color={isActive ? Colors.primary : Colors.mutedText}
                 />
                 {item.route === "Chats" && unreadCount > 0 ? (
                   <View style={styles.badge}>
@@ -163,17 +164,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 2,
     backgroundColor: Colors.background,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    borderLeftWidth: 0,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
   },
   container: {
     minHeight: 64,
     paddingHorizontal: 6,
     paddingTop: 6,
     paddingBottom: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.08)",
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
@@ -219,7 +217,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   navLabelActive: {
-    color: "#fff",
+    color: Colors.primary,
     fontWeight: "700",
   },
   profileAvatarWrap: {

@@ -1,5 +1,7 @@
 import type { User } from "./entities";
 
+export type ArticleFeedSort = "newest" | "views" | "likes" | "comments";
+
 export type ArticleSummary = {
   _id: string;
   title: string;

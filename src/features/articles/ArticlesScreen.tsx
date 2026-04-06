@@ -23,7 +23,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -60,7 +60,7 @@ import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
 import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
-import { SearchHeaderBar } from "../../shared/ui/SearchHeaderBar";
+import { SectionTopHeader } from "../../shared/ui/SectionTopHeader";
 import { useI18n } from "../../i18n";
 import {
   APP_LIMITS,
@@ -78,6 +78,7 @@ import { Colors } from "../../theme/colors";
 import type {
   ArticleComment,
   ArticleCommentReply,
+  ArticleFeedSort,
   ArticleSummary,
 } from "../../types/articles";
 import { getEntityId } from "../../utils/chat";
@@ -118,6 +119,13 @@ const LOCALE_BY_LANGUAGE = {
   en: "en-US",
   ru: "ru-RU",
 } as const;
+
+const ARTICLE_SORT_TABS: { key: ArticleFeedSort; labelKey: string }[] = [
+  { key: "newest", labelKey: "articles.tabs.newest" },
+  { key: "views", labelKey: "articles.tabs.views" },
+  { key: "likes", labelKey: "articles.tabs.likes" },
+  { key: "comments", labelKey: "articles.tabs.commentsTop" },
+];
 
 function timeAgo(
   iso: string | undefined,
@@ -1523,6 +1531,7 @@ function ArticlesScreenContent({
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
   const [query, setQuery] = useState("");
+  const [activeSort, setActiveSort] = useState<ArticleFeedSort>("newest");
   const [selectedArticleIdentifier, setSelectedArticleIdentifier] = useState<string | null>(() =>
     detailOnly ? String(routeParams?.articleId || "").trim() || null : null,
   );
@@ -1531,11 +1540,50 @@ function ArticlesScreenContent({
   const [editingArticle, setEditingArticle] = useState<ArticleSummary | null>(null);
   const viewedRef = useRef(new Set<string>());
   const articleDetailTranslateX = useRef(new Animated.Value(0)).current;
+  const pagerRef = useRef<any>(null);
+  const tabsScrollRef = useRef<ScrollView>(null);
+  const pagerScrollX = useRef(new Animated.Value(0)).current;
+  const [tabLayouts, setTabLayouts] = useState<
+    Partial<Record<ArticleFeedSort, { x: number; width: number }>>
+  >({});
+  const activeSortIndex = ARTICLE_SORT_TABS.findIndex((item) => item.key === activeSort);
 
-  const articlesQuery = useQuery({
-    queryKey: ["articles"],
-    queryFn: () => articlesApi.fetchArticles(1, 40),
+  const articlesQueries = useQueries({
+    queries: ARTICLE_SORT_TABS.map((tab) => ({
+      queryKey: ["articles", tab.key] as const,
+      queryFn: () => articlesApi.fetchArticles(1, 40, tab.key),
+    })),
   });
+  const articlesListQueryKey = useMemo(
+    () => ["articles", activeSort] as const,
+    [activeSort],
+  );
+  const activeArticlesQuery = articlesQueries[activeSortIndex >= 0 ? activeSortIndex : 0];
+  const tabsIndicatorTranslateX = useMemo(() => {
+    const layouts = ARTICLE_SORT_TABS.map((tab) => tabLayouts[tab.key]).filter(Boolean);
+    if (layouts.length !== ARTICLE_SORT_TABS.length) {
+      return 0;
+    }
+
+    return pagerScrollX.interpolate({
+      inputRange: ARTICLE_SORT_TABS.map((_, index) => screenWidth * index),
+      outputRange: ARTICLE_SORT_TABS.map((tab) => tabLayouts[tab.key]?.x || 0),
+      extrapolate: "clamp",
+    });
+  }, [pagerScrollX, screenWidth, tabLayouts]);
+
+  const tabsIndicatorWidth = useMemo(() => {
+    const layouts = ARTICLE_SORT_TABS.map((tab) => tabLayouts[tab.key]).filter(Boolean);
+    if (layouts.length !== ARTICLE_SORT_TABS.length) {
+      return 0;
+    }
+
+    return pagerScrollX.interpolate({
+      inputRange: ARTICLE_SORT_TABS.map((_, index) => screenWidth * index),
+      outputRange: ARTICLE_SORT_TABS.map((tab) => tabLayouts[tab.key]?.width || 0),
+      extrapolate: "clamp",
+    });
+  }, [pagerScrollX, screenWidth, tabLayouts]);
 
   const selectedArticleQuery = useQuery({
     queryKey: ["article", selectedArticleIdentifier],
@@ -1553,10 +1601,12 @@ function ArticlesScreenContent({
     mutationFn: (identifier: string) => articlesApi.likeArticle(identifier),
     onMutate: async (identifier) => {
       await queryClient.cancelQueries({ queryKey: ["article", identifier] });
-      await queryClient.cancelQueries({ queryKey: ["articles"] });
+      await queryClient.cancelQueries({ queryKey: articlesListQueryKey });
 
       const previousArticle = queryClient.getQueryData<ArticleSummary>(["article", identifier]);
-      const previousArticles = queryClient.getQueryData<{ data?: ArticleSummary[] }>(["articles"]);
+      const previousArticles = queryClient.getQueryData<{ data?: ArticleSummary[] }>(
+        articlesListQueryKey,
+      );
 
       queryClient.setQueryData<ArticleSummary | undefined>(["article", identifier], (previous) => {
         if (!previous) {
@@ -1572,7 +1622,7 @@ function ArticlesScreenContent({
         };
       });
 
-      queryClient.setQueryData<{ data?: ArticleSummary[] } | undefined>(["articles"], (previous) => {
+      queryClient.setQueryData<{ data?: ArticleSummary[] } | undefined>(articlesListQueryKey, (previous) => {
         if (!previous?.data) {
           return previous;
         }
@@ -1600,10 +1650,10 @@ function ArticlesScreenContent({
     },
     onError: (_error, identifier, context) => {
       if (context?.previousArticle) {
-        queryClient.setQueryData(["article", identifier], context.previousArticle);
+      queryClient.setQueryData(["article", identifier], context.previousArticle);
       }
       if (context?.previousArticles) {
-        queryClient.setQueryData(["articles"], context.previousArticles);
+        queryClient.setQueryData(articlesListQueryKey, context.previousArticles);
       }
     },
     onSuccess: async () => {
@@ -1723,20 +1773,28 @@ function ArticlesScreenContent({
     });
   }, [queryClient, selectedArticleIdentifier, selectedArticleQuery.data]);
 
-  const filteredArticles = useMemo(() => {
-    const items = articlesQuery.data?.data || [];
-    const needle = query.trim().toLowerCase();
-    if (!needle) return items;
+  const getFilteredArticles = useCallback(
+    (sortKey: ArticleFeedSort) => {
+      const tabIndex = ARTICLE_SORT_TABS.findIndex((item) => item.key === sortKey);
+      const items = articlesQueries[tabIndex]?.data?.data || [];
+      const needle = query.trim().toLowerCase();
+      if (!needle) return items;
 
-    return items.filter((article) => {
-      const author = article.author?.nickname || article.author?.username || "";
-      return [article.title, article.excerpt, author]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase()
-        .includes(needle);
-    });
-  }, [articlesQuery.data?.data, query]);
+      return items.filter((article) => {
+        const author = article.author?.nickname || article.author?.username || "";
+        return [article.title, article.excerpt, author]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(needle);
+      });
+    },
+    [articlesQueries, query],
+  );
+  const filteredArticles = useMemo(
+    () => getFilteredArticles(activeSort),
+    [activeSort, getFilteredArticles],
+  );
 
   const currentArticle = selectedArticleQuery.data || null;
   const isOwnArticle = Boolean(
@@ -1745,6 +1803,29 @@ function ArticlesScreenContent({
   const articleWordLimit = getTierLimit(
     APP_LIMITS.articleWords,
     user?.premiumStatus,
+  );
+
+  const animateToSort = useCallback(
+    (sortKey: ArticleFeedSort, animated = true) => {
+      const nextIndex = ARTICLE_SORT_TABS.findIndex((item) => item.key === sortKey);
+      if (nextIndex === -1) {
+        return;
+      }
+
+      setActiveSort(sortKey);
+      const layout = tabLayouts[sortKey];
+      if (layout) {
+        tabsScrollRef.current?.scrollTo({
+          x: Math.max(layout.x - 12, 0),
+          animated,
+        });
+      }
+      pagerRef.current?.scrollTo?.({
+        x: screenWidth * nextIndex,
+        animated,
+      });
+    },
+    [screenWidth, tabLayouts],
   );
 
   const handleOpenArticle = async (identifier: string) => {
@@ -2069,89 +2150,187 @@ function ArticlesScreenContent({
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <View style={styles.container}>
-        <SearchHeaderBar
-          value={query}
-          onChangeText={setQuery}
-          placeholder={t("articles.searchPlaceholder")}
-          rightSlot={
-            <Pressable
-              style={styles.addButton}
-              onPress={() => {
-                setEditingArticle(null);
-                setEditorOpen(true);
-              }}
-            >
-              <Plus size={18} color={Colors.text} />
-            </Pressable>
+        <SectionTopHeader
+          title={t("navigation.articles")}
+          onPressSearch={() =>
+            (navigation as any).navigate("GlobalSearch", {
+              initialTab: "articles",
+            })
           }
+          onPressAdd={() => {
+            setEditingArticle(null);
+            setEditorOpen(true);
+          }}
         />
 
         <ScrollView
-          style={styles.listScroll}
-          refreshControl={
-            <RefreshControl
-              refreshing={articlesQuery.isRefetching}
-              onRefresh={() => articlesQuery.refetch()}
-              tintColor={Colors.primary}
-            />
-          }
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
+          ref={tabsScrollRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabsRow}
+          style={styles.tabsScroll}
         >
-          {articlesQuery.isLoading ? (
-            <View style={styles.loaderState}>
-              <ActivityIndicator color={Colors.primary} />
-            </View>
-          ) : filteredArticles.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Ionicons name="newspaper-outline" size={30} color={Colors.mutedText} />
-              <Text style={styles.emptyTitle}>{t("articles.emptyTitle")}</Text>
-              <Text style={styles.emptyText}>
-                {t("articles.emptyDescription")}
+          {Object.keys(tabLayouts).length === ARTICLE_SORT_TABS.length ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.tabIndicator,
+                {
+                  width: tabsIndicatorWidth as any,
+                  transform: [{ translateX: tabsIndicatorTranslateX as any }],
+                },
+              ]}
+            />
+          ) : null}
+          {ARTICLE_SORT_TABS.map((tab) => (
+            <Pressable
+              key={tab.key}
+              style={styles.tab}
+              onPress={() => animateToSort(tab.key)}
+              onLayout={(event) => {
+                const { x, width } = event.nativeEvent.layout;
+                setTabLayouts((current) => {
+                  const previous = current[tab.key];
+                  if (previous?.x === x && previous?.width === width) {
+                    return current;
+                  }
+
+                  return {
+                    ...current,
+                    [tab.key]: { x, width },
+                  };
+                });
+              }}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  activeSort === tab.key && styles.tabTextActive,
+                ]}
+                numberOfLines={1}
+              >
+                {t(tab.labelKey)}
               </Text>
-            </View>
-          ) : (
-            filteredArticles.map((article) => {
-              const target = article.slug || article._id;
-              return (
-                <Pressable
-                  key={article._id}
-                  style={styles.articleItem}
-                  onPress={() => void handleOpenArticle(target)}
-                >
-                  <View style={styles.articleThumb}>
-                    {article.coverImage ? (
-                      <PersistentCachedImage
-                        remoteUri={article.coverImage}
-                        style={styles.articleThumbImage}
-                        requireManualDownload
-                        manualDownloadVariant="icon"
-                      />
-                    ) : null}
-                  </View>
-                  <View style={styles.articleItemBody}>
-                    <Text style={styles.articleItemTitle} numberOfLines={2}>
-                      {article.title}
-                    </Text>
-                    <Text style={styles.articleItemExcerpt} numberOfLines={2}>
-                      {article.excerpt || t("articles.noExcerpt")}
-                    </Text>
-                    <View style={styles.articleItemMeta}>
-                      <Text style={styles.articleItemMetaText}>
-                        {article.author?.nickname || article.author?.username || t("articles.author")}
-                      </Text>
-                      <Text style={styles.articleItemMetaText}>{article.likes} {t("common.like")}</Text>
-                      <Text style={styles.articleItemMetaText}>{article.comments} {t("articles.comments")}</Text>
-                    </View>
-                    <Text style={styles.articleItemTime}>
-                      {timeAgo(article.publishedAt || article.createdAt, t, language)}
-                    </Text>
-                  </View>
-                </Pressable>
-              );
-            })
-          )}
+            </Pressable>
+          ))}
         </ScrollView>
+
+        <Animated.ScrollView
+          ref={pagerRef}
+          horizontal
+          pagingEnabled
+          bounces={false}
+          directionalLockEnabled
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onMomentumScrollEnd={(event) => {
+            const nextIndex = Math.round(
+              event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1),
+            );
+            const boundedIndex = Math.max(
+              0,
+              Math.min(nextIndex, ARTICLE_SORT_TABS.length - 1),
+            );
+            const nextSort = ARTICLE_SORT_TABS[boundedIndex]?.key || "newest";
+            setActiveSort(nextSort);
+            const layout = tabLayouts[nextSort];
+            if (layout) {
+              tabsScrollRef.current?.scrollTo({
+                x: Math.max(layout.x - 12, 0),
+                animated: true,
+              });
+            }
+          }}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { x: pagerScrollX } } }],
+            { useNativeDriver: false },
+          )}
+          style={styles.pagerTrack}
+        >
+          {ARTICLE_SORT_TABS.map((tab, index) => {
+            const sortQuery = articlesQueries[index];
+            const sortArticles = getFilteredArticles(tab.key);
+
+            return (
+              <View key={tab.key} style={[styles.pagerPage, { width: screenWidth }]}>
+                <ScrollView
+                  style={styles.listScroll}
+                  refreshControl={
+                    <RefreshControl
+                      refreshing={sortQuery.isRefetching}
+                      onRefresh={() => sortQuery.refetch()}
+                      tintColor={Colors.primary}
+                    />
+                  }
+                  contentContainerStyle={styles.listContent}
+                  showsVerticalScrollIndicator={false}
+                  nestedScrollEnabled
+                >
+                  {sortQuery.isLoading ? (
+                    <View style={styles.loaderState}>
+                      <ActivityIndicator color={Colors.primary} />
+                    </View>
+                  ) : sortArticles.length === 0 ? (
+                    <View style={styles.emptyState}>
+                      <Ionicons name="newspaper-outline" size={30} color={Colors.mutedText} />
+                      <Text style={styles.emptyTitle}>{t("articles.emptyTitle")}</Text>
+                      <Text style={styles.emptyText}>
+                        {t("articles.emptyDescription")}
+                      </Text>
+                    </View>
+                  ) : (
+                    sortArticles.map((article) => {
+                      const target = article.slug || article._id;
+                      return (
+                        <Pressable
+                          key={article._id}
+                          style={styles.articleItem}
+                          onPress={() => void handleOpenArticle(target)}
+                        >
+                          <View style={styles.articleThumb}>
+                            {article.coverImage ? (
+                              <PersistentCachedImage
+                                remoteUri={article.coverImage}
+                                style={styles.articleThumbImage}
+                                requireManualDownload
+                                manualDownloadVariant="icon"
+                              />
+                            ) : null}
+                          </View>
+                          <View style={styles.articleItemBody}>
+                            <Text style={styles.articleItemTitle} numberOfLines={2}>
+                              {article.title}
+                            </Text>
+                            <Text style={styles.articleItemExcerpt} numberOfLines={2}>
+                              {article.excerpt || t("articles.noExcerpt")}
+                            </Text>
+                            <View style={styles.articleItemMeta}>
+                              <Text style={styles.articleItemMetaAuthor} numberOfLines={1}>
+                                {article.author?.nickname ||
+                                  article.author?.username ||
+                                  t("articles.author")}
+                              </Text>
+                              <Text style={styles.articleItemMetaText}>
+                                {article.likes} {t("common.like")}
+                              </Text>
+                              <Text style={styles.articleItemMetaText}>
+                                {article.comments} {t("articles.comments")}
+                              </Text>
+                              <Text style={styles.articleItemTime}>
+                                {timeAgo(article.publishedAt || article.createdAt, t, language)}
+                              </Text>
+                            </View>
+                          </View>
+                        </Pressable>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              </View>
+            );
+          })}
+        </Animated.ScrollView>
       </View>
       <ArticleCommentsModal
         visible={commentsOpen}
@@ -2212,6 +2391,51 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  tabsScroll: {
+    flexGrow: 0,
+    backgroundColor: Colors.surface,
+  },
+  tabsRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    position: "relative",
+    backgroundColor: Colors.surface,
+    paddingHorizontal: 12,
+  },
+  tab: {
+    minHeight: 52,
+    minWidth: 92,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  tabIndicator: {
+    position: "absolute",
+    left: 0,
+    bottom: 0,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: Colors.primary,
+  },
+  tabText: {
+    color: Colors.subtleText,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "500",
+    textAlign: "center",
+    maxWidth: "100%",
+  },
+  tabTextActive: {
+    color: Colors.primary,
+    fontWeight: "700",
+  },
+  pagerTrack: {
+    flex: 1,
+    flexDirection: "row",
+  },
+  pagerPage: {
+    flex: 1,
   },
   listHeader: {
     minHeight: 66,
@@ -2323,18 +2547,26 @@ const styles = StyleSheet.create({
   },
   articleItemMeta: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
+    alignItems: "center",
+    flexWrap: "nowrap",
     marginTop: 10,
+    gap: 10,
+  },
+  articleItemMetaAuthor: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    flexShrink: 1,
+    minWidth: 0,
   },
   articleItemMetaText: {
     color: Colors.subtleText,
     fontSize: 12,
+    flexShrink: 0,
   },
   articleItemTime: {
     color: Colors.subtleText,
-    fontSize: 11,
-    marginTop: 8,
+    fontSize: 12,
+    flexShrink: 0,
   },
   readerOverlay: {
     ...StyleSheet.absoluteFillObject,

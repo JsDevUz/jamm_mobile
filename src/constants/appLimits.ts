@@ -49,7 +49,7 @@ export const APP_LIMITS = {
   lessonTitleChars: 120,
   lessonDescriptionChars: 1000,
   sentenceBuilderShareLinksPerDeck: { ordinary: 2, premium: 4 },
-  flashcardsPerDeck: 30,
+  flashcardsPerDeck: { ordinary: 30, premium: 100 },
   flashcardDeckPageSize: 20,
   flashcardTitleChars: 120,
   flashcardSideChars: 220,

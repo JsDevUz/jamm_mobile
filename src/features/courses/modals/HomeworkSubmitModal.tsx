@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, Text, View } from "react-native";
-import { Upload, X } from "lucide-react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { Upload } from "lucide-react-native";
+import { DraggableBottomSheet } from "../../../components/DraggableBottomSheet";
 import { TextInput } from "../../../components/TextInput";
 import { coursesApi } from "../../../lib/api";
 import { Colors } from "../../../theme/colors";
@@ -106,57 +107,60 @@ export function HomeworkSubmitModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.modalOverlay} onPress={onClose}>
-        <Pressable style={styles.createModal} onPress={(event) => event.stopPropagation()}>
-          <View style={styles.createHeader}>
-            <Text style={styles.createTitle}>{assignment?.title || "Homework topshirish"}</Text>
-            <Pressable style={styles.iconCircle} onPress={onClose}>
-              <X size={18} color={Colors.mutedText} />
-            </Pressable>
-          </View>
-          <ScrollView contentContainerStyle={styles.createContent} showsVerticalScrollIndicator={false}>
-            <Text style={styles.sectionHint}>{assignment?.description || "Topshiriqni yuboring."}</Text>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              placeholder="Matnli javob"
-              placeholderTextColor={Colors.subtleText}
-              style={[styles.fieldInput, styles.textArea]}
-              multiline
-            />
-            <TextInput
-              value={link}
-              onChangeText={setLink}
-              placeholder="Havola"
-              placeholderTextColor={Colors.subtleText}
-              style={styles.fieldInput}
-            />
-            {assignment?.type !== "text" ? (
-              <Pressable style={styles.mediaPicker} onPress={() => void pickSubmissionFile()}>
-                <Upload size={16} color={Colors.primary} />
-                <Text style={styles.mediaPickerText}>{file ? file.name : "Fayl tanlash"}</Text>
-              </Pressable>
-            ) : null}
-          </ScrollView>
-          <View style={styles.createFooter}>
-            <Pressable style={styles.secondaryButton} onPress={onClose}>
-              <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primaryButton, saving && styles.sendButtonDisabled]}
-              disabled={saving}
-              onPress={() => void handleSubmit()}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>Yuborish</Text>
-              )}
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <DraggableBottomSheet
+      visible={visible}
+      title={assignment?.title || "Homework topshirish"}
+      onClose={onClose}
+      minHeight={500}
+      initialHeightRatio={0.72}
+      maxHeightRatio={0.9}
+      footer={
+        <View style={styles.createFooter}>
+          <Pressable style={styles.secondaryButton} onPress={onClose}>
+            <Text style={styles.secondaryButtonText}>Bekor qilish</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.primaryButton, saving && styles.sendButtonDisabled]}
+            disabled={saving}
+            onPress={() => void handleSubmit()}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.primaryButtonText}>Yuborish</Text>
+            )}
+          </Pressable>
+        </View>
+      }
+    >
+      <ScrollView
+        contentContainerStyle={styles.createContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Text style={styles.sectionHint}>{assignment?.description || "Topshiriqni yuboring."}</Text>
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          placeholder="Matnli javob"
+          placeholderTextColor={Colors.subtleText}
+          style={[styles.fieldInput, styles.textArea]}
+          multiline
+        />
+        <TextInput
+          value={link}
+          onChangeText={setLink}
+          placeholder="Havola"
+          placeholderTextColor={Colors.subtleText}
+          style={styles.fieldInput}
+        />
+        {assignment?.type !== "text" ? (
+          <Pressable style={styles.mediaPicker} onPress={() => void pickSubmissionFile()}>
+            <Upload size={16} color={Colors.primary} />
+            <Text style={styles.mediaPickerText}>{file ? file.name : "Fayl tanlash"}</Text>
+          </Pressable>
+        ) : null}
+      </ScrollView>
+    </DraggableBottomSheet>
   );
 }
