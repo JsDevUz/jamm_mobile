@@ -87,7 +87,6 @@ export const cacheRemoteMedia = async (remoteUrl: string) => {
   const existing = await FileSystem.getInfoAsync(localUri);
 
   if (existing.exists) {
-    notifySecureMediaCacheChanged();
     return localUri;
   }
 

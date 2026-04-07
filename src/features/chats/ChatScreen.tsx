@@ -98,6 +98,58 @@ const MESSAGE_MENU_ACTIONS_PADDING = 6;
 
 const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
 const NEW_MESSAGES_BOTTOM_THRESHOLD = 96;
+const INITIAL_HISTORY_DAY_WINDOW = 5;
+const OLDER_HISTORY_FETCH_SAFETY_LIMIT = 20;
+
+const getMessageTimestamp = (message: { createdAt?: string; timestamp?: string }) => {
+  const parsed = new Date(message.createdAt || message.timestamp || 0).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const getDayStartTimestamp = (value: number) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const getOldestLoadedDayStart = (messages: Message[]) => {
+  for (const message of messages) {
+    const timestamp = getMessageTimestamp(message);
+    if (timestamp !== null) {
+      return getDayStartTimestamp(timestamp);
+    }
+  }
+
+  return null;
+};
+
+const getInitialHistoryThreshold = () => {
+  const threshold = new Date();
+  threshold.setHours(0, 0, 0, 0);
+  threshold.setDate(threshold.getDate() - (INITIAL_HISTORY_DAY_WINDOW - 1));
+  return threshold.getTime();
+};
+
+const hasCoveredInitialHistoryWindow = (messages: Message[]) => {
+  if (messages.length === 0) {
+    return true;
+  }
+
+  const oldestDayStart = getOldestLoadedDayStart(messages);
+  if (oldestDayStart === null) {
+    return true;
+  }
+
+  return oldestDayStart <= getInitialHistoryThreshold();
+};
+
+const hasOlderCursor = (snapshot?: MessagesInfiniteData) => {
+  const lastPage = snapshot?.pages?.[snapshot.pages.length - 1];
+  return Boolean(lastPage?.nextCursor || lastPage?.hasMore);
+};
+
+const flattenMessagesSnapshot = (snapshot?: MessagesInfiniteData) =>
+  [...(snapshot?.pages || [])].reverse().flatMap((page) => page.data || []);
 
 export function ChatScreen({ navigation, route }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -114,6 +166,8 @@ export function ChatScreen({ navigation, route }: Props) {
   const [messageListVisible, setMessageListVisible] = useState(false);
   const [chatCacheHydrated, setChatCacheHydrated] = useState(false);
   const [messagesCacheHydrated, setMessagesCacheHydrated] = useState(false);
+  const [initialHistoryReady, setInitialHistoryReady] = useState(false);
+  const [hasCachedMessagePages, setHasCachedMessagePages] = useState(false);
   const [savedScrollOffset, setSavedScrollOffset] = useState<number | null>(
     null,
   );
@@ -144,6 +198,9 @@ export function ChatScreen({ navigation, route }: Props) {
   const shouldStickToBottomRef = useRef(true);
   const previousLastMessageIdRef = useRef<string | null>(null);
   const previousMessageCountRef = useRef(0);
+  const initialHistoryBootstrapDoneRef = useRef(false);
+  const initialHistoryFetchInFlightRef = useRef(false);
+  const olderDayFetchInFlightRef = useRef(false);
   const infoPageTranslateX = useRef(new Animated.Value(screenWidth)).current;
   const infoPageBackdropOpacity = useRef(new Animated.Value(0)).current;
   const infoPageStartXRef = useRef(screenWidth);
@@ -173,6 +230,7 @@ export function ChatScreen({ navigation, route }: Props) {
     currentUserId,
     savedScrollOffset,
     initialScrollDone: initialScrollDoneRef.current,
+    enabled: messagesCacheHydrated,
   });
   const isGroupChat = Boolean(currentChat?.isGroup ?? route.params.isGroup);
   const {
@@ -1046,6 +1104,7 @@ export function ChatScreen({ navigation, route }: Props) {
         bottomCoveredHeight: messagesCoveredBottomInset,
         dockLiftVisible: controlledDockLiftVisible,
         messageListVisible,
+        initialHistoryReady,
         initialScrollDoneRef,
         scrollRestorePendingRef,
         scrollOffsetRef,
@@ -1067,14 +1126,7 @@ export function ChatScreen({ navigation, route }: Props) {
         onMessagesScrollEndDrag: scheduleScrollOffsetPersist,
         onMessagesMomentumScrollEnd: scheduleScrollOffsetPersist,
         onViewableItemsChanged: handleViewableItemsChanged,
-        onFetchOlder: () => {
-          if (
-            messagesQuery.hasNextPage &&
-            !messagesQuery.isFetchingNextPage
-          ) {
-            void messagesQuery.fetchNextPage();
-          }
-        },
+        onFetchOlder: handleFetchOlderMessages,
         onOpenMenu: handleMessageMenu,
         onPressMention: handleMentionPress,
         onOpenLink: handleOpenMessageLink,
@@ -1219,7 +1271,12 @@ export function ChatScreen({ navigation, route }: Props) {
   useEffect(() => {
     let cancelled = false;
     setMessagesCacheHydrated(false);
+    setInitialHistoryReady(false);
+    setHasCachedMessagePages(false);
     setSavedScrollOffset(null);
+    initialHistoryBootstrapDoneRef.current = false;
+    initialHistoryFetchInFlightRef.current = false;
+    olderDayFetchInFlightRef.current = false;
     scrollRestorePendingRef.current = null;
     scrollOffsetRef.current = 0;
 
@@ -1247,11 +1304,19 @@ export function ChatScreen({ navigation, route }: Props) {
         }
 
         if (!cancelled) {
+          const hasCachedPages =
+            Array.isArray(cachedMessages?.pages) &&
+            cachedMessages.pages.some((page) => (page.data || []).length > 0);
+          setHasCachedMessagePages(hasCachedPages);
           const nextScrollOffset =
             typeof cachedScrollOffset === "number" ? cachedScrollOffset : null;
           setSavedScrollOffset(nextScrollOffset);
           scrollRestorePendingRef.current = nextScrollOffset;
           scrollOffsetRef.current = nextScrollOffset ?? 0;
+          if (hasCachedPages) {
+            initialHistoryBootstrapDoneRef.current = true;
+            setInitialHistoryReady(true);
+          }
         }
       } catch (error) {
         console.warn("Failed to hydrate cached messages", error);
@@ -1268,6 +1333,155 @@ export function ChatScreen({ navigation, route }: Props) {
       cancelled = true;
     };
   }, [currentUserId, queryClient, route.params.chatId]);
+
+  const getMessagesSnapshot = useCallback(
+    () =>
+      queryClient.getQueryData<MessagesInfiniteData>([
+        "messages",
+        route.params.chatId,
+      ]),
+    [queryClient, route.params.chatId],
+  );
+
+  const fetchOlderPagesUntil = useCallback(
+    async (
+      shouldContinue: (
+        messages: Message[],
+        snapshot: MessagesInfiniteData | undefined,
+      ) => boolean,
+    ) => {
+      for (
+        let attempt = 0;
+        attempt < OLDER_HISTORY_FETCH_SAFETY_LIMIT;
+        attempt += 1
+      ) {
+        const snapshotBefore = getMessagesSnapshot();
+        const messagesBefore = flattenMessagesSnapshot(snapshotBefore);
+
+        if (!shouldContinue(messagesBefore, snapshotBefore)) {
+          break;
+        }
+
+        if (!hasOlderCursor(snapshotBefore)) {
+          break;
+        }
+
+        const previousCount = messagesBefore.length;
+        const result = await messagesQuery.fetchNextPage();
+        if ((result as { isError?: boolean } | undefined)?.isError) {
+          break;
+        }
+
+        const snapshotAfter = getMessagesSnapshot();
+        const messagesAfter = flattenMessagesSnapshot(snapshotAfter);
+        if (messagesAfter.length <= previousCount) {
+          break;
+        }
+      }
+    },
+    [getMessagesSnapshot, messagesQuery],
+  );
+
+  useEffect(() => {
+    if (!messagesCacheHydrated || initialHistoryBootstrapDoneRef.current) {
+      return;
+    }
+
+    if (hasCachedMessagePages) {
+      initialHistoryBootstrapDoneRef.current = true;
+      setInitialHistoryReady(true);
+      return;
+    }
+
+    if (messagesQuery.isLoading || messagesQuery.isFetchingNextPage) {
+      return;
+    }
+
+    if (messagesQuery.isError) {
+      initialHistoryBootstrapDoneRef.current = true;
+      setInitialHistoryReady(true);
+      return;
+    }
+
+    const snapshot = getMessagesSnapshot();
+    if (!snapshot) {
+      return;
+    }
+
+    let cancelled = false;
+    initialHistoryBootstrapDoneRef.current = true;
+    initialHistoryFetchInFlightRef.current = true;
+
+    const prepareInitialHistory = async () => {
+      try {
+        await fetchOlderPagesUntil((messages) => {
+          if (messages.length === 0) {
+            return false;
+          }
+
+          return !hasCoveredInitialHistoryWindow(messages);
+        });
+      } finally {
+        initialHistoryFetchInFlightRef.current = false;
+        if (!cancelled) {
+          setInitialHistoryReady(true);
+        }
+      }
+    };
+
+    void prepareInitialHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    fetchOlderPagesUntil,
+    getMessagesSnapshot,
+    hasCachedMessagePages,
+    messagesCacheHydrated,
+    messagesQuery.isError,
+    messagesQuery.isFetchingNextPage,
+    messagesQuery.isLoading,
+  ]);
+
+  function handleFetchOlderMessages() {
+    if (
+      initialHistoryFetchInFlightRef.current ||
+      olderDayFetchInFlightRef.current
+    ) {
+      return;
+    }
+
+    const snapshot = getMessagesSnapshot();
+    const loadedMessages = flattenMessagesSnapshot(snapshot);
+    const oldestLoadedDayStart = getOldestLoadedDayStart(loadedMessages);
+
+    if (!oldestLoadedDayStart || !hasOlderCursor(snapshot)) {
+      return;
+    }
+
+    olderDayFetchInFlightRef.current = true;
+
+    const loadPreviousDayChunk = async () => {
+      try {
+        await fetchOlderPagesUntil((messages, nextSnapshot) => {
+          if (!hasOlderCursor(nextSnapshot)) {
+            return false;
+          }
+
+          const currentOldestDayStart = getOldestLoadedDayStart(messages);
+          return (
+            currentOldestDayStart !== null &&
+            currentOldestDayStart >= oldestLoadedDayStart
+          );
+        });
+      } finally {
+        olderDayFetchInFlightRef.current = false;
+      }
+    };
+
+    void loadPreviousDayChunk();
+  }
 
   useEffect(() => {
     const messagesSnapshot = messagesQuery.data;

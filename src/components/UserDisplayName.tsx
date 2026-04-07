@@ -1,11 +1,11 @@
 import { memo, useMemo } from "react";
 import { StyleSheet, Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { Image } from "expo-image";
 import Svg, { Path } from "react-native-svg";
 import { usersApi } from "../lib/api";
 import { Colors } from "../theme/colors";
 import type { ProfileDecoration, User } from "../types/entities";
+import { PersistentCachedImage } from "./PersistentCachedImage";
 
 type BadgeSize = "sm" | "md" | "lg";
 
@@ -196,8 +196,8 @@ export const UserDisplayName = memo(function UserDisplayName({
       </Text>
 
       {showCustomImage ? (
-        <Image
-          source={{ uri: user?.customProfileDecorationImage || "" }}
+        <PersistentCachedImage
+          remoteUri={user?.customProfileDecorationImage || ""}
           style={{
             width: badgeSize,
             height: badgeSize,

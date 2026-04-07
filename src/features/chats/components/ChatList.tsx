@@ -49,6 +49,7 @@ export function ChatList({
   bottomCoveredHeight,
   dockLiftVisible,
   messageListVisible,
+  initialHistoryReady,
   initialScrollDoneRef,
   scrollRestorePendingRef,
   scrollOffsetRef,
@@ -92,6 +93,7 @@ export function ChatList({
   bottomCoveredHeight: number;
   dockLiftVisible: boolean;
   messageListVisible: boolean;
+  initialHistoryReady: boolean;
   initialScrollDoneRef: MutableRefObject<boolean>;
   scrollRestorePendingRef: MutableRefObject<number | null>;
   scrollOffsetRef: MutableRefObject<number>;
@@ -191,40 +193,29 @@ export function ChatList({
     viewportHeight,
   ]);
 
-  const shouldAutofillInitialViewport =
-    initialListMeasurementsReady &&
-    !initialScrollDoneRef.current &&
-    !messageListVisible &&
-    !hasPendingScrollRestore &&
-    messageItems.length > 0 &&
-    !messagesQuery.isLoading &&
-    !messagesQuery.isFetchingNextPage &&
-    !shouldEnableScroll &&
-    Boolean(messagesQuery.hasNextPage);
-
   const maybeFinalizeInitialListLayout = useCallback(() => {
     if (!initialListMeasurementsReady) {
       return;
     }
 
-    if (shouldAutofillInitialViewport) {
+    if (!initialHistoryReady) {
       return;
     }
 
     finalizeInitialListLayout();
   }, [
     finalizeInitialListLayout,
+    initialHistoryReady,
     initialListMeasurementsReady,
-    shouldAutofillInitialViewport,
   ]);
 
   useEffect(() => {
     if (
       messageListVisible ||
+      !initialHistoryReady ||
       messageItems.length === 0 ||
       messagesQuery.isLoading ||
-      messagesQuery.isFetchingNextPage ||
-      shouldAutofillInitialViewport
+      messagesQuery.isFetchingNextPage
     ) {
       return;
     }
@@ -240,9 +231,9 @@ export function ChatList({
     messageItems.length,
     messageListVisible,
     maybeFinalizeInitialListLayout,
+    initialHistoryReady,
     messagesQuery.isFetchingNextPage,
     messagesQuery.isLoading,
-    shouldAutofillInitialViewport,
   ]);
 
   const messagesTapGesture = useMemo(
@@ -260,24 +251,13 @@ export function ChatList({
     [onMessagesTouchStart],
   );
 
-  useEffect(() => {
-    if (!shouldAutofillInitialViewport) {
-      return;
-    }
-
-    const frameId = requestAnimationFrame(() => {
-      onFetchOlder();
-    });
-
-    return () => {
-      cancelAnimationFrame(frameId);
-    };
-  }, [onFetchOlder, shouldAutofillInitialViewport]);
-
   const showInitialSkeleton =
     !chatCacheHydrated ||
     !messagesCacheHydrated ||
-    (messagesQuery.isLoading && !hasMessagesSnapshot);
+    !initialHistoryReady ||
+    (messagesQuery.isLoading && !hasMessagesSnapshot) ||
+    (!messageListVisible &&
+      (messagesQuery.isLoading || hasMessagesSnapshot || messageItems.length > 0));
 
   return (
     <GestureDetector gesture={messagesTapGesture}>
@@ -298,6 +278,7 @@ export function ChatList({
           style={styles.chatBackgroundImage}
           imageStyle={styles.chatBackgroundTexture}
           resizeMode="repeat"
+          fadeDuration={0}
         />
       </View>
       {messagesQuery.isFetchingNextPage ? (

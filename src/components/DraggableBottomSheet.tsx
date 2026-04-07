@@ -66,9 +66,13 @@ export function DraggableBottomSheet({
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const currentHeightRef = useRef(0);
   const panStartHeightRef = useRef(0);
+  const contentOverscrollPullRef = useRef(0);
+  const contentOverscrollActiveRef = useRef(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const contentScrollOffsetRef = useRef(0);
   const [contentCanStartDrag, setContentCanStartDrag] = useState(true);
+  const closingRef = useRef(false);
+  const locallyDismissedRef = useRef(false);
 
   const animateSheetTo = useCallback(
     (toValue: number, opacity = 1, onDone?: () => void) => {
@@ -97,6 +101,8 @@ export function DraggableBottomSheet({
   useEffect(() => {
     currentHeightRef.current = 0;
     panStartHeightRef.current = 0;
+    contentOverscrollPullRef.current = 0;
+    contentOverscrollActiveRef.current = false;
   }, [maxHeight]);
 
   useEffect(() => {
@@ -138,13 +144,42 @@ export function DraggableBottomSheet({
   useEffect(() => {
     if (!visible) {
       setKeyboardInset(0);
+      contentOverscrollPullRef.current = 0;
+      contentOverscrollActiveRef.current = false;
+      contentScrollOffsetRef.current = 0;
+      setContentCanStartDrag(true);
+      closingRef.current = false;
+      locallyDismissedRef.current = false;
     }
   }, [visible]);
 
   const handleClose = useCallback(() => {
+    if (closingRef.current) {
+      return;
+    }
+
+    closingRef.current = true;
+    locallyDismissedRef.current = true;
     Keyboard.dismiss();
     setKeyboardInset(0);
-    requestAnimationFrame(() => {
+    contentOverscrollPullRef.current = 0;
+    contentOverscrollActiveRef.current = false;
+    contentScrollOffsetRef.current = 0;
+    setContentCanStartDrag(true);
+
+    Animated.parallel([
+      Animated.timing(sheetHeightAnim, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: false,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      setIsMounted(false);
       onClose();
     });
   }, [onClose]);
@@ -165,11 +200,15 @@ export function DraggableBottomSheet({
 
   useEffect(() => {
     if (visible) {
+      if (locallyDismissedRef.current) {
+        return;
+      }
       setIsMounted(true);
       sheetHeightAnim.setValue(0);
       backdropOpacity.setValue(0);
       currentHeightRef.current = 0;
       panStartHeightRef.current = 0;
+      closingRef.current = false;
       animateSheetTo(collapsedHeight, 1);
       return;
     }
@@ -284,14 +323,65 @@ export function DraggableBottomSheet({
     (event: any, originalHandler?: ((event: any) => void) | null) => {
       const nextOffset = Number(event?.nativeEvent?.contentOffset?.y || 0);
       const normalizedOffset = nextOffset > 0 ? nextOffset : 0;
+      const overscrollPull = nextOffset < 0 ? Math.abs(nextOffset) : 0;
       contentScrollOffsetRef.current = normalizedOffset;
       setContentCanStartDrag((previous) => {
         const nextValue = normalizedOffset <= 0;
         return previous === nextValue ? previous : nextValue;
       });
+
+      if (overscrollPull > 0 && normalizedOffset <= 0) {
+        contentOverscrollActiveRef.current = true;
+        contentOverscrollPullRef.current = overscrollPull;
+        if (panStartHeightRef.current <= 0) {
+          panStartHeightRef.current = currentHeightRef.current || collapsedHeight;
+        }
+        updateDraggedPosition(overscrollPull);
+      } else if (contentOverscrollActiveRef.current && overscrollPull === 0) {
+        contentOverscrollPullRef.current = 0;
+      }
+
       originalHandler?.(event);
     },
-    [],
+    [collapsedHeight, updateDraggedPosition],
+  );
+
+  const settleContentOverscroll = useCallback(
+    (event: any, originalHandler?: ((event: any) => void) | null) => {
+      handleTrackedScroll(event, originalHandler);
+
+      if (!contentOverscrollActiveRef.current) {
+        return;
+      }
+
+      const releasePull = contentOverscrollPullRef.current;
+      contentOverscrollActiveRef.current = false;
+      contentOverscrollPullRef.current = 0;
+
+      const velocityY = Number(event?.nativeEvent?.velocity?.y || 0);
+      const releaseValue = Math.max(
+        0,
+        Math.min(maxHeight, panStartHeightRef.current - releasePull),
+      );
+      const shouldClose =
+        releaseValue < collapsedHeight - maxHeight * 0.12 || velocityY < -0.6;
+
+      if (shouldClose) {
+        handleClose();
+        return;
+      }
+
+      const shouldExpand =
+        releaseValue > collapsedHeight + maxHeight * 0.12 || velocityY > 0.45;
+      animateSheetTo(shouldExpand ? maxHeight : collapsedHeight, 1);
+    },
+    [
+      animateSheetTo,
+      collapsedHeight,
+      handleClose,
+      handleTrackedScroll,
+      maxHeight,
+    ],
   );
 
   const renderTrackedChildren = useMemo(() => {
@@ -321,6 +411,9 @@ export function DraggableBottomSheet({
     const originalOnScroll = childProps.onScroll;
 
     return cloneElement(onlyChild as ReactElement<any>, {
+      bounces: childProps.bounces ?? true,
+      alwaysBounceVertical: childProps.alwaysBounceVertical ?? true,
+      overScrollMode: childProps.overScrollMode ?? "always",
       scrollEventThrottle: childProps.scrollEventThrottle ?? 16,
       onScroll: (event: any) => {
         handleTrackedScroll(event, originalOnScroll);
@@ -329,13 +422,13 @@ export function DraggableBottomSheet({
         handleTrackedScroll(event, childProps.onScrollBeginDrag);
       },
       onMomentumScrollEnd: (event: any) => {
-        handleTrackedScroll(event, childProps.onMomentumScrollEnd);
+        settleContentOverscroll(event, childProps.onMomentumScrollEnd);
       },
       onScrollEndDrag: (event: any) => {
-        handleTrackedScroll(event, childProps.onScrollEndDrag);
+        settleContentOverscroll(event, childProps.onScrollEndDrag);
       },
     });
-  }, [children, handleTrackedScroll]);
+  }, [children, handleTrackedScroll, settleContentOverscroll]);
 
   if (!isMounted) {
     return null;

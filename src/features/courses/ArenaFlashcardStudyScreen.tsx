@@ -25,7 +25,6 @@ import {
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Image } from "expo-image";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -40,6 +39,7 @@ import {
   X,
 } from "lucide-react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { arenaApi } from "../../lib/api";
 import { getFlashcardDeckCache, upsertFlashcardDeckCache } from "../../lib/flashcard-cache";
 import type { RootStackParamList } from "../../navigation/types";
@@ -218,7 +218,11 @@ function StudyFace({
     <View style={styles.faceCard}>
       {caption ? <Text style={styles.faceCaption}>{caption}</Text> : null}
       {imageUri ? (
-        <Image source={{ uri: imageUri }} style={styles.faceImage} contentFit="contain" />
+        <PersistentCachedImage
+          remoteUri={imageUri}
+          style={styles.faceImage}
+          contentFit="contain"
+        />
       ) : null}
       <Text style={styles.faceText}>{text || "???"}</Text>
     </View>
@@ -1103,8 +1107,8 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                             </View>
                             <View style={styles.classicCardBody}>
                               {getPromptImage(card) ? (
-                                <Image
-                                  source={{ uri: getPromptImage(card) }}
+                                <PersistentCachedImage
+                                  remoteUri={getPromptImage(card)}
                                   style={styles.classicCardImage}
                                   contentFit="contain"
                                 />
@@ -1190,8 +1194,8 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                                     </View>
                                     <View style={styles.classicCardBody}>
                                       {classicVisibleImage ? (
-                                        <Image
-                                          source={{ uri: classicVisibleImage }}
+                                        <PersistentCachedImage
+                                          remoteUri={classicVisibleImage}
                                           style={styles.classicCardImage}
                                           contentFit="contain"
                                         />

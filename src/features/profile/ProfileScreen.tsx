@@ -436,7 +436,6 @@ function ProfilePostImages({
           remoteUri={images[activeIndex].url}
           blurDataUrl={images[activeIndex].blurDataUrl}
           style={styles.profileImageFill}
-          requireManualDownload
         />
       </Pressable>
 
@@ -1896,8 +1895,8 @@ function ProfileScreenContent({
 
   const handleDeleteFeedStorage = (entryId: string) => {
     Alert.alert(
-      t("profileUtility.storage.deleteFeedTitle"),
-      t("profileUtility.storage.deleteFeedDescription"),
+      "Rasmni o'chirish",
+      "Keshlangan rasm qurilma xotirasidan o'chiriladi.",
       [
         { text: t("common.cancel"), style: "cancel" },
         {
@@ -1930,12 +1929,12 @@ function ProfileScreenContent({
 
   const handleClearFeedStorage = () => {
     Alert.alert(
-      t("profileUtility.storage.clearFeedTitle"),
-      t("profileUtility.storage.clearFeedDescription"),
+      "Rasmlar keshini tozalash",
+      "Avatarlar, chat rasmlari, maqola coverlari, kurs rasmlari va boshqa keshlangan rasmlar o'chiriladi.",
       [
         { text: t("common.cancel"), style: "cancel" },
         {
-          text: t("profileUtility.storage.clearFeedAction"),
+          text: "Rasmlarni tozalash",
           style: "destructive",
           onPress: () => {
             clearFeedStorageMutation.mutate();
@@ -2459,7 +2458,6 @@ function ProfileScreenContent({
                   <PersistentCachedImage
                     remoteUri={article.coverImage}
                     style={styles.articleCover}
-                    requireManualDownload
                   />
                 ) : null}
                 <View style={styles.articleBody}>
@@ -2509,7 +2507,6 @@ function ProfileScreenContent({
                 <PersistentCachedImage
                   remoteUri={course.image}
                   style={styles.courseThumb}
-                  requireManualDownload
                 />
               ) : (
                 <View style={styles.courseThumbFallback}>
@@ -2734,11 +2731,9 @@ function ProfileScreenContent({
                 <View style={styles.utilityGroup}>
                   <View style={styles.storageSectionHeader}>
                     <View style={styles.storageSectionTitleWrap}>
-                      <Text style={styles.utilityGroupTitle}>
-                        {t("profileUtility.storage.feedImagesTitle")}
-                      </Text>
+                      <Text style={styles.utilityGroupTitle}>Rasmlar keshi</Text>
                       <Text style={styles.utilityGroupDescription}>
-                        {t("profileUtility.storage.feedImagesDescription")}
+                        Avatarlar, chat rasmlari, maqola coverlari, kurs rasmlari va boshqa app rasmlari.
                       </Text>
                     </View>
                     {feedImages.length ? (
@@ -2797,9 +2792,7 @@ function ProfileScreenContent({
                     ) : (
                       <View style={styles.storageEmptyCard}>
                         <ImageIcon size={22} color={Colors.subtleText} />
-                        <Text style={styles.utilityEmptyText}>
-                          {t("profileUtility.storage.emptyFeedImages")}
-                        </Text>
+                        <Text style={styles.utilityEmptyText}>Keshlangan rasmlar yo'q.</Text>
                       </View>
                     )}
                   </View>

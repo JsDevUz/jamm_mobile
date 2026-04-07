@@ -228,12 +228,14 @@ export function useChatMessagesData({
   currentUserId,
   savedScrollOffset,
   initialScrollDone,
+  enabled = true,
 }: {
   chatId: string;
   routeIsGroup: boolean;
   currentUserId: string;
   savedScrollOffset: number | null;
   initialScrollDone: boolean;
+  enabled?: boolean;
 }) {
   const queryClient = useQueryClient();
 
@@ -263,6 +265,7 @@ export function useChatMessagesData({
     queryFn: ({ pageParam }) => chatsApi.fetchMessages(chatId, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor || undefined,
+    enabled,
   });
 
   const hasMessagesSnapshot = Boolean(messagesQuery.data);

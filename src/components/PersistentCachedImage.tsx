@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type ImageStyle,
   ViewStyle,
 } from "react-native";
 import { Image } from "expo-image";
@@ -20,13 +21,15 @@ import {
 import { Colors } from "../theme/colors";
 
 type Props = {
-  remoteUri: string;
+  remoteUri?: string | null;
   blurDataUrl?: string;
-  style?: StyleProp<ViewStyle>;
+  style?: StyleProp<ViewStyle | ImageStyle>;
   contentFit?: "cover" | "contain";
   requireManualDownload?: boolean;
   manualDownloadVariant?: "pill" | "icon";
   onPress?: () => void;
+  transition?: number;
+  onError?: () => void;
 };
 
 export function PersistentCachedImage({
@@ -37,11 +40,15 @@ export function PersistentCachedImage({
   requireManualDownload = false,
   manualDownloadVariant = "pill",
   onPress,
+  transition = 180,
+  onError,
 }: Props) {
   const [resolvedUri, setResolvedUri] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cacheVersion, setCacheVersion] = useState(() => getSecureMediaCacheVersion());
+  const normalizedUri = String(remoteUri || "").trim();
+  const canPersistInCache = /^https?:\/\//i.test(normalizedUri);
 
   useEffect(() => subscribeSecureMediaCache(setCacheVersion), []);
 
@@ -49,8 +56,26 @@ export function PersistentCachedImage({
     let active = true;
 
     const load = async () => {
+      if (!normalizedUri) {
+        if (active) {
+          setResolvedUri(null);
+          setDownloaded(false);
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (!canPersistInCache) {
+        if (active) {
+          setResolvedUri(normalizedUri);
+          setDownloaded(true);
+          setLoading(false);
+        }
+        return;
+      }
+
       setLoading(true);
-      const cachedUri = await getSecureCachedUri(remoteUri);
+      const cachedUri = await getSecureCachedUri(normalizedUri);
 
       if (cachedUri && active) {
         setResolvedUri(cachedUri);
@@ -60,7 +85,7 @@ export function PersistentCachedImage({
       }
 
       if (active) {
-        setResolvedUri(requireManualDownload ? null : remoteUri);
+        setResolvedUri(requireManualDownload ? null : normalizedUri);
         setDownloaded(false);
       }
 
@@ -70,7 +95,7 @@ export function PersistentCachedImage({
       }
 
       try {
-        const localUri = await cacheRemoteMedia(remoteUri);
+        const localUri = await cacheRemoteMedia(normalizedUri);
         if (localUri && active) {
           setResolvedUri(localUri);
           setDownloaded(true);
@@ -88,21 +113,32 @@ export function PersistentCachedImage({
     return () => {
       active = false;
     };
-  }, [cacheVersion, remoteUri, requireManualDownload]);
+  }, [cacheVersion, canPersistInCache, normalizedUri, requireManualDownload]);
 
   const handleDownload = async () => {
     if (loading || downloaded) {
       return;
     }
 
+    if (!normalizedUri) {
+      return;
+    }
+
+    if (!canPersistInCache) {
+      setResolvedUri(normalizedUri);
+      setDownloaded(true);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const localUri = await cacheRemoteMedia(remoteUri);
-      setResolvedUri(localUri || remoteUri);
+      const localUri = await cacheRemoteMedia(normalizedUri);
+      setResolvedUri(localUri || normalizedUri);
       setDownloaded(true);
     } catch {
-      setResolvedUri(remoteUri);
+      setResolvedUri(normalizedUri);
       setDownloaded(true);
     } finally {
       setLoading(false);
@@ -120,7 +156,7 @@ export function PersistentCachedImage({
             <Image
               source={{ uri: previewUri }}
               contentFit={contentFit}
-              transition={120}
+              transition={transition}
               style={StyleSheet.absoluteFillObject}
             />
           ) : null}
@@ -154,15 +190,16 @@ export function PersistentCachedImage({
       ) : (
         <Pressable disabled={!onPress} onPress={onPress} style={StyleSheet.absoluteFillObject}>
           <Image
-            source={{ uri: resolvedUri || remoteUri }}
+            source={{ uri: resolvedUri || normalizedUri }}
             placeholder={blurDataUrl ? { uri: blurDataUrl } : undefined}
             contentFit={contentFit}
-            transition={180}
+            transition={transition}
             style={StyleSheet.absoluteFillObject}
+            onError={onError}
           />
         </Pressable>
       )}
-      {loading && !resolvedUri && !showDownloadOverlay ? (
+      {loading && !resolvedUri && !showDownloadOverlay && Boolean(normalizedUri) ? (
         <View style={styles.overlay}>
           <ActivityIndicator color="#fff" />
         </View>

@@ -38,6 +38,7 @@ import {
   SafeAreaView,
   SafeAreaProvider,
   initialWindowMetrics,
+  useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { BottomNav } from "./src/components/BottomNav";
 import { GlobalToast } from "./src/components/GlobalToast";
@@ -197,23 +198,50 @@ function upsertChatSummary(chats: ChatSummary[], chat: ChatSummary) {
 
 function LaunchScreen() {
   return (
-    <SafeAreaView style={styles.launchScreen} edges={["top", "left", "right"]}>
+    <View
+      style={[
+        styles.launchScreen,
+        {
+          paddingTop: initialWindowMetrics?.insets.top ?? 0,
+          paddingLeft: initialWindowMetrics?.insets.left ?? 0,
+          paddingRight: initialWindowMetrics?.insets.right ?? 0,
+        },
+      ]}
+    >
       <View style={styles.brandOrb} />
       <Text style={styles.brandTitle}>Jamm</Text>
       <Text style={styles.brandSubtitle}>Barchasi bir joyda!</Text>
       <ActivityIndicator color={Colors.primary} style={styles.loader} />
-    </SafeAreaView>
+    </View>
   );
 }
 
 type FirstVisitMaskKind = "feed" | "chats" | "articles" | "courses" | "profile";
 
 function TabFirstVisitMask({ kind }: { kind: FirstVisitMaskKind }) {
+  const insets = useSafeAreaInsets();
+  const fallbackInsets = initialWindowMetrics?.insets;
+  const resolvedInsets = {
+    top: Math.max(insets.top, fallbackInsets?.top ?? 0),
+    right: Math.max(insets.right, fallbackInsets?.right ?? 0),
+    bottom: Math.max(insets.bottom, fallbackInsets?.bottom ?? 0),
+    left: Math.max(insets.left, fallbackInsets?.left ?? 0),
+  };
   const isGrid = kind === "feed" || kind === "profile";
   const isList = kind === "chats" || kind === "articles" || kind === "courses";
 
   return (
-    <SafeAreaView style={styles.tabMaskSafeArea} edges={["top", "left", "right", "bottom"]}>
+    <View
+      style={[
+        styles.tabMaskSafeArea,
+        {
+          paddingTop: resolvedInsets.top,
+          paddingRight: resolvedInsets.right,
+          paddingBottom: resolvedInsets.bottom,
+          paddingLeft: resolvedInsets.left,
+        },
+      ]}
+    >
       <View style={styles.tabMaskScreen}>
         <View style={styles.tabMaskHeader}>
           <View style={styles.tabMaskTitle} />
@@ -255,7 +283,7 @@ function TabFirstVisitMask({ kind }: { kind: FirstVisitMaskKind }) {
           </>
         ) : null}
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -2040,10 +2068,45 @@ function DeepLinkBridge({ navigationReady }: { navigationReady: boolean }) {
 
 export default function App() {
   const [navigationReady, setNavigationReady] = useState(false);
+  const [chatBackgroundReady, setChatBackgroundReady] = useState(false);
 
   useEffect(() => {
-    void Asset.loadAsync([CHAT_AREA_BG_ASSET]);
+    let cancelled = false;
+
+    const prepareChatBackground = async () => {
+      try {
+        const asset = Asset.fromModule(CHAT_AREA_BG_ASSET);
+        if (!asset.downloaded) {
+          await asset.downloadAsync();
+        }
+      } catch {
+        // Keep startup resilient even if asset warmup fails.
+      } finally {
+        if (!cancelled) {
+          setChatBackgroundReady(true);
+        }
+      }
+    };
+
+    void prepareChatBackground();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  if (!chatBackgroundReady) {
+    return (
+      <GestureHandlerRootView style={styles.root}>
+        <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+          <View style={styles.appShell}>
+            <StatusBar style="light" backgroundColor={Colors.background} />
+            <LaunchScreen />
+          </View>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    );
+  }
 
   return (
     <GestureHandlerRootView style={styles.root}>
@@ -2419,7 +2482,7 @@ const styles = StyleSheet.create({
   },
   tabMaskSafeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.surface,
   },
   tabMaskScreen: {
     flex: 1,

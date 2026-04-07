@@ -30,7 +30,6 @@ import type { FlashListRef } from "@shopify/flash-list";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import type { InfiniteData } from "@tanstack/react-query";
 import { BlurView } from "expo-blur";
-import { Image } from "expo-image";
 import {
   Bold,
   Eye,
@@ -377,8 +376,6 @@ function FeedImageCarousel({
               remoteUri={image.url}
               blurDataUrl={image.blurDataUrl}
               style={styles.imageFill}
-              requireManualDownload
-              manualDownloadVariant="icon"
               onPress={() => onOpenImage(images, index)}
             />
           </View>
@@ -748,15 +745,11 @@ function PostComposerModal({
                   <View style={styles.composerAttachmentsGrid}>
                     {attachments.map((attachment) => (
                       <View key={attachment.id} style={styles.composerAttachmentCard}>
-                        <Image
-                          source={{ uri: attachment.previewUri || attachment.remoteUrl }}
+                        <PersistentCachedImage
+                          remoteUri={attachment.previewUri || attachment.remoteUrl}
                           style={styles.composerAttachmentImage}
                           contentFit="cover"
-                          placeholder={
-                            attachment.blurDataUrl
-                              ? { uri: attachment.blurDataUrl }
-                              : undefined
-                          }
+                          blurDataUrl={attachment.blurDataUrl}
                         />
                         {showImageTool ? (
                           <Pressable

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +10,7 @@ import {
 } from "react-native";
 import { Image as ImageIcon, Plus, Search, Trash2, X } from "lucide-react-native";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
+import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { APP_LIMITS, getTierLimit } from "../../constants/appLimits";
 import { arenaApi } from "../../lib/api";
@@ -429,7 +429,7 @@ export function ArenaFlashcardEditorSheet({
                   style={styles.imageGridItem}
                   onPress={() => handleSelectImage(url)}
                 >
-                  <Image source={{ uri: url }} style={styles.imageGridImage} />
+                  <PersistentCachedImage remoteUri={url} style={styles.imageGridImage} />
                 </Pressable>
               ))}
             </View>
@@ -544,7 +544,10 @@ export function ArenaFlashcardEditorSheet({
                   <View style={styles.cardInputs}>
                     <View style={styles.inputRow}>
                       {card.frontImage ? (
-                        <Image source={{ uri: card.frontImage }} style={styles.miniThumb} />
+                        <PersistentCachedImage
+                          remoteUri={card.frontImage}
+                          style={styles.miniThumb}
+                        />
                       ) : null}
                       <TextInput
                         placeholder={`So'z (front) ${index + 1}`}
@@ -563,7 +566,10 @@ export function ArenaFlashcardEditorSheet({
 
                     <View style={styles.inputRow}>
                       {card.backImage ? (
-                        <Image source={{ uri: card.backImage }} style={styles.miniThumb} />
+                        <PersistentCachedImage
+                          remoteUri={card.backImage}
+                          style={styles.miniThumb}
+                        />
                       ) : null}
                       <TextInput
                         placeholder={`Ma'nosi (back) ${index + 1}`}

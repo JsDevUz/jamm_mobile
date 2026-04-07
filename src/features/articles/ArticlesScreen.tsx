@@ -478,7 +478,6 @@ function ArticleMarkdownRenderer({ content }: { content: string }) {
               key={`image-${index}`}
               remoteUri={block.src}
               style={styles.markdownImage}
-              requireManualDownload
             />
           );
         }
@@ -1397,7 +1396,6 @@ function ArticleEditorModal({
                         <PersistentCachedImage
                           remoteUri={coverImage}
                           style={styles.coverPreview}
-                          requireManualDownload
                         />
                       ) : (
                         <View style={styles.coverUploadHint}>
@@ -1473,7 +1471,6 @@ function ArticleEditorModal({
                     <PersistentCachedImage
                       remoteUri={coverImage}
                       style={styles.previewCover}
-                      requireManualDownload
                     />
                   ) : null}
                   <Text style={styles.previewTitle}>{title || t("articles.editor.titlePlaceholder")}</Text>
@@ -2021,7 +2018,6 @@ function ArticlesScreenContent({
               <PersistentCachedImage
                 remoteUri={currentArticle.coverImage}
                 style={styles.readerCover}
-                requireManualDownload
               />
             ) : null}
 
@@ -2293,8 +2289,6 @@ function ArticlesScreenContent({
                               <PersistentCachedImage
                                 remoteUri={article.coverImage}
                                 style={styles.articleThumbImage}
-                                requireManualDownload
-                                manualDownloadVariant="icon"
                               />
                             ) : null}
                           </View>

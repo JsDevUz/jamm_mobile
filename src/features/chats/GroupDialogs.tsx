@@ -10,7 +10,6 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import {
   ArrowLeft,
@@ -31,6 +30,7 @@ import {
 } from "react-native-gesture-handler";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../components/Avatar";
+import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { UserDisplayName } from "../../components/UserDisplayName";
 import { useI18n } from "../../i18n";
@@ -837,7 +837,11 @@ function GroupDialogLayout({
       <Pressable onPress={handlePickImage} style={styles.uploadCircle}>
         <View style={styles.uploadCircleInner}>
           {avatarUri ? (
-            <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
+            <PersistentCachedImage
+              remoteUri={avatarUri}
+              style={styles.uploadImage}
+              contentFit="cover"
+            />
           ) : (
             <>
               <Upload size={24} color={Colors.mutedText} />
@@ -1474,7 +1478,11 @@ export function CreateGroupDialog({
             <Pressable onPress={handlePickImage} style={styles.uploadCircle}>
               <View style={styles.uploadCircleInner}>
                 {avatarUri ? (
-                  <Image source={{ uri: avatarUri }} style={styles.uploadImage} contentFit="cover" />
+                  <PersistentCachedImage
+                    remoteUri={avatarUri}
+                    style={styles.uploadImage}
+                    contentFit="cover"
+                  />
                 ) : (
                   <>
                     <Upload size={24} color={Colors.mutedText} />

@@ -24,7 +24,6 @@ export function EnrollmentSection({
             <PersistentCachedImage
               remoteUri={ownerAvatar}
               style={styles.avatarImage}
-              requireManualDownload
             />
           ) : (
             <Text style={styles.avatarLetter}>{String(ownerName || "?").charAt(0).toUpperCase()}</Text>

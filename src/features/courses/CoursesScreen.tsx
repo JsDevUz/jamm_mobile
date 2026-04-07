@@ -707,7 +707,6 @@ function CreateCourseModal({
           <PersistentCachedImage
             remoteUri={image}
             style={styles.coverPreview}
-            requireManualDownload
           />
         ) : null}
       </ScrollView>
@@ -4166,6 +4165,18 @@ function CoursesScreenContent({
         </ScrollView>
       </DraggableBottomSheet>
 
+      <Modal
+        visible={Boolean(isLessonVideoFullscreen && canRenderLessonPlayer)}
+        animationType="fade"
+        presentationStyle="fullScreen"
+        statusBarTranslucent
+        onRequestClose={() => setIsLessonVideoFullscreen(false)}
+      >
+        <View style={styles.videoFullscreenModal}>
+          {renderPlayableLessonStage(true)}
+        </View>
+      </Modal>
+
       <DraggableBottomSheet
         visible={playerSettingsOpen && canRenderLessonPlayer}
         title="Player sozlamalari"
@@ -4177,6 +4188,17 @@ function CoursesScreenContent({
           style={styles.playerSettingsSheetScroll}
           contentContainerStyle={styles.playerSettingsSheetContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          bounces
+          alwaysBounceVertical
+          overScrollMode="always"
+          onScrollEndDrag={(event) => {
+            const offsetY = Number(event.nativeEvent.contentOffset?.y || 0);
+            if (offsetY < -36) {
+              setPlayerSettingsOpen(false);
+            }
+          }}
         >
           <View style={styles.playerSettingsSection}>
             <Text style={styles.playerSettingsLabel}>Playback tezligi</Text>
@@ -4241,18 +4263,6 @@ function CoursesScreenContent({
           ) : null}
         </ScrollView>
       </DraggableBottomSheet>
-
-      <Modal
-        visible={Boolean(isLessonVideoFullscreen && canRenderLessonPlayer)}
-        animationType="fade"
-        presentationStyle="fullScreen"
-        statusBarTranslucent
-        onRequestClose={() => setIsLessonVideoFullscreen(false)}
-      >
-        <View style={styles.videoFullscreenModal}>
-          {renderPlayableLessonStage(true)}
-        </View>
-      </Modal>
 
       {renderOwnerLessonAdminModal()}
 

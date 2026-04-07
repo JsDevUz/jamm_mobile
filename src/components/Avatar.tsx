@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { Image } from "expo-image";
+import { PersistentCachedImage } from "./PersistentCachedImage";
 import { Colors } from "../theme/colors";
 import { getInitials } from "../utils/chat";
 
@@ -26,6 +26,8 @@ export const Avatar = memo(function Avatar({
 }: AvatarProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const borderRadius = shape === "circle" ? Math.round(size / 2) : Math.round(size / 3);
+  const statusDotSize = Math.max(8, Math.round(size * 0.23));
+  const statusDotBorderWidth = Math.max(1.5, size * 0.06);
   const fallbackColors: readonly [string, string] = isSavedMessages
     ? [Colors.primary, Colors.primary]
     : isGroup
@@ -39,15 +41,26 @@ export const Avatar = memo(function Avatar({
   if (uri && !imageFailed) {
     return (
       <View style={styles.root}>
-        <Image
-          source={{ uri }}
+        <PersistentCachedImage
+          remoteUri={uri}
           style={[styles.image, { width: size, height: size, borderRadius }]}
           contentFit="cover"
           transition={180}
           onError={() => setImageFailed(true)}
         />
         {statusColor ? (
-          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+          <View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor: statusColor,
+                width: statusDotSize,
+                height: statusDotSize,
+                borderRadius: statusDotSize / 2,
+                borderWidth: statusDotBorderWidth,
+              },
+            ]}
+          />
         ) : null}
       </View>
     );
@@ -66,7 +79,18 @@ export const Avatar = memo(function Avatar({
         </Text>
       </LinearGradient>
       {statusColor ? (
-        <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+        <View
+          style={[
+            styles.statusDot,
+            {
+              backgroundColor: statusColor,
+              width: statusDotSize,
+              height: statusDotSize,
+              borderRadius: statusDotSize / 2,
+              borderWidth: statusDotBorderWidth,
+            },
+          ]}
+        />
       ) : null}
     </View>
   );
@@ -92,10 +116,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: -1,
     bottom: -1,
-    width: 12,
-    height: 12,
-    borderRadius: 999,
-    borderWidth: 2,
     borderColor: Colors.surface,
   },
 });

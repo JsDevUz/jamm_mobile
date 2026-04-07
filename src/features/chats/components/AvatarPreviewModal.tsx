@@ -1,5 +1,5 @@
 import { Modal, Pressable } from "react-native";
-import { Image } from "expo-image";
+import { PersistentCachedImage } from "../../../components/PersistentCachedImage";
 
 export function AvatarPreviewModal({
   styles,
@@ -16,8 +16,8 @@ export function AvatarPreviewModal({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.avatarPreviewOverlay} onPress={onClose}>
         {avatarUri ? (
-          <Image
-            source={{ uri: avatarUri }}
+          <PersistentCachedImage
+            remoteUri={avatarUri}
             style={styles.avatarPreviewImage}
             contentFit="contain"
           />

@@ -12,7 +12,6 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { io, type Socket } from "socket.io-client";
-import { Image } from "expo-image";
 import {
   CameraOff,
   Camera as CameraIcon,
@@ -34,6 +33,7 @@ import {
   RTCView,
   type MediaStream,
 } from "react-native-webrtc";
+import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { chatsApi } from "../../lib/api";
 import {
   buildSocketNamespaceUrl,
@@ -1195,8 +1195,8 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
               ) : (
                 <>
                   {remoteUser.avatar ? (
-                    <Image
-                      source={{ uri: remoteUser.avatar }}
+                    <PersistentCachedImage
+                      remoteUri={remoteUser.avatar}
                       style={styles.remoteAvatarImage}
                       contentFit="cover"
                     />

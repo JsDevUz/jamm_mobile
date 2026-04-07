@@ -1,6 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Clipboard from "expo-clipboard";
-import { Image } from "expo-image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -37,6 +36,7 @@ import {
 } from "lucide-react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { DraggableBottomSheet } from "../../components/DraggableBottomSheet";
+import { PersistentCachedImage } from "../../components/PersistentCachedImage";
 import { TextInput } from "../../components/TextInput";
 import { APP_LIMITS, getTierLimit } from "../../constants/appLimits";
 import { APP_BASE_URL } from "../../config/env";
@@ -438,8 +438,8 @@ function FlashcardDeckPreviewSheet({
         >
           <View style={styles.previewHero}>
             {getDeckCover(deck) ? (
-              <Image
-                source={{ uri: getDeckCover(deck) }}
+              <PersistentCachedImage
+                remoteUri={getDeckCover(deck)}
                 style={styles.previewHeroImage}
                 contentFit="cover"
               />
@@ -486,8 +486,8 @@ function FlashcardDeckPreviewSheet({
                 <View key={member.id} style={styles.memberRow}>
                   <View style={styles.memberAvatar}>
                     {member.avatar ? (
-                      <Image
-                        source={{ uri: member.avatar }}
+                      <PersistentCachedImage
+                        remoteUri={member.avatar}
                         style={styles.memberAvatarImage}
                         contentFit="cover"
                       />
@@ -523,8 +523,8 @@ function FlashcardDeckPreviewSheet({
                     <Text style={styles.previewCardText}>{card.back || "-"}</Text>
                   </View>
                   {card.frontImage || card.backImage ? (
-                    <Image
-                      source={{ uri: String(card.frontImage || card.backImage) }}
+                    <PersistentCachedImage
+                      remoteUri={String(card.frontImage || card.backImage)}
                       style={styles.previewCardImage}
                       contentFit="cover"
                     />
@@ -1718,7 +1718,11 @@ export function ArenaFlashcardListScreen({ navigation, route }: Props) {
         <View style={styles.cardBody}>
           <View style={styles.coverWrap}>
             {previewImage ? (
-              <Image source={{ uri: previewImage }} style={styles.coverImage} contentFit="cover" />
+              <PersistentCachedImage
+                remoteUri={previewImage}
+                style={styles.coverImage}
+                contentFit="cover"
+              />
             ) : (
               <View style={styles.coverFallback}>
                 <Layers3 size={24} color={Colors.primary} />

@@ -4,13 +4,13 @@ import { Keyboard, Pressable, StyleSheet, Text, View } from "react-native";
 import type { ParamListBase } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
 import { MaterialIcons } from "@expo/vector-icons";
-import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { chatsApi } from "../lib/api";
 import type { MainTabsParamList } from "../navigation/types";
 import useAuthStore from "../store/auth-store";
 import { Colors } from "../theme/colors";
+import { Avatar } from "./Avatar";
 import {
   ChatsSolidIcon,
   FeedSolidIcon,
@@ -126,23 +126,13 @@ export function BottomNav({ activeRoute, navigation }: BottomNavProps) {
           style={styles.navItem}
         >
           <View style={styles.iconSlot}>
-            <View style={styles.profileAvatarWrap}>
-              {user?.avatar ? (
-                <Image
-                  source={{ uri: user.avatar }}
-                  style={styles.profileImage}
-                  contentFit="cover"
-                  transition={140}
-                />
-              ) : (
-                <View style={styles.profileFallback}>
-                  <Text style={styles.profileFallbackText}>
-                    {profileLabel.charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              <View style={styles.profileStatusDot} />
-            </View>
+            <Avatar
+              label={profileLabel}
+              uri={user?.avatar}
+              size={24}
+              shape="circle"
+              statusColor="#46c46b"
+            />
           </View>
           <Text
             style={[
@@ -227,34 +217,5 @@ const styles = StyleSheet.create({
     overflow: "visible",
     alignItems: "center",
     justifyContent: "center",
-  },
-  profileImage: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-  },
-  profileFallback: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: Colors.primary,
-  },
-  profileFallbackText: {
-    color: "#fff",
-    fontSize: 11,
-    fontWeight: "800",
-  },
-  profileStatusDot: {
-    position: "absolute",
-    right: -2,
-    bottom: -1,
-    width: 9,
-    height: 9,
-    borderRadius: 999,
-    backgroundColor: "#46c46b",
-    borderWidth: 1.5,
-    borderColor: Colors.background,
   },
 });
