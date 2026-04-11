@@ -28,6 +28,11 @@ export type User = {
   isFollowing?: boolean;
 };
 
+export type PresenceSnapshot = {
+  online: boolean;
+  lastSeen?: string | null;
+};
+
 export type AuthResponse = {
   user: User;
   message?: string;

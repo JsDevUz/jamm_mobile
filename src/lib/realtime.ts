@@ -1,6 +1,7 @@
 import { io, type Socket } from "socket.io-client";
 import { buildSocketNamespaceUrl } from "../config/env";
 import { presenceApi } from "./api";
+import type { PresenceSnapshot } from "../types/entities";
 
 type ChatEventMap = {
   message_new: (payload: any) => void;
@@ -35,6 +36,7 @@ class RealtimeManager {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private readonly joinedChats = new Set<string>();
   private readonly onlineUserIds = new Set<string>();
+  private readonly presenceByUserId = new Map<string, PresenceSnapshot>();
   private readonly chatListeners = new Map<string, Set<(...args: any[]) => void>>();
   private readonly presenceListeners = new Map<string, Set<(...args: any[]) => void>>();
   private readonly postListeners = new Map<string, Set<(...args: any[]) => void>>();
@@ -138,6 +140,10 @@ class RealtimeManager {
           return;
         }
         this.onlineUserIds.add(userId);
+        this.presenceByUserId.set(userId, {
+          online: true,
+          lastSeen: null,
+        });
       });
 
       this.presenceSocket.on("user_offline", (payload) => {
@@ -146,6 +152,13 @@ class RealtimeManager {
           return;
         }
         this.onlineUserIds.delete(userId);
+        this.presenceByUserId.set(userId, {
+          online: false,
+          lastSeen:
+            typeof payload?.lastSeen === "string" && payload.lastSeen.trim()
+              ? payload.lastSeen
+              : null,
+        });
       });
     }
 
@@ -175,34 +188,72 @@ class RealtimeManager {
     this.presenceSocket = null;
     this.postsSocket = null;
     this.onlineUserIds.clear();
+    this.presenceByUserId.clear();
   }
 
   getOnlineUserIds() {
     return Array.from(this.onlineUserIds);
   }
 
-  async syncOnlineUsers(userIds: string[]) {
+  getPresenceSnapshots() {
+    return Object.fromEntries(this.presenceByUserId.entries());
+  }
+
+  getLastSeenMap() {
+    return Object.fromEntries(
+      Array.from(this.presenceByUserId.entries()).map(([userId, snapshot]) => [
+        userId,
+        snapshot?.lastSeen ?? null,
+      ]),
+    );
+  }
+
+  async syncPresence(userIds: string[]) {
     const normalizedUserIds = Array.from(
       new Set(userIds.map((userId) => String(userId || "").trim()).filter(Boolean)),
     );
 
     if (!normalizedUserIds.length) {
-      return this.getOnlineUserIds();
+      return {} as Record<string, PresenceSnapshot>;
     }
 
     const response = await presenceApi.getBulkStatus(normalizedUserIds);
 
     normalizedUserIds.forEach((userId) => {
       this.onlineUserIds.delete(userId);
+      this.presenceByUserId.delete(userId);
     });
 
-    Object.entries(response.statuses || {}).forEach(([userId, isOnline]) => {
-      if (isOnline) {
-        this.onlineUserIds.add(String(userId));
+    const statuses = response.statuses || {};
+    Object.entries(statuses).forEach(([userId, snapshot]) => {
+      const normalizedUserId = String(userId || "").trim();
+      if (!normalizedUserId) {
+        return;
+      }
+
+      const normalizedSnapshot: PresenceSnapshot = {
+        online: Boolean(snapshot?.online),
+        lastSeen:
+          typeof snapshot?.lastSeen === "string" && snapshot.lastSeen.trim()
+            ? snapshot.lastSeen
+            : null,
+      };
+
+      this.presenceByUserId.set(normalizedUserId, normalizedSnapshot);
+      if (normalizedSnapshot.online) {
+        this.onlineUserIds.add(normalizedUserId);
       }
     });
 
-    return this.getOnlineUserIds();
+    return statuses;
+  }
+
+  async syncOnlineUsers(userIds: string[]) {
+    const snapshots = await this.syncPresence(userIds);
+
+    return Object.entries(snapshots)
+      .filter(([, snapshot]) => Boolean(snapshot?.online))
+      .map(([userId]) => String(userId));
   }
 
   onChatEvent<EventName extends keyof ChatEventMap>(

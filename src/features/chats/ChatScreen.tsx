@@ -181,6 +181,9 @@ export function ChatScreen({ navigation, route }: Props) {
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() =>
     realtime.getOnlineUserIds(),
   );
+  const [lastSeenByUserId, setLastSeenByUserId] = useState<
+    Record<string, string | null>
+  >(() => realtime.getLastSeenMap());
   const listRef = useRef<FlashListRef<MessageListItem>>(null);
   const messageItemsRef = useRef<MessageListItem[]>([]);
   const hasNextPageRef = useRef(false);
@@ -1211,6 +1214,7 @@ export function ChatScreen({ navigation, route }: Props) {
     otherMember,
     drawerUser,
     onlineUserIds,
+    lastSeenByUserId,
     typingUserIds,
   });
   const { outgoingCall, handleStartVideoCall, handleCancelOutgoingCall } =
@@ -1227,6 +1231,7 @@ export function ChatScreen({ navigation, route }: Props) {
     currentChatMemberIds,
     presenceResyncIntervalMs: PRESENCE_RESYNC_INTERVAL_MS,
     setOnlineUserIds,
+    setLastSeenByUserId,
   });
   const handleToggleChatPushNotifications = useCallback(
     async (nextEnabled: boolean) => {

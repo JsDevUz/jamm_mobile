@@ -13,12 +13,14 @@ export function useChatPresenceLifecycle({
   currentChatMemberIds,
   presenceResyncIntervalMs,
   setOnlineUserIds,
+  setLastSeenByUserId,
 }: {
   navigation: FocusNavigation;
   chatId: string;
   currentChatMemberIds: string[];
   presenceResyncIntervalMs: number;
   setOnlineUserIds: Dispatch<SetStateAction<string[]>>;
+  setLastSeenByUserId: Dispatch<SetStateAction<Record<string, string | null>>>;
 }) {
   useEffect(() => {
     const subscriptions = [
@@ -33,6 +35,10 @@ export function useChatPresenceLifecycle({
             ? previous
             : [...previous, onlineUserId],
         );
+        setLastSeenByUserId((previous) => ({
+          ...previous,
+          [onlineUserId]: null,
+        }));
       }),
       realtime.onPresenceEvent("user_offline", (payload) => {
         const offlineUserId = String(payload?.userId || "");
@@ -43,13 +49,20 @@ export function useChatPresenceLifecycle({
         setOnlineUserIds((previous) =>
           previous.filter((userId) => userId !== offlineUserId),
         );
+        setLastSeenByUserId((previous) => ({
+          ...previous,
+          [offlineUserId]:
+            typeof payload?.lastSeen === "string" && payload.lastSeen.trim()
+              ? payload.lastSeen
+              : null,
+        }));
       }),
     ];
 
     return () => {
       subscriptions.forEach((unsubscribe) => unsubscribe?.());
     };
-  }, [setOnlineUserIds]);
+  }, [setLastSeenByUserId, setOnlineUserIds]);
 
   useEffect(() => {
     if (!currentChatMemberIds.length) {
@@ -60,10 +73,20 @@ export function useChatPresenceLifecycle({
 
     const syncPresenceSnapshot = async () => {
       try {
-        const nextOnlineUserIds =
-          await realtime.syncOnlineUsers(currentChatMemberIds);
+        const nextStatuses = await realtime.syncPresence(currentChatMemberIds);
         if (!cancelled) {
-          setOnlineUserIds(nextOnlineUserIds);
+          setOnlineUserIds(
+            Object.entries(nextStatuses)
+              .filter(([, snapshot]) => Boolean(snapshot?.online))
+              .map(([userId]) => userId),
+          );
+          setLastSeenByUserId((previous) => {
+            const next = { ...previous };
+            currentChatMemberIds.forEach((userId) => {
+              next[userId] = nextStatuses[userId]?.lastSeen ?? null;
+            });
+            return next;
+          });
         }
       } catch (error) {
         console.warn("Failed to sync presence statuses", error);
@@ -79,7 +102,12 @@ export function useChatPresenceLifecycle({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [currentChatMemberIds, presenceResyncIntervalMs, setOnlineUserIds]);
+  }, [
+    currentChatMemberIds,
+    presenceResyncIntervalMs,
+    setLastSeenByUserId,
+    setOnlineUserIds,
+  ]);
 
   useEffect(() => {
     if (navigation.isFocused()) {

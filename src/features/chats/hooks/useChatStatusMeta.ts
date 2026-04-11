@@ -9,6 +9,7 @@ export function useChatStatusMeta({
   otherMember,
   drawerUser,
   onlineUserIds,
+  lastSeenByUserId,
   typingUserIds,
 }: {
   currentChat: ChatSummary | null;
@@ -17,6 +18,7 @@ export function useChatStatusMeta({
   otherMember: User | null;
   drawerUser: User | null;
   onlineUserIds: string[];
+  lastSeenByUserId: Record<string, string | null>;
   typingUserIds: string[];
 }) {
   const typingMembers = useMemo(
@@ -46,6 +48,44 @@ export function useChatStatusMeta({
 
   const typingUserIdSet = useMemo(() => new Set(typingUserIds), [typingUserIds]);
   const onlineUserIdSet = useMemo(() => new Set(onlineUserIds), [onlineUserIds]);
+  const getLastSeenValue = (targetUser?: User | null) => {
+    const targetUserId = getEntityId(targetUser);
+    if (
+      targetUserId &&
+      Object.prototype.hasOwnProperty.call(lastSeenByUserId, targetUserId)
+    ) {
+      return lastSeenByUserId[targetUserId] ?? null;
+    }
+
+    return targetUser?.lastSeen ?? null;
+  };
+
+  const formatLastSeenLabel = (value?: string | null) => {
+    if (!value) {
+      return "Offline";
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "Offline";
+    }
+
+    const now = new Date();
+    const timeLabel = date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    if (date.toDateString() === now.toDateString()) {
+      return `Oxirgi marta: ${timeLabel}`;
+    }
+
+    const dateLabel = date.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+    return `Oxirgi marta: ${dateLabel} ${timeLabel}`;
+  };
 
   const isUserCurrentlyOnline = (targetUser?: User | null) => {
     const targetUserId = getEntityId(targetUser);
@@ -56,22 +96,13 @@ export function useChatStatusMeta({
     if (onlineUserIdSet.has(targetUserId) || typingUserIdSet.has(targetUserId)) {
       return true;
     }
-
-    const lastSeenValue = targetUser?.lastSeen;
-    if (!lastSeenValue) {
-      return false;
-    }
-
-    const lastSeenDate = new Date(lastSeenValue);
-    if (Number.isNaN(lastSeenDate.getTime())) {
-      return false;
-    }
-
-    return Date.now() - lastSeenDate.getTime() <= 45_000;
+    return false;
   };
 
   const isOtherMemberOnline = isUserCurrentlyOnline(otherMember);
   const isDrawerUserOnline = isUserCurrentlyOnline(drawerUser);
+  const otherMemberLastSeen = getLastSeenValue(otherMember);
+  const drawerUserLastSeen = getLastSeenValue(drawerUser);
 
   const groupOnlineCount = useMemo(() => {
     if (!currentChat?.isGroup) {
@@ -110,13 +141,16 @@ export function useChatStatusMeta({
       return otherMember.officialBadgeLabel || "Rasmiy";
     }
 
-    return isOtherMemberOnline ? "Online" : "Offline";
+    return isOtherMemberOnline
+      ? "Online"
+      : formatLastSeenLabel(otherMemberLastSeen);
   }, [
     currentChat?.isSavedMessages,
     currentChat?.members,
     groupOnlineCount,
     isGroupChat,
     isOtherMemberOnline,
+    otherMemberLastSeen,
     otherMember?.isOfficialProfile,
     otherMember?.officialBadgeLabel,
     typingSubtitle,
@@ -138,20 +172,8 @@ export function useChatStatusMeta({
       return "Online";
     }
 
-    if (drawerUser?.lastSeen) {
-      const date = new Date(drawerUser.lastSeen);
-      if (!Number.isNaN(date.getTime())) {
-        return `Oxirgi marta: ${date.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}`;
-      }
-
-      return drawerUser.lastSeen;
-    }
-
     if (drawerUser) {
-      return "Offline";
+      return formatLastSeenLabel(drawerUserLastSeen);
     }
 
     if (currentChat?.isSavedMessages) {
@@ -159,7 +181,13 @@ export function useChatStatusMeta({
     }
 
     return `${currentChat?.members?.length || 0} a'zo`;
-  }, [currentChat?.isSavedMessages, currentChat?.members?.length, drawerUser, isDrawerUserOnline]);
+  }, [
+    currentChat?.isSavedMessages,
+    currentChat?.members?.length,
+    drawerUser,
+    drawerUserLastSeen,
+    isDrawerUserOnline,
+  ]);
 
   const drawerProfileMeta = useMemo(() => {
     if (drawerUser && !currentChat?.isGroup) {

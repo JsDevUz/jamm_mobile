@@ -14,6 +14,7 @@ import type {
   MeetSummary,
   Message,
   PaginatedMessages,
+  PresenceSnapshot,
   User,
 } from "../types/entities";
 import type {
@@ -620,10 +621,13 @@ export const premiumApi = {
 
 export const presenceApi = {
   getBulkStatus: (userIds: string[]) =>
-    request<{ statuses: Record<string, boolean> }>("/presence/status/bulk", {
-      method: "POST",
-      body: JSON.stringify({ userIds }),
-    }),
+    request<{ statuses: Record<string, PresenceSnapshot> }>(
+      "/presence/status/bulk",
+      {
+        method: "POST",
+        body: JSON.stringify({ userIds }),
+      },
+    ),
 };
 
 export const postsApi = {

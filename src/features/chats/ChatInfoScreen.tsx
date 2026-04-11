@@ -25,6 +25,7 @@ import { useChatPresenceLifecycle } from "./hooks/useChatPresenceLifecycle";
 import { useChatStatusMeta } from "./hooks/useChatStatusMeta";
 import { bootstrapPushNotifications } from "../../lib/notifications";
 import { chatsApi } from "../../lib/api";
+import { realtime } from "../../lib/realtime";
 import { openJammAwareLink, openJammProfileMention } from "../../navigation/internalLinks";
 import type { RootStackParamList } from "../../navigation/types";
 import { Colors } from "../../theme/colors";
@@ -70,7 +71,12 @@ export function ChatInfoScreen({ navigation, route }: Props) {
   const user = useAuthStore((state) => state.user);
   const currentUserId = getEntityId(user);
   const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
-  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>(() =>
+    realtime.getOnlineUserIds(),
+  );
+  const [lastSeenByUserId, setLastSeenByUserId] = useState<
+    Record<string, string | null>
+  >(() => realtime.getLastSeenMap());
   const chatId = route.params.chatId;
   const targetUserId = route.params.userId ?? null;
 
@@ -116,6 +122,7 @@ export function ChatInfoScreen({ navigation, route }: Props) {
     currentChatMemberIds,
     presenceResyncIntervalMs: PRESENCE_RESYNC_INTERVAL_MS,
     setOnlineUserIds,
+    setLastSeenByUserId,
   });
 
   const {
@@ -130,6 +137,7 @@ export function ChatInfoScreen({ navigation, route }: Props) {
     otherMember,
     drawerUser,
     onlineUserIds,
+    lastSeenByUserId,
     typingUserIds: [],
   });
 
