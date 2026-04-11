@@ -251,13 +251,12 @@ export function ChatList({
     [onMessagesTouchStart],
   );
 
+  const hasRenderableMessages = hasMessagesSnapshot || messageItems.length > 0;
   const showInitialSkeleton =
     !chatCacheHydrated ||
     !messagesCacheHydrated ||
     !initialHistoryReady ||
-    (messagesQuery.isLoading && !hasMessagesSnapshot) ||
-    (!messageListVisible &&
-      (messagesQuery.isLoading || hasMessagesSnapshot || messageItems.length > 0));
+    (!hasRenderableMessages && messagesQuery.isLoading);
 
   return (
     <GestureDetector gesture={messagesTapGesture}>
@@ -266,7 +265,6 @@ export function ChatList({
           styles.messagesViewport,
           containerInsetStyle,
           containerTransformStyle,
-          shouldHideUntilReady ? styles.messagesListHidden : null,
         ]}
         onLayout={(event) => {
           setViewportHeight(Math.ceil(event.nativeEvent.layout.height || 0));

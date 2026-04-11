@@ -98,7 +98,6 @@ const MESSAGE_MENU_ACTIONS_PADDING = 6;
 
 const PRESENCE_RESYNC_INTERVAL_MS = 15_000;
 const NEW_MESSAGES_BOTTOM_THRESHOLD = 96;
-const INITIAL_HISTORY_DAY_WINDOW = 5;
 const OLDER_HISTORY_FETCH_SAFETY_LIMIT = 20;
 
 const getMessageTimestamp = (message: { createdAt?: string; timestamp?: string }) => {
@@ -121,26 +120,6 @@ const getOldestLoadedDayStart = (messages: Message[]) => {
   }
 
   return null;
-};
-
-const getInitialHistoryThreshold = () => {
-  const threshold = new Date();
-  threshold.setHours(0, 0, 0, 0);
-  threshold.setDate(threshold.getDate() - (INITIAL_HISTORY_DAY_WINDOW - 1));
-  return threshold.getTime();
-};
-
-const hasCoveredInitialHistoryWindow = (messages: Message[]) => {
-  if (messages.length === 0) {
-    return true;
-  }
-
-  const oldestDayStart = getOldestLoadedDayStart(messages);
-  if (oldestDayStart === null) {
-    return true;
-  }
-
-  return oldestDayStart <= getInitialHistoryThreshold();
 };
 
 const hasOlderCursor = (snapshot?: MessagesInfiniteData) => {
@@ -201,7 +180,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const shouldStickToBottomRef = useRef(true);
   const previousLastMessageIdRef = useRef<string | null>(null);
   const previousMessageCountRef = useRef(0);
-  const initialHistoryBootstrapDoneRef = useRef(false);
   const initialHistoryFetchInFlightRef = useRef(false);
   const olderDayFetchInFlightRef = useRef(false);
   const infoPageTranslateX = useRef(new Animated.Value(screenWidth)).current;
@@ -1279,7 +1257,6 @@ export function ChatScreen({ navigation, route }: Props) {
     setInitialHistoryReady(false);
     setHasCachedMessagePages(false);
     setSavedScrollOffset(null);
-    initialHistoryBootstrapDoneRef.current = false;
     initialHistoryFetchInFlightRef.current = false;
     olderDayFetchInFlightRef.current = false;
     scrollRestorePendingRef.current = null;
@@ -1318,10 +1295,7 @@ export function ChatScreen({ navigation, route }: Props) {
           setSavedScrollOffset(nextScrollOffset);
           scrollRestorePendingRef.current = nextScrollOffset;
           scrollOffsetRef.current = nextScrollOffset ?? 0;
-          if (hasCachedPages) {
-            initialHistoryBootstrapDoneRef.current = true;
-            setInitialHistoryReady(true);
-          }
+          setInitialHistoryReady(hasCachedPages);
         }
       } catch (error) {
         console.warn("Failed to hydrate cached messages", error);
@@ -1388,12 +1362,11 @@ export function ChatScreen({ navigation, route }: Props) {
   );
 
   useEffect(() => {
-    if (!messagesCacheHydrated || initialHistoryBootstrapDoneRef.current) {
+    if (!messagesCacheHydrated) {
       return;
     }
 
-    if (hasCachedMessagePages) {
-      initialHistoryBootstrapDoneRef.current = true;
+    if (initialHistoryReady || hasCachedMessagePages) {
       setInitialHistoryReady(true);
       return;
     }
@@ -1403,7 +1376,6 @@ export function ChatScreen({ navigation, route }: Props) {
     }
 
     if (messagesQuery.isError) {
-      initialHistoryBootstrapDoneRef.current = true;
       setInitialHistoryReady(true);
       return;
     }
@@ -1413,36 +1385,13 @@ export function ChatScreen({ navigation, route }: Props) {
       return;
     }
 
-    let cancelled = false;
-    initialHistoryBootstrapDoneRef.current = true;
-    initialHistoryFetchInFlightRef.current = true;
-
-    const prepareInitialHistory = async () => {
-      try {
-        await fetchOlderPagesUntil((messages) => {
-          if (messages.length === 0) {
-            return false;
-          }
-
-          return !hasCoveredInitialHistoryWindow(messages);
-        });
-      } finally {
-        initialHistoryFetchInFlightRef.current = false;
-        if (!cancelled) {
-          setInitialHistoryReady(true);
-        }
-      }
-    };
-
-    void prepareInitialHistory();
-
-    return () => {
-      cancelled = true;
-    };
+    if (snapshot) {
+      setInitialHistoryReady(true);
+    }
   }, [
-    fetchOlderPagesUntil,
     getMessagesSnapshot,
     hasCachedMessagePages,
+    initialHistoryReady,
     messagesCacheHydrated,
     messagesQuery.isError,
     messagesQuery.isFetchingNextPage,

@@ -132,8 +132,7 @@ const formatDuration = (elapsedSeconds: number) => {
 
 const getTileColumns = (count: number) => {
   if (count <= 1) return 1;
-  if (count <= 4) return 2;
-  return 3;
+  return 2;
 };
 
 const CALL_QUALITY_PROFILES = {
@@ -1522,14 +1521,23 @@ export function GroupMeetScreen({ navigation, route }: Props) {
 
   const participantsCount = remotePeers.length + 1;
   const isLandscape = screenWidth > screenHeight;
+  const gridColumns = useMemo(() => {
+    const tileCount = Math.max(
+      1,
+      remotePeers.length + 1 + remoteScreenShares.length + (screenStream ? 1 : 0),
+    );
+    if (tileCount === 2 && !isLandscape) {
+      return 1;
+    }
+    return getTileColumns(tileCount);
+  }, [isLandscape, remotePeers.length, remoteScreenShares.length, screenStream]);
   const tileWidth = useMemo(() => {
     const tileCount = Math.max(1, remotePeers.length + 1 + remoteScreenShares.length + (screenStream ? 1 : 0));
-    const columns = getTileColumns(tileCount);
     const horizontalPadding = 28;
     const gap = 10;
-    const contentWidth = screenWidth - horizontalPadding - gap * (columns - 1);
-    return Math.max(120, Math.floor(contentWidth / columns));
-  }, [remotePeers.length, remoteScreenShares.length, screenStream, screenWidth]);
+    const contentWidth = screenWidth - horizontalPadding - gap * (gridColumns - 1);
+    return Math.max(120, Math.floor(contentWidth / gridColumns));
+  }, [gridColumns, remotePeers.length, remoteScreenShares.length, screenStream, screenWidth]);
   const compactTileWidth = useMemo(() => {
     if (isLandscape) {
       return 132;
@@ -1634,9 +1642,6 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     [displayName, isCamOn, isMicOn, localStream, remotePeers, remoteScreenShares, screenStream],
   );
 
-  const defaultStageTileId =
-    callTiles.find((tile) => tile.isScreenShare && tile.hasVideo)?.tileId || null;
-
   useEffect(() => {
     setSelectedTileId((current) =>
       current && callTiles.some((tile) => tile.tileId === current) ? current : null,
@@ -1651,49 +1656,20 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     });
   }, [callTiles]);
 
-  const activeStageTileId = fullscreenTileId || selectedTileId || defaultStageTileId;
+  const activeStageTileId = fullscreenTileId || null;
   const activeStageTile = callTiles.find((tile) => tile.tileId === activeStageTileId) || null;
-  const sideTiles = callTiles.filter((tile) => tile.tileId !== activeStageTileId);
+  const sideTiles = activeStageTileId
+    ? callTiles.filter((tile) => tile.tileId !== activeStageTileId)
+    : [];
   const hasSpotlight = Boolean(activeStageTile);
-  const immersiveTiles = useMemo(() => {
-    if (!fullscreenTileId || !hasSpotlight) {
-      return [];
+
+  const gridRows = useMemo(() => {
+    const rows: CallTile[][] = [];
+    for (let index = 0; index < callTiles.length; index += gridColumns) {
+      rows.push(callTiles.slice(index, index + gridColumns));
     }
-
-    const activePeerId = activeStageTile?.peerId || null;
-    const nextTiles: CallTile[] = [];
-    const pushUnique = (tile: CallTile | null) => {
-      if (!tile || nextTiles.some((entry) => entry.tileId === tile.tileId)) {
-        return;
-      }
-      nextTiles.push(tile);
-    };
-
-    pushUnique(
-      sideTiles.find(
-        (tile) =>
-          !tile.isLocal &&
-          !tile.isScreenShare &&
-          tile.peerId !== activePeerId &&
-          tile.peerId === lastSpeakerPeerId,
-      ) || null,
-    );
-    pushUnique(
-      sideTiles.find(
-        (tile) => !tile.isLocal && !tile.isScreenShare && tile.peerId !== activePeerId,
-      ) || null,
-    );
-    pushUnique(sideTiles.find((tile) => !tile.isLocal && tile.peerId !== activePeerId) || null);
-    pushUnique(sideTiles.find((tile) => tile.isLocal && tile.peerId !== activePeerId) || null);
-
-    sideTiles.forEach((tile) => {
-      if (tile.peerId !== activePeerId || tile.isScreenShare) {
-        pushUnique(tile);
-      }
-    });
-
-    return nextTiles.slice(0, 2);
-  }, [activeStageTile?.peerId, fullscreenTileId, hasSpotlight, lastSpeakerPeerId, sideTiles]);
+    return rows;
+  }, [callTiles, gridColumns]);
 
   const handleSelectTile = useCallback((tileId: string) => {
     setSelectedTileId((current) => (current === tileId ? null : tileId));
@@ -1894,19 +1870,6 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                     fullscreenTileId ? styles.spotlightWrapFullscreen : null,
                   ]}
                 >
-                  {!fullscreenTileId ? (
-                    <View style={styles.spotlightHeader}>
-                      <Text style={styles.spotlightTitle} numberOfLines={1}>
-                        {activeStageTile?.label}
-                      </Text>
-                      {selectedTileId ? (
-                        <Pressable style={styles.spotlightClose} onPress={handleResetStage}>
-                          <X size={14} color={Colors.text} />
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  ) : null}
-
                   <View style={styles.spotlightStageWrap}>
                     {activeStageTile ? renderTile(activeStageTile, { isStage: true }) : null}
 
@@ -1925,7 +1888,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                       ) : null}
                     </View>
 
-                    {fullscreenTileId && immersiveTiles.length > 0 ? (
+                    {fullscreenTileId && sideTiles.length > 0 ? (
                       <ScrollView
                         style={styles.floatingRail}
                         contentContainerStyle={styles.floatingRailContent}
@@ -1933,31 +1896,17 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                         showsHorizontalScrollIndicator={false}
                         bounces={false}
                       >
-                        {immersiveTiles.map((tile) =>
-                          renderSelectableTile(tile, {
-                            compact: true,
-                            floatingCompact: true,
-                          }),
-                        )}
+                        {sideTiles.map((tile) => (
+                          <View key={`floating-${tile.tileId}`}>
+                            {renderTile(tile, {
+                              compact: true,
+                              floatingCompact: true,
+                            })}
+                          </View>
+                        ))}
                       </ScrollView>
                     ) : null}
                   </View>
-
-                  {!fullscreenTileId ? (
-                    <ScrollView
-                      horizontal
-                      style={styles.spotlightRail}
-                      contentContainerStyle={styles.spotlightRailContent}
-                      showsHorizontalScrollIndicator={false}
-                      bounces={false}
-                    >
-                      {sideTiles.map((tile) =>
-                        renderSelectableTile(tile, {
-                          compact: true,
-                        }),
-                      )}
-                    </ScrollView>
-                  ) : null}
                 </View>
               ) : (
                 <ScrollView
@@ -1965,7 +1914,26 @@ export function GroupMeetScreen({ navigation, route }: Props) {
                   showsVerticalScrollIndicator={false}
                   bounces={false}
                 >
-                  {callTiles.map((tile) => renderSelectableTile(tile))}
+                  {gridRows.map((row, rowIndex) => {
+                    const isCenteredLastRow =
+                      (callTiles.length === 3 || callTiles.length === 5) &&
+                      row.length === 1 &&
+                      rowIndex === gridRows.length - 1;
+
+                    return (
+                      <View
+                        key={`grid-row-${rowIndex}`}
+                        style={[
+                          styles.gridRow,
+                          isCenteredLastRow ? styles.gridRowCentered : null,
+                        ]}
+                      >
+                        {row.map((tile) => (
+                          <View key={tile.tileId}>{renderTile(tile)}</View>
+                        ))}
+                      </View>
+                    );
+                  })}
                 </ScrollView>
               )}
             </>
@@ -2456,11 +2424,19 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   gridContent: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
     paddingHorizontal: 14,
     paddingVertical: 14,
+    gap: 10,
+  },
+  gridRow: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "stretch",
+    gap: 10,
+  },
+  gridRowCentered: {
+    justifyContent: "center",
   },
   tile: {
     height: 220,
