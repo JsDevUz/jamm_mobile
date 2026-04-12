@@ -1595,6 +1595,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       ];
 
       if (screenStream) {
+        const hasLocalScreenVideo =
+          screenStream
+            ?.getVideoTracks?.()
+            ?.some((track) => track.readyState === "live") === true;
         tiles.unshift({
           tileId: "local:screen",
           peerId: "local",
@@ -1602,9 +1606,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           stream: screenStream,
           isLocal: true,
           isScreenShare: true,
-          hasVideo: true,
+          hasVideo: hasLocalScreenVideo,
           audioMuted: true,
-          videoMuted: false,
+          videoMuted: !hasLocalScreenVideo,
         });
       }
 
@@ -1624,6 +1628,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       });
 
       remoteScreenShares.forEach((peer) => {
+        const hasRemoteScreenVideo =
+          peer.stream
+            ?.getVideoTracks?.()
+            ?.some((track) => track.readyState === "live") === true;
         tiles.unshift({
           tileId: `${peer.peerId}:screen`,
           peerId: peer.peerId,
@@ -1631,9 +1639,9 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           stream: peer.stream,
           isLocal: false,
           isScreenShare: true,
-          hasVideo: Boolean(peer.stream),
+          hasVideo: hasRemoteScreenVideo,
           audioMuted: true,
-          videoMuted: false,
+          videoMuted: !hasRemoteScreenVideo,
         });
       });
 
@@ -1723,7 +1731,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
             streamURL={streamUrl}
             style={styles.tileVideo}
             objectFit={isStage || compact || tile.isScreenShare ? "contain" : "cover"}
-            mirror={tile.isLocal && !tile.isScreenShare}
+            mirror={tile.isScreenShare ? false : tile.isLocal}
           />
         ) : (
           <View style={styles.tileFallback}>
@@ -2319,11 +2327,12 @@ const styles = StyleSheet.create({
   },
   spotlightWrap: {
     flex: 1,
-    paddingHorizontal: 14,
+    paddingHorizontal: 4,
     paddingTop: 14,
     paddingBottom: 8,
   },
   spotlightWrapFullscreen: {
+    paddingHorizontal: 4,
     paddingTop: 10,
     paddingBottom: 0,
   },
@@ -2367,9 +2376,8 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.58)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "transparent",
+    borderWidth: 0,
   },
   spotlightRail: {
     flexGrow: 0,
@@ -2530,9 +2538,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.56)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "transparent",
+    borderWidth: 0,
     zIndex: 4,
   },
   controlsScroll: {
