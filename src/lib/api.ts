@@ -1509,3 +1509,26 @@ export const meetsApi = {
       body: JSON.stringify({ isPrivate }),
     }),
 };
+
+export const livekitApi = {
+  getConfig: () => request<{ url: string }>("/livekit/config"),
+  createToken: (payload: {
+    roomId: string;
+    participantName?: string;
+    canPublish?: boolean;
+    canPublishData?: boolean;
+    canSubscribe?: boolean;
+  }) =>
+    request<{
+      url: string;
+      roomId: string;
+      token: string;
+      participantIdentity: string;
+      participantName: string;
+      isPrivate: boolean;
+      creatorId?: string | null;
+    }>("/livekit/token", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+};

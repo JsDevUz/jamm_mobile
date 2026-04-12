@@ -46,6 +46,8 @@ export const TURN_USERNAME = String(process.env.EXPO_PUBLIC_TURN_USERNAME || "")
 
 export const TURN_CREDENTIAL = String(process.env.EXPO_PUBLIC_TURN_CREDENTIAL || "").trim();
 
+export const LIVEKIT_URL = normalizeUrl(process.env.EXPO_PUBLIC_LIVEKIT_URL);
+
 export const buildJoinUrl = (roomId: string) =>
   `${APP_BASE_URL}/join/${String(roomId || "").replace(/^\/+/, "")}`;
 
