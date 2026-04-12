@@ -645,11 +645,18 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   );
 
   const canScreenShare =
-    Platform.OS === "android" && typeof mediaDevices.getDisplayMedia === "function";
+    (Platform.OS === "android" || Platform.OS === "ios") &&
+    typeof mediaDevices.getDisplayMedia === "function";
+
+  const isIOSSimulator = Platform.OS === "ios" && !mediaDevices.getDisplayMedia;
 
   const handleToggleScreenShare = useCallback(async () => {
     if (!canScreenShare) {
-      Alert.alert("Screen share", "Hozircha screen share faqat Android real device'da yoqilgan.");
+      if (isIOSSimulator) {
+        Alert.alert("Screen share", "iOS simulator'da screen share ishlamaydi. Real device'da sinang.");
+      } else {
+        Alert.alert("Screen share", "Ekran ulashish qo'llab-quvvatlanmaydi.");
+      }
       return;
     }
 
@@ -772,12 +779,17 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
         realtime.emitCallRequest(remoteUserId, roomId, "video");
       });
 
-      socket.on("room-info", ({ title: nextTitle, isPrivate: nextIsPrivate }) => {
+      socket.on("room-info", ({ title: nextTitle, isPrivate: nextIsPrivate, creatorUserId }) => {
         if (typeof nextTitle === "string" && nextTitle.trim()) {
           setRoomTitle(nextTitle.trim());
         }
         if (typeof nextIsPrivate === "boolean") {
           setRoomIsPrivate(nextIsPrivate);
+        }
+        // Xona yaratuvchisining ID sini saqlash (recording uchun kerak)
+        if (creatorUserId) {
+          // @ts-ignore - creatorUserId ni socket data'ga saqlash
+          socket.creatorUserId = String(creatorUserId);
         }
       });
 
