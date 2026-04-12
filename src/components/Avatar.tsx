@@ -45,7 +45,7 @@ export const Avatar = memo(function Avatar({
           remoteUri={uri}
           style={[styles.image, { width: size, height: size, borderRadius }]}
           contentFit="cover"
-          transition={180}
+          transition={0}
           onError={() => setImageFailed(true)}
         />
         {statusColor ? (

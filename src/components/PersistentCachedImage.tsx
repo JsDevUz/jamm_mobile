@@ -49,6 +49,7 @@ export function PersistentCachedImage({
   const [cacheVersion, setCacheVersion] = useState(() => getSecureMediaCacheVersion());
   const normalizedUri = String(remoteUri || "").trim();
   const canPersistInCache = /^https?:\/\//i.test(normalizedUri);
+  const shouldPreferRemoteDisplay = canPersistInCache && !requireManualDownload;
 
   useEffect(() => subscribeSecureMediaCache(setCacheVersion), []);
 
@@ -190,10 +191,11 @@ export function PersistentCachedImage({
       ) : (
         <Pressable disabled={!onPress} onPress={onPress} style={StyleSheet.absoluteFillObject}>
           <Image
-            source={{ uri: resolvedUri || normalizedUri }}
+            source={{ uri: shouldPreferRemoteDisplay ? normalizedUri : resolvedUri || normalizedUri }}
             placeholder={blurDataUrl ? { uri: blurDataUrl } : undefined}
             contentFit={contentFit}
             transition={transition}
+            cachePolicy={canPersistInCache ? "memory-disk" : "none"}
             style={StyleSheet.absoluteFillObject}
             onError={onError}
           />

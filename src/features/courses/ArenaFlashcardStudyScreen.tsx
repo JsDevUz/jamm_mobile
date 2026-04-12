@@ -209,22 +209,24 @@ function StudyFace({
   imageUri,
   text,
   caption,
+  compact = false,
 }: {
   imageUri?: string | null;
   text: string;
   caption?: string;
+  compact?: boolean;
 }) {
   return (
-    <View style={styles.faceCard}>
+    <View style={[styles.faceCard, compact && styles.faceCardCompact]}>
       {caption ? <Text style={styles.faceCaption}>{caption}</Text> : null}
       {imageUri ? (
         <PersistentCachedImage
           remoteUri={imageUri}
-          style={styles.faceImage}
+          style={[styles.faceImage, compact && styles.faceImageCompact]}
           contentFit="contain"
         />
       ) : null}
-      <Text style={styles.faceText}>{text || "???"}</Text>
+      <Text style={[styles.faceText, compact && styles.faceTextCompact]}>{text || "???"}</Text>
     </View>
   );
 }
@@ -1145,79 +1147,53 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                           ]}
                         >
                           <Pressable style={styles.classicSwipeCardPressable} onPress={handleClassicCardPress}>
-                            <Animated.View
-                              needsOffscreenAlphaCompositing
-                              renderToHardwareTextureAndroid
-                              style={[
-                                styles.classicFlipShell,
-                                {
-                                  transform: [
-                                    { perspective: 1200 },
-                                    { rotateY: classicFlipRotate },
-                                  ],
-                                },
-                              ]}
-                            >
-                              <View style={styles.classicFlipLayer}>
+                            <View style={styles.classicFlipLayer}>
+                              <View style={{ flex: 1 }}>
+                                <View style={styles.classicCardToolbar}>
+                                  <Pressable
+                                    style={styles.classicToolbarButton}
+                                    onPress={() => speakClassicCard("prompt")}
+                                    disabled={Boolean(classicSpeakingSide)}
+                                  >
+                                    {classicSpeakingSide === "prompt" ? (
+                                      <ActivityIndicator size="small" color={Colors.text} />
+                                    ) : (
+                                      <Volume2 size={20} color={Colors.text} />
+                                    )}
+                                  </Pressable>
+                                </View>
                                 <View
                                   style={[
-                                    styles.classicCardFace,
-                                    classicRenderedBack
-                                      ? styles.classicCardFaceBack
-                                      : styles.classicCardFaceFront,
+                                    styles.classicCardBody,
+                                    classicShowBack && styles.classicCardBodyExpanded,
                                   ]}
                                 >
-                                  <View
-                                    style={
-                                      classicRenderedBack
-                                        ? styles.classicCardFaceMirrorFix
-                                        : {flex:1}
-                                    }
+                                  {classicPromptImage ? (
+                                    <PersistentCachedImage
+                                      remoteUri={classicPromptImage}
+                                      style={styles.classicCardImage}
+                                      contentFit="contain"
+                                    />
+                                  ) : null}
+                                  <Text
+                                    style={[
+                                      styles.classicCardWord,
+                                      {
+                                        opacity: Math.max(0.34, 1 - classicSwipeProgress * 0.36),
+                                      },
+                                    ]}
                                   >
-                                    <View style={styles.classicCardToolbar}>
-                                    <Pressable
-                                      style={styles.classicToolbarButton}
-                                      onPress={() =>
-                                        speakClassicCard(
-                                          classicRenderedBack ? "answer" : "prompt",
-                                        )
-                                      }
-                                      disabled={Boolean(classicSpeakingSide)}
-                                    >
-                                      {classicSpeakingSide ===
-                                      (classicRenderedBack ? "answer" : "prompt") ? (
-                                        <ActivityIndicator size="small" color={Colors.text} />
-                                      ) : (
-                                        <Volume2 size={20} color={Colors.text} />
-                                      )}
-                                    </Pressable>
+                                    {classicPromptText}
+                                  </Text>
+
+                                  {classicShowBack ? (
+                                    <View style={styles.classicAnswerPanel}>
+                                      <Text style={styles.classicAnswerWord}>{classicAnswerText}</Text>
                                     </View>
-                                    <View style={styles.classicCardBody}>
-                                      {classicVisibleImage ? (
-                                        <PersistentCachedImage
-                                          remoteUri={classicVisibleImage}
-                                          style={styles.classicCardImage}
-                                          contentFit="contain"
-                                        />
-                                      ) : null}
-                                      <Text
-                                        style={[
-                                          styles.classicCardWord,
-                                          {
-                                            opacity: Math.max(
-                                              0.34,
-                                              1 - classicSwipeProgress * 0.36,
-                                            ),
-                                          },
-                                        ]}
-                                      >
-                                        {classicVisibleText}
-                                      </Text>
-                                    </View>
-                                  </View>
+                                  ) : null}
                                 </View>
                               </View>
-                            </Animated.View>
+                            </View>
 
                             <View
                               pointerEvents="none"
@@ -1258,8 +1234,8 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                   </View>
 
                   <Text style={styles.classicHelperText}>
-                    Kartani bosing, u flip bo'ladi. Chapga suring: topdim. O'ngga suring:
-                    topolmadim.
+                    Kartani bosing, javob pastda ochiladi. Chapga suring: topdim. O'ngga
+                    suring: topolmadim.
                   </Text>
                 </View>
               </>
@@ -1621,26 +1597,28 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                   </ResultSummary>
                 ) : currentReviewCard ? (
                   <>
-                    <StudyFace
-                      imageUri={
-                        reviewShowAnswer
-                          ? getAnswerImage(currentReviewCard)
-                          : getPromptImage(currentReviewCard)
-                      }
-                      text={
-                        reviewShowAnswer
-                          ? getAnswerText(currentReviewCard)
-                          : getPromptText(currentReviewCard)
-                      }
-                      caption={reviewShowAnswer ? "Javob" : "Savol"}
-                    />
+                    <View style={styles.faceShell}>
+                      <StudyFace
+                        imageUri={getPromptImage(currentReviewCard)}
+                        text={getPromptText(currentReviewCard)}
+                        caption="Savol"
+                      />
+
+                      {reviewShowAnswer ? (
+                        <View pointerEvents="none" style={styles.faceAnswerOverlay}>
+                          <Text style={styles.faceAnswerOverlayText}>
+                            {getAnswerText(currentReviewCard) || "???"}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
 
                     {!reviewShowAnswer ? (
                       <Pressable
                         style={styles.primaryAction}
                         onPress={() => setReviewShowAnswer(true)}
                       >
-                        <Text style={styles.primaryActionText}>Javobni ko'rish</Text>
+                        <Text style={styles.primaryActionText}>Javobni ochish</Text>
                       </Pressable>
                     ) : (
                       <View style={styles.ratingColumn}>
@@ -1872,6 +1850,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 18,
   },
+  faceCardCompact: {
+    minHeight: 0,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    borderRadius: 22,
+    gap: 14,
+  },
+  faceShell: {
+    position: "relative",
+  },
   faceCaption: {
     color: Colors.primary,
     fontSize: 13,
@@ -1886,11 +1874,35 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: Colors.surfaceMuted,
   },
+  faceImageCompact: {
+    maxWidth: 220,
+    height: 128,
+    borderRadius: 16,
+  },
   faceText: {
     color: Colors.text,
     fontSize: 30,
     lineHeight: 38,
     fontWeight: "800",
+    textAlign: "center",
+  },
+  faceTextCompact: {
+    fontSize: 22,
+    lineHeight: 30,
+  },
+  faceAnswerOverlay: {
+    position: "absolute",
+    left: 18,
+    right: 18,
+    bottom: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  faceAnswerOverlayText: {
+    color: Colors.mutedText,
+    fontSize: 20,
+    lineHeight: 28,
+    fontWeight: "700",
     textAlign: "center",
   },
   primaryAction: {
@@ -2226,6 +2238,11 @@ const styles = StyleSheet.create({
     paddingBottom: 26,
     gap: 18,
   },
+  classicCardBodyExpanded: {
+    justifyContent: "center",
+    paddingTop: 8,
+    paddingBottom: 26,
+  },
   classicCardImage: {
     width: "100%",
     maxWidth: 280,
@@ -2241,6 +2258,22 @@ const styles = StyleSheet.create({
     textAlign: "center",
     width: "100%",
     paddingVertical: 6,
+  },
+  classicAnswerPanel: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    bottom: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  classicAnswerWord: {
+    color: Colors.mutedText,
+    fontSize: 20,
+    lineHeight: 28,
+    fontWeight: "700",
+    textAlign: "center",
+    width: "100%",
   },
   classicPreviewText: {
     color: "#CBD5E1",

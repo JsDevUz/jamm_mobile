@@ -46,6 +46,7 @@ import {
   type MediaStream,
 } from "react-native-webrtc";
 import { meetsApi } from "../../lib/api";
+import { playMeetJoinRequestCue, playMeetStartedCue } from "../../lib/audio-cues";
 import {
   buildJoinUrl,
   buildSocketNamespaceUrl,
@@ -238,8 +239,18 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomTitleRef = useRef(roomTitle);
   const roomPrivacyRef = useRef(roomIsPrivate);
+  const startCuePlayedRef = useRef<string | null>(null);
 
   const joinUrl = useMemo(() => buildJoinUrl(roomId), [roomId]);
+
+  useEffect(() => {
+    if (!roomId || startCuePlayedRef.current === roomId) {
+      return;
+    }
+
+    startCuePlayedRef.current = roomId;
+    void playMeetStartedCue();
+  }, [roomId]);
 
   useEffect(() => {
     localStreamRef.current = localStream;
@@ -1321,10 +1332,12 @@ export function GroupMeetScreen({ navigation, route }: Props) {
 
         const normalizedPeerId = String(peerId || "");
         if (!normalizedPeerId) return;
+        let didAddNewRequest = false;
 
         setKnockRequests((previous) => {
           const existingIndex = previous.findIndex((entry) => entry.peerId === normalizedPeerId);
           if (existingIndex === -1) {
+            didAddNewRequest = true;
             return [
               ...previous,
               {
@@ -1343,6 +1356,10 @@ export function GroupMeetScreen({ navigation, route }: Props) {
               : entry,
           );
         });
+
+        if (didAddNewRequest) {
+          void playMeetJoinRequestCue();
+        }
       });
 
       socket.on("waiting-for-approval", () => {
