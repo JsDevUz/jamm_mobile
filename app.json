@@ -14,6 +14,19 @@
     },
     "plugins": [
       [
+        "@livekit/react-native-expo-plugin",
+        {
+          "android": {
+            "audioType": "communication",
+            "enableScreenShareService": true
+          },
+          "ios": {
+            "enableMultitaskingCameraAccess": false
+          }
+        }
+      ],
+      "@config-plugins/react-native-webrtc",
+      [
         "expo-notifications",
         {
           "icon": "./assets/android-icon-monochrome.png",
@@ -42,9 +55,8 @@
         "CAMERA",
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
-        "CAMERA",
-        "RECORD_AUDIO",
-        "MODIFY_AUDIO_SETTINGS"
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PROJECTION"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#0B1020",

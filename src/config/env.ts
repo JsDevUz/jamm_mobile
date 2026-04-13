@@ -37,15 +37,6 @@ export const API_HINT = process.env.EXPO_PUBLIC_API_URL
   ? API_BASE_URL
   : `${API_BASE_URL} (simulator default)`;
 
-export const TURN_URLS = String(process.env.EXPO_PUBLIC_TURN_URLS || "")
-  .split(",")
-  .map((item) => item.trim())
-  .filter(Boolean);
-
-export const TURN_USERNAME = String(process.env.EXPO_PUBLIC_TURN_USERNAME || "").trim();
-
-export const TURN_CREDENTIAL = String(process.env.EXPO_PUBLIC_TURN_CREDENTIAL || "").trim();
-
 export const LIVEKIT_URL = normalizeUrl(process.env.EXPO_PUBLIC_LIVEKIT_URL);
 
 export const buildJoinUrl = (roomId: string) =>
