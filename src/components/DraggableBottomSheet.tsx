@@ -31,6 +31,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors } from "../theme/colors";
 
+const HEADER_GESTURE_ACTIVE_OFFSET_Y: [number, number] = [-4, 4];
+const CONTENT_GESTURE_ACTIVE_OFFSET_Y = 6;
+const GESTURE_FAIL_OFFSET_X: [number, number] = [-32, 32];
+const SHEET_OVERSHOOT_LIMIT = 44;
+
 type Props = {
   visible: boolean;
   title: string;
@@ -73,6 +78,41 @@ export function DraggableBottomSheet({
   const [contentCanStartDrag, setContentCanStartDrag] = useState(true);
   const closingRef = useRef(false);
   const locallyDismissedRef = useRef(false);
+  const backdropAnimatedOpacity = useMemo(
+    () =>
+      backdropOpacity.interpolate({
+        inputRange: [0, 0.32, 0.7, 1],
+        outputRange: [0, 0.1, 0.68, 1],
+        extrapolate: "clamp",
+      }),
+    [backdropOpacity],
+  );
+
+  const getBackdropProgress = useCallback(
+    (heightValue: number) => {
+      const normalized = Math.max(0, Math.min(1, heightValue / Math.max(collapsedHeight, 1)));
+      return Math.pow(normalized, 0.86);
+    },
+    [collapsedHeight],
+  );
+
+  const getRubberBandedHeight = useCallback(
+    (rawHeight: number) => {
+      if (rawHeight < 0) {
+        return 0;
+      }
+
+      if (rawHeight <= maxHeight) {
+        return rawHeight;
+      }
+
+      const overshoot = rawHeight - maxHeight;
+      const resistedOvershoot =
+        overshoot / (1 + overshoot / Math.max(SHEET_OVERSHOOT_LIMIT, 1));
+      return maxHeight + Math.min(SHEET_OVERSHOOT_LIMIT, resistedOvershoot);
+    },
+    [maxHeight],
+  );
 
   const animateSheetTo = useCallback(
     (toValue: number, opacity = 1, onDone?: () => void) => {
@@ -86,7 +126,7 @@ export function DraggableBottomSheet({
         }),
         Animated.timing(backdropOpacity, {
           toValue: opacity,
-          duration: 180,
+          duration: 240,
           useNativeDriver: true,
         }),
       ]).start(({ finished }) => {
@@ -175,7 +215,7 @@ export function DraggableBottomSheet({
       }),
       Animated.timing(backdropOpacity, {
         toValue: 0,
-        duration: 180,
+        duration: 220,
         useNativeDriver: true,
       }),
     ]).start(() => {
@@ -186,16 +226,12 @@ export function DraggableBottomSheet({
 
   const updateDraggedPosition = useCallback(
     (translationY: number) => {
-      const nextValue = Math.max(
-        0,
-        Math.min(maxHeight, panStartHeightRef.current - translationY),
-      );
+      const rawValue = panStartHeightRef.current - translationY;
+      const nextValue = getRubberBandedHeight(rawValue);
       sheetHeightAnim.setValue(nextValue);
-      backdropOpacity.setValue(
-        Math.min(1, nextValue / Math.max(collapsedHeight, 1)),
-      );
+      backdropOpacity.setValue(getBackdropProgress(nextValue));
     },
-    [backdropOpacity, collapsedHeight, maxHeight, sheetHeightAnim],
+    [backdropOpacity, getBackdropProgress, getRubberBandedHeight, sheetHeightAnim],
   );
 
   useEffect(() => {
@@ -225,7 +261,7 @@ export function DraggableBottomSheet({
       }),
       Animated.timing(backdropOpacity, {
         toValue: 0,
-        duration: 180,
+        duration: 220,
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
@@ -364,7 +400,7 @@ export function DraggableBottomSheet({
         Math.min(maxHeight, panStartHeightRef.current - releasePull),
       );
       const shouldClose =
-        releaseValue < collapsedHeight - maxHeight * 0.12 || velocityY < -0.6;
+        releaseValue < collapsedHeight - maxHeight * 0.12 || velocityY > 0.6;
 
       if (shouldClose) {
         handleClose();
@@ -372,7 +408,7 @@ export function DraggableBottomSheet({
       }
 
       const shouldExpand =
-        releaseValue > collapsedHeight + maxHeight * 0.12 || velocityY > 0.45;
+        releaseValue > collapsedHeight + maxHeight * 0.12 || velocityY < -0.45;
       animateSheetTo(shouldExpand ? maxHeight : collapsedHeight, 1);
     },
     [
@@ -437,7 +473,7 @@ export function DraggableBottomSheet({
   return (
     <Modal visible transparent animationType="none" onRequestClose={handleClose}>
       <View style={styles.root}>
-        <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
+        <Animated.View style={[styles.backdrop, { opacity: backdropAnimatedOpacity }]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={handleClose} />
         </Animated.View>
 
@@ -457,29 +493,28 @@ export function DraggableBottomSheet({
             ]}
           >
             <PanGestureHandler
-              activeOffsetY={[-6, 6]}
-              failOffsetX={[-24, 24]}
+              activeOffsetY={HEADER_GESTURE_ACTIVE_OFFSET_Y}
+              failOffsetX={GESTURE_FAIL_OFFSET_X}
               shouldCancelWhenOutside={false}
               onGestureEvent={handleGestureEvent}
               onHandlerStateChange={handleGestureStateChange}
             >
-              <View style={styles.dragArea}>
+              <View style={styles.headerGestureArea}>
                 <View style={styles.handleWrap}>
                   <View style={styles.handle} />
                 </View>
+                <View style={styles.header}>
+                  <Text style={styles.title}>{title}</Text>
+                  <Pressable onPress={handleClose} hitSlop={10} style={styles.closeButton}>
+                    <X size={18} color={Colors.text} />
+                  </Pressable>
+                </View>
               </View>
             </PanGestureHandler>
-
-            <View style={styles.header}>
-              <Text style={styles.title}>{title}</Text>
-              <Pressable onPress={handleClose} hitSlop={10} style={styles.closeButton}>
-                <X size={18} color={Colors.text} />
-              </Pressable>
-            </View>
             <PanGestureHandler
               enabled={contentCanStartDrag}
-              activeOffsetY={10}
-              failOffsetX={[-24, 24]}
+              activeOffsetY={CONTENT_GESTURE_ACTIVE_OFFSET_Y}
+              failOffsetX={GESTURE_FAIL_OFFSET_X}
               shouldCancelWhenOutside={false}
               onGestureEvent={handleContentGestureEvent}
               onHandlerStateChange={handleContentGestureStateChange}
@@ -514,7 +549,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 28,
     overflow: "hidden",
   },
-  dragArea: {
+  headerGestureArea: {
     backgroundColor: Colors.surface,
   },
   handleWrap: {

@@ -44,7 +44,10 @@
       ],
       "infoPlist": {
         "NSCameraUsageDescription": "Video meet uchun kamera ishlatiladi.",
-        "NSMicrophoneUsageDescription": "Video meet uchun mikrofon ishlatiladi."
+        "NSMicrophoneUsageDescription": "Video meet uchun mikrofon ishlatiladi.",
+        "UIBackgroundModes": [
+          "audio"
+        ]
       },
       "bundleIdentifier": "com.jsdevuz.jammmobile"
     },

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Animated,
   ImageBackground,
+  InteractionManager,
   Platform,
   Pressable,
   StyleSheet,
@@ -150,6 +151,32 @@ export function ChatList({
     !messageListVisible && messageItems.length > 0;
   const initialListMeasurementsReady =
     viewportHeight > 0 && (messageItems.length === 0 || contentBodyHeight > 0);
+  const forceScrollToLatest = useCallback(() => {
+    if (!messageItems.length) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToEnd({ animated: false });
+
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToEnd({ animated: false });
+      });
+    });
+
+    const interactionTask = InteractionManager.runAfterInteractions(() => {
+      listRef.current?.scrollToEnd({ animated: false });
+    });
+
+    const timeoutId = setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated: false });
+    }, 120);
+
+    return () => {
+      interactionTask.cancel();
+      clearTimeout(timeoutId);
+    };
+  }, [listRef, messageItems.length]);
   const finalizeInitialListLayout = useCallback(() => {
     if (initialScrollDoneRef.current) {
       requestAnimationFrame(onLoadComplete);
@@ -174,7 +201,7 @@ export function ChatList({
         });
       } else {
         shouldStickToBottomRef.current = true;
-        listRef.current?.scrollToEnd({ animated: false });
+        forceScrollToLatest();
       }
 
       scrollRestorePendingRef.current = null;
@@ -186,6 +213,7 @@ export function ChatList({
     initialScrollDoneRef,
     listRef,
     onLoadComplete,
+    forceScrollToLatest,
     scrollOffsetRef,
     scrollRestorePendingRef,
     shouldStickToBottomRef,

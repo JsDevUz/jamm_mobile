@@ -210,23 +210,32 @@ function StudyFace({
   text,
   caption,
   compact = false,
+  answerText,
 }: {
   imageUri?: string | null;
   text: string;
   caption?: string;
   compact?: boolean;
+  answerText?: string | null;
 }) {
   return (
     <View style={[styles.faceCard, compact && styles.faceCardCompact]}>
       {caption ? <Text style={styles.faceCaption}>{caption}</Text> : null}
-      {imageUri ? (
-        <PersistentCachedImage
-          remoteUri={imageUri}
-          style={[styles.faceImage, compact && styles.faceImageCompact]}
-          contentFit="contain"
-        />
+      <View style={styles.faceContent}>
+        {imageUri ? (
+          <PersistentCachedImage
+            remoteUri={imageUri}
+            style={[styles.faceImage, compact && styles.faceImageCompact]}
+            contentFit="contain"
+          />
+        ) : null}
+        <Text style={[styles.faceText, compact && styles.faceTextCompact]}>{text || "???"}</Text>
+      </View>
+      {answerText ? (
+        <View style={styles.faceAnswerInline}>
+          <Text style={styles.faceAnswerInlineText}>{answerText}</Text>
+        </View>
       ) : null}
-      <Text style={[styles.faceText, compact && styles.faceTextCompact]}>{text || "???"}</Text>
     </View>
   );
 }
@@ -1162,35 +1171,49 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                                     )}
                                   </Pressable>
                                 </View>
-                                <View
-                                  style={[
-                                    styles.classicCardBody,
-                                    classicShowBack && styles.classicCardBodyExpanded,
-                                  ]}
-                                >
-                                  {classicPromptImage ? (
-                                    <PersistentCachedImage
-                                      remoteUri={classicPromptImage}
-                                      style={styles.classicCardImage}
-                                      contentFit="contain"
-                                    />
-                                  ) : null}
-                                  <Text
+                                <View style={styles.classicCardBody}>
+                                  <View style={styles.classicCardContent}>
+                                    {classicPromptImage ? (
+                                      <PersistentCachedImage
+                                        remoteUri={classicPromptImage}
+                                        style={styles.classicCardImage}
+                                        contentFit="contain"
+                                      />
+                                    ) : null}
+                                    <Text
+                                      style={[
+                                        styles.classicCardWord,
+                                        {
+                                          opacity: Math.max(0.34, 1 - classicSwipeProgress * 0.36),
+                                        },
+                                      ]}
+                                    >
+                                      {classicPromptText}
+                                    </Text>
+                                  </View>
+
+                                  <Animated.View
+                                    pointerEvents="none"
                                     style={[
-                                      styles.classicCardWord,
+                                      styles.classicAnswerPanel,
                                       {
-                                        opacity: Math.max(0.34, 1 - classicSwipeProgress * 0.36),
+                                        opacity: classicFlipProgress.interpolate({
+                                          inputRange: [0, 0.55, 1],
+                                          outputRange: [0, 0, 1],
+                                        }),
+                                        transform: [
+                                          {
+                                            translateY: classicFlipProgress.interpolate({
+                                              inputRange: [0, 1],
+                                              outputRange: [26, 0],
+                                            }),
+                                          },
+                                        ],
                                       },
                                     ]}
                                   >
-                                    {classicPromptText}
-                                  </Text>
-
-                                  {classicShowBack ? (
-                                    <View style={styles.classicAnswerPanel}>
-                                      <Text style={styles.classicAnswerWord}>{classicAnswerText}</Text>
-                                    </View>
-                                  ) : null}
+                                    <Text style={styles.classicAnswerWord}>{classicAnswerText}</Text>
+                                  </Animated.View>
                                 </View>
                               </View>
                             </View>
@@ -1597,21 +1620,14 @@ export function ArenaFlashcardStudyScreen({ navigation, route }: Props) {
                   </ResultSummary>
                 ) : currentReviewCard ? (
                   <>
-                    <View style={styles.faceShell}>
+                    <Pressable style={styles.faceShell} onPress={() => setReviewShowAnswer((value) => !value)}>
                       <StudyFace
                         imageUri={getPromptImage(currentReviewCard)}
                         text={getPromptText(currentReviewCard)}
                         caption="Savol"
+                        answerText={reviewShowAnswer ? getAnswerText(currentReviewCard) || "???" : null}
                       />
-
-                      {reviewShowAnswer ? (
-                        <View pointerEvents="none" style={styles.faceAnswerOverlay}>
-                          <Text style={styles.faceAnswerOverlayText}>
-                            {getAnswerText(currentReviewCard) || "???"}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
+                    </Pressable>
 
                     {!reviewShowAnswer ? (
                       <Pressable
@@ -1849,6 +1865,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 18,
+    position: "relative",
+    paddingBottom: 108,
   },
   faceCardCompact: {
     minHeight: 0,
@@ -1858,7 +1876,15 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   faceShell: {
-    position: "relative",
+    width: "100%",
+    alignItems: "center",
+  },
+  faceContent: {
+    flex: 1,
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 18,
   },
   faceCaption: {
     color: Colors.primary,
@@ -1890,15 +1916,21 @@ const styles = StyleSheet.create({
     fontSize: 22,
     lineHeight: 30,
   },
-  faceAnswerOverlay: {
+  faceAnswerInline: {
     position: "absolute",
-    left: 18,
-    right: 18,
-    bottom: 18,
+    left: 20,
+    right: 20,
+    bottom: 20,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 20,
+    backgroundColor: Colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: Colors.border,
   },
-  faceAnswerOverlayText: {
+  faceAnswerInlineText: {
     color: Colors.mutedText,
     fontSize: 20,
     lineHeight: 28,
@@ -2208,9 +2240,10 @@ const styles = StyleSheet.create({
   },
   classicCardToolbar: {
     height: 54,
+    width: "100%",
     paddingHorizontal: 16,
     paddingTop: 12,
-    alignItems: "flex-end",
+    alignItems: "flex-start",
     justifyContent: "center",
   },
   classicToolbarButton: {
@@ -2231,17 +2264,16 @@ const styles = StyleSheet.create({
   },
   classicCardBody: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
+    position: "relative",
     paddingHorizontal: 22,
     paddingTop: 8,
-    paddingBottom: 26,
-    gap: 18,
+    paddingBottom: 120,
   },
-  classicCardBodyExpanded: {
+  classicCardContent: {
+    flex: 1,
+    alignItems: "center",
     justifyContent: "center",
-    paddingTop: 8,
-    paddingBottom: 26,
+    gap: 18,
   },
   classicCardImage: {
     width: "100%",
@@ -2261,11 +2293,17 @@ const styles = StyleSheet.create({
   },
   classicAnswerPanel: {
     position: "absolute",
-    left: 12,
-    right: 12,
-    bottom: 8,
+    left: 22,
+    right: 22,
+    bottom: 24,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    borderRadius: 22,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
   },
   classicAnswerWord: {
     color: Colors.mutedText,

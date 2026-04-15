@@ -634,81 +634,158 @@ function CreateCourseModal({
         overScrollMode="always"
         onScrollEndDrag={handleCloseByOverscroll}
       >
-        <TextInput
-          value={name}
-          onChangeText={setName}
-          placeholder={t("createCourse.name")}
-          placeholderTextColor={Colors.subtleText}
-          style={styles.fieldInput}
-        />
-        <TextInput
-          value={description}
-          onChangeText={setDescription}
-          placeholder={t("createCourse.description")}
-          placeholderTextColor={Colors.subtleText}
-          style={[styles.fieldInput, styles.textArea]}
-          multiline
-        />
-        <TextInput
-          value={category}
-          onChangeText={setCategory}
-          placeholder={t("createCourse.category")}
-          placeholderTextColor={Colors.subtleText}
-          style={styles.fieldInput}
-        />
-        <TextInput
-          value={price}
-          onChangeText={setPrice}
-          placeholder={t("createCourse.price")}
-          placeholderTextColor={Colors.subtleText}
-          keyboardType="number-pad"
-          style={styles.fieldInput}
-        />
-
-        <View style={styles.accessRow}>
-          {[
-            { id: "free_request", label: t("createCourse.access.freeRequest") },
-            { id: "free_open", label: t("createCourse.access.freeOpen") },
-            { id: "paid", label: t("createCourse.access.paid") },
-          ].map((option) => (
-            <Pressable
-              key={option.id}
-              style={[
-                styles.accessChip,
-                accessType === option.id && styles.accessChipActive,
-              ]}
-              onPress={() =>
-                setAccessType(option.id as "paid" | "free_request" | "free_open")
-              }
-            >
-              <Text
-                style={[
-                  styles.accessChipText,
-                  accessType === option.id && styles.accessChipTextActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
+        <View style={styles.courseCreateHero}>
+          <View style={styles.courseCreateHeroIcon}>
+            <BookOpen size={18} color={Colors.primary} />
+          </View>
+          <View style={styles.courseCreateHeroCopy}>
+            <Text style={styles.courseCreateHeroTitle}>Yangi kurs yarating</Text>
+            <Text style={styles.courseCreateHeroText}>
+              Kurs nomi, tavsifi va kirish turini tanlang. Cover rasm qo‘shsangiz kurs yanada
+              chiroyli ko‘rinadi.
+            </Text>
+          </View>
         </View>
 
-        <Pressable style={styles.mediaPicker} onPress={() => void handlePickImage()}>
-          <Text style={styles.mediaPickerText}>
-            {uploading
-              ? t("common.loading")
-              : image
-                ? t("articles.editor.coverReady")
-                : t("createCourse.imageChange")}
-          </Text>
-        </Pressable>
-
-        {image ? (
-          <PersistentCachedImage
-            remoteUri={image}
-            style={styles.coverPreview}
+        <View style={styles.courseCreateFieldGroup}>
+          <Text style={styles.courseCreateFieldLabel}>{t("createCourse.name")}</Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder={t("createCourse.name")}
+            placeholderTextColor={Colors.subtleText}
+            style={styles.fieldInput}
           />
-        ) : null}
+        </View>
+
+        <View style={styles.courseCreateFieldGroup}>
+          <Text style={styles.courseCreateFieldLabel}>{t("createCourse.description")}</Text>
+          <Text style={styles.courseCreateFieldHint}>
+            Qisqa va tushunarli yozing, o‘quvchi kurs mazmunini tez anglashi uchun.
+          </Text>
+          <TextInput
+            value={description}
+            onChangeText={setDescription}
+            placeholder={t("createCourse.description")}
+            placeholderTextColor={Colors.subtleText}
+            style={[styles.fieldInput, styles.textArea]}
+            multiline
+          />
+        </View>
+
+        <View style={styles.courseCreateFieldGroup}>
+          <Text style={styles.courseCreateFieldLabel}>Asosiy ma’lumotlar</Text>
+          <View style={styles.courseCreateMetaRow}>
+            <View style={[styles.courseCreateFieldGroup, styles.courseCreateHalfField]}>
+              <Text style={styles.courseCreateFieldLabel}>{t("createCourse.category")}</Text>
+              <TextInput
+                value={category}
+                onChangeText={setCategory}
+                placeholder={t("createCourse.category")}
+                placeholderTextColor={Colors.subtleText}
+                style={styles.fieldInput}
+              />
+            </View>
+            <View style={[styles.courseCreateFieldGroup, styles.courseCreateHalfField]}>
+              <Text style={styles.courseCreateFieldLabel}>{t("createCourse.price")}</Text>
+              <TextInput
+                value={price}
+                onChangeText={setPrice}
+                placeholder={t("createCourse.price")}
+                placeholderTextColor={Colors.subtleText}
+                keyboardType="number-pad"
+                style={styles.fieldInput}
+              />
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.courseCreateFieldGroup}>
+          <Text style={styles.courseCreateFieldLabel}>Kirish turi</Text>
+          <View style={styles.courseAccessCardList}>
+            {[
+              {
+                id: "free_request",
+                label: t("createCourse.access.freeRequest"),
+                hint: "Tasdiq bilan qo‘shiladi",
+                icon: Users,
+              },
+              {
+                id: "free_open",
+                label: t("createCourse.access.freeOpen"),
+                hint: "Hamma darhol kira oladi",
+                icon: Globe2,
+              },
+              {
+                id: "paid",
+                label: t("createCourse.access.paid"),
+                hint: "Faqat pullik kirish",
+                icon: Lock,
+              },
+            ].map((option) => {
+              const Icon = option.icon;
+              const isActive = accessType === option.id;
+
+              return (
+                <Pressable
+                  key={option.id}
+                  style={[
+                    styles.courseAccessCard,
+                    isActive && styles.courseAccessCardActive,
+                  ]}
+                  onPress={() =>
+                    setAccessType(option.id as "paid" | "free_request" | "free_open")
+                  }
+                >
+                  <View
+                    style={[
+                      styles.courseAccessCardIconWrap,
+                      isActive && styles.courseAccessCardIconWrapActive,
+                    ]}
+                  >
+                    <Icon size={16} color={isActive ? "#fff" : Colors.primary} />
+                  </View>
+                  <View style={styles.courseAccessCardCopy}>
+                    <Text
+                      style={[
+                        styles.courseAccessCardTitle,
+                        isActive && styles.courseAccessCardTitleActive,
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                    <Text style={styles.courseAccessCardHint}>{option.hint}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.courseCreateFieldGroup}>
+          <Text style={styles.courseCreateFieldLabel}>Cover rasm</Text>
+          <Pressable style={styles.courseCreateCoverPicker} onPress={() => void handlePickImage()}>
+            <View style={styles.courseCreateCoverIcon}>
+              <Ionicons name="image-outline" size={18} color={Colors.primary} />
+            </View>
+            <View style={styles.courseCreateCoverCopy}>
+              <Text style={styles.courseCreateCoverTitle}>
+                {uploading
+                  ? t("common.loading")
+                  : image
+                    ? t("articles.editor.coverReady")
+                    : t("createCourse.imageChange")}
+              </Text>
+              <Text style={styles.courseCreateCoverText}>
+                {image
+                  ? "Cover tayyor. Istasangiz boshqasiga almashtirishingiz mumkin."
+                  : "Kurs uchun preview rasm tanlang"}
+              </Text>
+            </View>
+          </Pressable>
+        </View>
+
+        {image ? <PersistentCachedImage remoteUri={image} style={styles.coverPreview} /> : null}
       </ScrollView>
     </DraggableBottomSheet>
   );
@@ -6643,6 +6720,59 @@ const styles = StyleSheet.create<Record<string, any>>({
     padding: 16,
     gap: 12,
   },
+  courseCreateHero: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: Colors.primarySoft,
+    borderWidth: 1,
+    borderColor: "rgba(43, 160, 156, 0.22)",
+  },
+  courseCreateHeroIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: "rgba(43, 160, 156, 0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  courseCreateHeroCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  courseCreateHeroTitle: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  courseCreateHeroText: {
+    color: Colors.subtleText,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  courseCreateFieldGroup: {
+    gap: 8,
+  },
+  courseCreateFieldLabel: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  courseCreateFieldHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  courseCreateMetaRow: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "flex-start",
+  },
+  courseCreateHalfField: {
+    flex: 1,
+  },
   fieldInput: {
     minHeight: 46,
     borderRadius: 14,
@@ -6681,6 +6811,51 @@ const styles = StyleSheet.create<Record<string, any>>({
   },
   accessChipTextActive: {
     color: Colors.primary,
+  },
+  courseAccessCardList: {
+    gap: 10,
+  },
+  courseAccessCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 13,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+  },
+  courseAccessCardActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  courseAccessCardIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "rgba(43, 160, 156, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  courseAccessCardIconWrapActive: {
+    backgroundColor: Colors.primary,
+  },
+  courseAccessCardCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  courseAccessCardTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  courseAccessCardTitleActive: {
+    color: Colors.primary,
+  },
+  courseAccessCardHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
   },
   homeworkEditorScroll: {
     flex: 1,
@@ -6971,6 +7146,39 @@ const styles = StyleSheet.create<Record<string, any>>({
     color: Colors.text,
     fontSize: 13,
     fontWeight: "700",
+  },
+  courseCreateCoverPicker: {
+    minHeight: 88,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  courseCreateCoverIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: "rgba(43, 160, 156, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  courseCreateCoverCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  courseCreateCoverTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  courseCreateCoverText: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
   },
   fileInfoCard: {
     padding: 12,

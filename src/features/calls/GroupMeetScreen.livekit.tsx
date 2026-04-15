@@ -1,22 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  AppState,
+  Easing,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TouchableWithoutFeedback,
   View,
   useWindowDimensions,
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { BlurView } from "expo-blur";
 import { io, type Socket } from "socket.io-client";
 import * as Clipboard from "expo-clipboard";
 import {
+  AlertCircle,
   CameraOff,
   Camera as CameraIcon,
   Check,
+  CheckCircle,
   Copy,
   Lock,
   Maximize2,
@@ -58,6 +66,12 @@ import {
   stopLivekitAudioSession,
   switchLivekitCamera,
 } from "./livekit-native";
+import { enterMeetPip, iosRtcPipProps, setMeetPipEnabled } from "./meet-pip";
+import WhiteboardPreview, {
+  getWhiteboardActiveTabTitle,
+  normalizeWhiteboardWorkspace,
+  type WhiteboardWorkspace,
+} from "./WhiteboardPreview";
 
 type Props = NativeStackScreenProps<RootStackParamList, "GroupMeet">;
 type JoinStatus = "connecting" | "waiting" | "rejected" | "joined";
@@ -76,6 +90,7 @@ type RemoteScreenShare = {
   peerId: string;
   displayName: string;
   stream: MediaStream | null;
+  hasVideo?: boolean;
 };
 type KnockRequest = {
   peerId: string;
@@ -88,12 +103,81 @@ type CallTile = {
   stream: MediaStream | null;
   isLocal: boolean;
   isScreenShare: boolean;
+  isWhiteboard?: boolean;
   hasVideo: boolean;
   audioMuted: boolean;
   videoMuted: boolean;
 };
 
 const PEER_LEFT_GRACE_MS = 6500;
+
+const parseParticipantUserId = (metadata?: string) => {
+  const normalizedMetadata = String(metadata || "").trim();
+  if (!normalizedMetadata) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(normalizedMetadata) as { userId?: unknown };
+    return String(parsed?.userId || "").trim();
+  } catch {
+    return "";
+  }
+};
+
+const getParticipantDedupKey = (participant: {
+  identity?: string;
+  name?: string;
+  metadata?: string;
+}) => {
+  const userId = parseParticipantUserId(participant.metadata);
+  if (userId) {
+    return `user:${userId}`;
+  }
+
+  const normalizedName = String(participant.name || "").trim().toLowerCase();
+  if (normalizedName) {
+    return `name:${normalizedName}`;
+  }
+
+  return `identity:${String(participant.identity || "").trim()}`;
+};
+
+const scoreRemotePeer = (peer: RemotePeer) =>
+  (peer.stream ? 4 : 0) +
+  (peer.hasVideo ? 2 : 0) +
+  (peer.hasAudio ? 1 : 0) +
+  (peer.connectionState === "connected" ? 1 : 0);
+
+const pickPreferredRemotePeer = (current: RemotePeer | undefined, candidate: RemotePeer) => {
+  if (!current) {
+    return candidate;
+  }
+
+  return scoreRemotePeer(candidate) >= scoreRemotePeer(current) ? candidate : current;
+};
+
+const pickPreferredScreenShare = (
+  current: RemoteScreenShare | undefined,
+  candidate: RemoteScreenShare,
+) => {
+  if (!current) {
+    return candidate;
+  }
+
+  const currentScore = (current.stream ? 2 : 0) + (current.hasVideo ? 1 : 0);
+  const candidateScore = (candidate.stream ? 2 : 0) + (candidate.hasVideo ? 1 : 0);
+  return candidateScore >= currentScore ? candidate : current;
+};
+
+const getParticipantFallbackColor = (label = "") => {
+  const seed = String(label || "guest");
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) % 360;
+  }
+  return `hsl(${hash} 52% 34%)`;
+};
 
 const formatDuration = (elapsedSeconds: number) => {
   const hours = Math.floor(elapsedSeconds / 3600);
@@ -113,15 +197,16 @@ const getTileColumns = (count: number) => {
 };
 
 const getQualityLabel = (peerCount: number) => {
-  if (peerCount >= 6) return "audio-priority";
-  if (peerCount >= 4) return "crowded";
-  return "balanced";
+  if (peerCount >= 6) return "Audio priority";
+  if (peerCount >= 4) return "Balanced";
+  return "HD";
 };
 
 export function GroupMeetScreen({ navigation, route }: Props) {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const { roomId, title, isCreator, isPrivate } = route.params;
   const currentUser = useAuthStore((state) => state.user);
+  const currentUserId = String(currentUser?._id || currentUser?.id || "").trim();
   const displayName =
     currentUser?.nickname || currentUser?.username || currentUser?.email || "User";
 
@@ -150,6 +235,8 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const [isUIHidden, setIsUIHidden] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [showMenuDialog, setShowMenuDialog] = useState(false);
+  const [isSystemPipMode, setIsSystemPipMode] = useState(false);
+  const [whiteboard, setWhiteboard] = useState<WhiteboardWorkspace | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const livekitRoomRef = useRef<Room | null>(null);
@@ -158,6 +245,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const hangupStartedRef = useRef(false);
   const connectedAtRef = useRef<number | null>(null);
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chromeAnim = useRef(new Animated.Value(1)).current;
   const roomTitleRef = useRef(roomTitle);
   const roomPrivacyRef = useRef(roomIsPrivate);
   const startCuePlayedRef = useRef<string | null>(null);
@@ -192,6 +280,17 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   useEffect(() => {
     isCamOnRef.current = isCamOn;
   }, [isCamOn]);
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(chromeAnim, {
+        toValue: isUIHidden ? 0 : 1,
+        duration: 320,
+        easing: Easing.bezier(0.22, 1, 0.36, 1),
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }, [chromeAnim, isUIHidden]);
 
   useEffect(() => {
     if (joinStatus !== "joined") {
@@ -231,6 +330,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       setScreenStream(null);
       setRemotePeers([]);
       setRemoteScreenShares([]);
+      setWhiteboard(null);
       setLoadingMedia(false);
       return;
     }
@@ -238,18 +338,34 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     const localCameraStream = getParticipantStream(room.localParticipant, Track.Source.Camera);
     const localScreenStream = getParticipantStream(room.localParticipant, Track.Source.ScreenShare);
     const localMicPublication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+    const localScreenPublication = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
 
     setLocalStream(localCameraStream);
     setScreenStream(localScreenStream);
     setIsCamOn(Boolean(localCameraStream && hasLiveVideoTrack(localCameraStream)));
     setIsMicOn(Boolean(localMicPublication && !localMicPublication.isMuted));
-    setIsScreenSharing(Boolean(localScreenStream && hasLiveVideoTrack(localScreenStream)));
+    setIsScreenSharing(
+      Boolean(
+        (localScreenStream && hasLiveVideoTrack(localScreenStream)) ||
+          (localScreenPublication && !localScreenPublication.isMuted),
+      ),
+    );
 
-    const nextRemotePeers: RemotePeer[] = [];
-    const nextRemoteScreenShares: RemoteScreenShare[] = [];
+    const nextRemotePeersByKey = new Map<string, RemotePeer>();
+    const nextRemoteScreenSharesByKey = new Map<string, RemoteScreenShare>();
 
     Array.from(room.remoteParticipants.values()).forEach((participant) => {
       const participantName = getParticipantDisplayName(participant);
+      const participantUserId = parseParticipantUserId(participant.metadata);
+      const isCurrentUserSession = Boolean(
+        currentUserId && participantUserId && participantUserId === currentUserId,
+      );
+
+      if (isCurrentUserSession) {
+        return;
+      }
+
+      const participantKey = getParticipantDedupKey(participant);
       const socketPeerId = socketPeerIdByNameRef.current[participantName] || null;
       if (socketPeerId) {
         clearPeerTimeout(socketPeerId);
@@ -261,7 +377,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       const cameraStream = getParticipantStream(participant, Track.Source.Camera);
       const screenShareStream = getParticipantStream(participant, Track.Source.ScreenShare);
 
-      nextRemotePeers.push({
+      const nextPeer: RemotePeer = {
         peerId: participant.identity,
         socketPeerId,
         displayName: participantName,
@@ -275,25 +391,56 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           !cameraStream ||
           !hasLiveVideoTrack(cameraStream),
         connectionState: room.state === "connected" ? "connected" : room.state,
-      });
+      };
+
+      nextRemotePeersByKey.set(
+        participantKey,
+        pickPreferredRemotePeer(nextRemotePeersByKey.get(participantKey), nextPeer),
+      );
 
       if (screenShareStream) {
-        nextRemoteScreenShares.push({
+        const nextScreenShare: RemoteScreenShare = {
           peerId: participant.identity,
           displayName: participantName,
           stream: screenShareStream,
-        });
+          hasVideo:
+            Boolean(screenPublication && !screenPublication.isMuted) &&
+            (!screenShareStream || hasLiveVideoTrack(screenShareStream)),
+        };
+
+        nextRemoteScreenSharesByKey.set(
+          participantKey,
+          pickPreferredScreenShare(
+            nextRemoteScreenSharesByKey.get(participantKey),
+            nextScreenShare,
+          ),
+        );
+      } else if (screenPublication && !screenPublication.isMuted) {
+        const nextScreenShare: RemoteScreenShare = {
+          peerId: participant.identity,
+          displayName: participantName,
+          stream: null,
+          hasVideo: true,
+        };
+
+        nextRemoteScreenSharesByKey.set(
+          participantKey,
+          pickPreferredScreenShare(
+            nextRemoteScreenSharesByKey.get(participantKey),
+            nextScreenShare,
+          ),
+        );
       }
     });
 
-    setRemotePeers(nextRemotePeers);
-    setRemoteScreenShares(nextRemoteScreenShares);
+    setRemotePeers(Array.from(nextRemotePeersByKey.values()));
+    setRemoteScreenShares(Array.from(nextRemoteScreenSharesByKey.values()));
     setLoadingMedia(false);
 
     if (room.state === "connected") {
       setJoinStatus("joined");
     }
-  }, [clearPeerTimeout]);
+  }, [clearPeerTimeout, currentUserId, displayName]);
 
   const disconnectLivekitRoom = useCallback(async () => {
     const room = livekitRoomRef.current;
@@ -378,6 +525,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     setScreenStream(null);
     setRemotePeers([]);
     setRemoteScreenShares([]);
+    setWhiteboard(null);
     setJoinStatus("connecting");
     setElapsedSeconds(0);
     connectedAtRef.current = null;
@@ -441,13 +589,14 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         void connectLivekitRoom();
       });
 
-      socket.on("room-info", ({ title: nextTitle, isPrivate: nextIsPrivate }) => {
+      socket.on("room-info", ({ title: nextTitle, isPrivate: nextIsPrivate, whiteboard: nextWhiteboard }) => {
         if (typeof nextTitle === "string" && nextTitle.trim()) {
           setRoomTitle(nextTitle.trim());
         }
         if (typeof nextIsPrivate === "boolean") {
           setRoomIsPrivate(nextIsPrivate);
         }
+        setWhiteboard(normalizeWhiteboardWorkspace(nextWhiteboard));
       });
 
       socket.on("existing-peers", ({ peers }) => {
@@ -575,6 +724,33 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         setError(String(reason || "Rad etildi"));
       });
 
+      socket.on("whiteboard-state", (payload) => {
+        const parsedWhiteboard = normalizeWhiteboardWorkspace(payload);
+        if (!parsedWhiteboard) {
+          setWhiteboard(null);
+          return;
+        }
+        setWhiteboard(parsedWhiteboard);
+      });
+
+      socket.on("whiteboard-started", (payload) => {
+        setWhiteboard((current) =>
+          normalizeWhiteboardWorkspace({
+            isActive: true,
+            ownerPeerId: current?.ownerPeerId || "",
+            ownerDisplayName: payload?.ownerDisplayName || current?.ownerDisplayName,
+            activeTabTitle: getWhiteboardActiveTabTitle(current) || payload?.activeTabId,
+            activeTabId: payload?.activeTabId,
+            tabs: current?.tabs,
+            pdfLibrary: current?.pdfLibrary,
+          }),
+        );
+      });
+
+      socket.on("whiteboard-stopped", () => {
+        setWhiteboard(null);
+      });
+
       socket.on("error", ({ message }) => {
         const nextMessage = String(message || "Meet xatosi");
         if (
@@ -688,6 +864,14 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   }, [camLocked, connectLivekitRoom, syncLivekitState]);
 
   const handleToggleScreenShare = useCallback(async () => {
+    if (Platform.OS === "ios") {
+      Alert.alert(
+        "Screen share hozircha tayyor emas",
+        "iPhone uchun Broadcast Extension ulanishi kerak. Hozircha mobile iOS build'da screen share ishlamaydi.",
+      );
+      return;
+    }
+
     const room = livekitRoomRef.current || (await connectLivekitRoom());
     if (!room) {
       return;
@@ -716,16 +900,28 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     }
   }, [connectLivekitRoom, isScreenSharing, syncLivekitState]);
 
-  const handleSwitchCamera = useCallback(() => {
-    switchLivekitCamera(livekitRoomRef.current);
-  }, []);
+  const handleSwitchCamera = useCallback(async () => {
+    const room = livekitRoomRef.current || (await connectLivekitRoom());
+    if (!room) {
+      return;
+    }
 
-  const handleScreenClick = useCallback(() => {
-    setIsUIHidden((current) => !current);
-  }, []);
+    const switched = switchLivekitCamera(room);
+    if (!switched) {
+      Alert.alert("Kamera", "Kamerani almashtirib bo'lmadi.");
+      return;
+    }
+
+    setTimeout(() => syncLivekitState(room), 120);
+    setTimeout(() => syncLivekitState(room), 420);
+  }, [connectLivekitRoom, syncLivekitState]);
 
   const handleToggleSpeaker = useCallback(() => {
     setIsSpeakerOn((current) => !current);
+  }, []);
+
+  const handleToggleChrome = useCallback(() => {
+    setIsUIHidden((current) => !current);
   }, []);
 
   const handleLeave = async () => {
@@ -766,6 +962,8 @@ export function GroupMeetScreen({ navigation, route }: Props) {
   const participantsCount = remotePeers.length + 1;
   const isLandscape = screenWidth > screenHeight;
   const qualityLabel = getQualityLabel(remotePeers.length + 1 + (isScreenSharing ? 1 : 0));
+  const qualityIcon = qualityLabel === "Audio priority" ? AlertCircle : qualityLabel === "Balanced" ? Users : CheckCircle;
+  const qualityColor = qualityLabel === "Audio priority" ? Colors.warning : qualityLabel === "Balanced" ? Colors.primary : Colors.accent;
   const gridColumns = useMemo(() => {
     const tileCount = Math.max(
       1,
@@ -793,8 +991,8 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     () => Math.max(88, Math.min(126, Math.floor(screenWidth * 0.28))),
     [screenWidth],
   );
-  const controlIconSize = screenWidth < 390 ? 18 : 20;
-  const controlLockSize = screenWidth < 390 ? 9 : 10;
+  const controlIconSize = screenWidth < 390 ? 16 : 18;
+  const controlLockSize = screenWidth < 390 ? 8 : 9;
 
   const participantRows = useMemo(
     () => [
@@ -835,6 +1033,23 @@ export function GroupMeetScreen({ navigation, route }: Props) {
       },
     ];
 
+    if (whiteboard?.isActive) {
+      tiles.unshift({
+        tileId: "whiteboard",
+        peerId: "whiteboard",
+        label: whiteboard.ownerDisplayName
+          ? `${whiteboard.ownerDisplayName} · Whiteboard`
+          : "Whiteboard",
+        stream: null,
+        isLocal: false,
+        isScreenShare: true,
+        isWhiteboard: true,
+        hasVideo: false,
+        audioMuted: true,
+        videoMuted: false,
+      });
+    }
+
     if (screenStream) {
       const hasLocalScreenVideo = hasLiveVideoTrack(screenStream);
       tiles.unshift({
@@ -847,6 +1062,18 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         hasVideo: hasLocalScreenVideo,
         audioMuted: true,
         videoMuted: !hasLocalScreenVideo,
+      });
+    } else if (isScreenSharing) {
+      tiles.unshift({
+        tileId: "local:screen",
+        peerId: "local",
+        label: `${displayName} · Ekran`,
+        stream: null,
+        isLocal: true,
+        isScreenShare: true,
+        hasVideo: true,
+        audioMuted: true,
+        videoMuted: false,
       });
     }
 
@@ -866,7 +1093,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     });
 
     remoteScreenShares.forEach((peer) => {
-      const hasRemoteScreenVideo = hasLiveVideoTrack(peer.stream);
+      const hasRemoteScreenVideo = peer.hasVideo !== false;
       tiles.unshift({
         tileId: `${peer.peerId}:screen`,
         peerId: peer.peerId,
@@ -876,12 +1103,28 @@ export function GroupMeetScreen({ navigation, route }: Props) {
         isScreenShare: true,
         hasVideo: hasRemoteScreenVideo,
         audioMuted: true,
-        videoMuted: !hasRemoteScreenVideo,
+        videoMuted: !hasRemoteScreenVideo && !peer.stream,
       });
     });
 
     return tiles;
-  }, [displayName, isCamOn, isMicOn, localStream, remotePeers, remoteScreenShares, screenStream]);
+  }, [displayName, isCamOn, isMicOn, localStream, remotePeers, remoteScreenShares, screenStream, whiteboard]);
+  const isPortraitStackLayout = !isLandscape && callTiles.length === 2;
+  const gridRowCount = useMemo(() => {
+    if (callTiles.length <= 1) {
+      return 1;
+    }
+    if (isPortraitStackLayout) {
+      return 2;
+    }
+    return Math.max(1, Math.ceil(callTiles.length / 2));
+  }, [callTiles.length, isPortraitStackLayout]);
+  const gridTileHeight = useMemo(() => {
+    const reservedHeight = 220;
+    const availableHeight = Math.max(260, screenHeight - reservedHeight);
+    const rowGap = 10 * Math.max(0, gridRowCount - 1);
+    return Math.max(130, Math.floor((availableHeight - rowGap) / gridRowCount));
+  }, [gridRowCount, screenHeight]);
 
   useEffect(() => {
     setSelectedTileId((current) =>
@@ -897,10 +1140,60 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     });
   }, [callTiles]);
 
-  const activeStageTileId = fullscreenTileId || (lastSpeakerPeerId && callTiles.some((tile) => tile.peerId === lastSpeakerPeerId) ? callTiles.find((tile) => tile.peerId === lastSpeakerPeerId)?.tileId || null : null);
+  const activeStageTileId = fullscreenTileId || null;
   const activeStageTile = callTiles.find((tile) => tile.tileId === activeStageTileId) || null;
   const sideTiles = activeStageTileId ? callTiles.filter((tile) => tile.tileId !== activeStageTileId) : [];
   const hasSpotlight = Boolean(activeStageTile);
+  const isPresenterMode = Boolean(activeStageTile?.isScreenShare);
+  const pipTargetTileId = useMemo(() => {
+    const screenShareTile = callTiles.find((tile) => tile.isScreenShare && tile.hasVideo);
+    if (fullscreenTileId) {
+      return fullscreenTileId;
+    }
+    if (selectedTileId) {
+      return selectedTileId;
+    }
+    if (screenShareTile) {
+      return screenShareTile.tileId;
+    }
+    return callTiles.find((tile) => !tile.isLocal && tile.hasVideo)?.tileId || null;
+  }, [callTiles, fullscreenTileId, selectedTileId]);
+  const canAutoEnterPip = joinStatus === "joined";
+  const mobileCompactTiles = useMemo(() => {
+    if (!hasSpotlight) {
+      return [];
+    }
+
+    const activePeerId = activeStageTile?.peerId || null;
+    const compactTiles: CallTile[] = [];
+    const pushUnique = (tile?: CallTile | null) => {
+      if (!tile || compactTiles.some((entry) => entry.tileId === tile.tileId)) {
+        return;
+      }
+      compactTiles.push(tile);
+    };
+
+    pushUnique(
+      sideTiles.find(
+        (tile) =>
+          !tile.isScreenShare && !tile.isLocal && tile.peerId !== activePeerId && tile.peerId === lastSpeakerPeerId,
+      ),
+    );
+    sideTiles.forEach((tile) => {
+      if (!tile.isScreenShare && tile.peerId !== activePeerId) {
+        pushUnique(tile);
+      }
+    });
+
+    return compactTiles.slice(0, 2);
+  }, [activeStageTile?.peerId, hasSpotlight, lastSpeakerPeerId, sideTiles]);
+  const floatingParticipantTiles = useMemo(() => {
+    if (!hasSpotlight || !isPresenterMode) {
+      return [];
+    }
+
+    return sideTiles.filter((tile) => !tile.isScreenShare).slice(0, 2);
+  }, [hasSpotlight, isPresenterMode, sideTiles]);
 
   const gridRows = useMemo(() => {
     const rows: CallTile[][] = [];
@@ -921,19 +1214,59 @@ export function GroupMeetScreen({ navigation, route }: Props) {
     }
 
     setSelectedTileId(tile.tileId);
-    setFullscreenTileId((current) => (current === tile.tileId ? null : tile.tileId));
+    setFullscreenTileId((current) => {
+      const enteringFullscreen = current !== tile.tileId;
+      // Hide UI when entering fullscreen, show when exiting
+      setIsUIHidden(enteringFullscreen);
+      return enteringFullscreen ? tile.tileId : null;
+    });
   }, []);
+
+  useEffect(() => {
+    void setMeetPipEnabled(canAutoEnterPip);
+
+    return () => {
+      void setMeetPipEnabled(false);
+    };
+  }, [canAutoEnterPip]);
+
+  useEffect(() => {
+    const pipTargetTile =
+      callTiles.find((tile) => tile.tileId === pipTargetTileId) ||
+      callTiles.find((tile) => !tile.isLocal && tile.hasVideo) ||
+      null;
+
+    const subscription = AppState.addEventListener("change", (state) => {
+      const isBackgrounded = state === "inactive" || state === "background";
+      setIsSystemPipMode(isBackgrounded);
+
+      if (isBackgrounded && canAutoEnterPip) {
+        const useLandscapePip = Boolean(pipTargetTile?.isScreenShare);
+        void enterMeetPip(useLandscapePip ? 16 : 9, useLandscapePip ? 9 : 16);
+      }
+    });
+
+    return () => subscription.remove();
+  }, [callTiles, canAutoEnterPip, pipTargetTileId]);
 
   const renderTile = (
     tile: CallTile,
-    options?: { compact?: boolean; isStage?: boolean; floatingCompact?: boolean },
+    options?: { compact?: boolean; isStage?: boolean; floatingCompact?: boolean; immersive?: boolean },
   ) => {
     const compact = Boolean(options?.compact);
     const isStage = Boolean(options?.isStage);
     const floatingCompact = Boolean(options?.floatingCompact);
+    const immersive = Boolean(options?.immersive);
     const initial = tile.label.slice(0, 1).toUpperCase();
     const streamUrl = tile.stream?.toURL() || null;
     const canRenderStream = tile.hasVideo && Boolean(streamUrl);
+    const fallbackColor = getParticipantFallbackColor(tile.label);
+    const shouldUseIosPip = Boolean(
+      Platform.OS === "ios" &&
+        canRenderStream &&
+        tile.tileId === pipTargetTileId &&
+        (!tile.isLocal || tile.isScreenShare),
+    );
 
     const isSpeaking = tile.peerId === lastSpeakerPeerId && !fullscreenTileId;
 
@@ -945,25 +1278,54 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           compact && styles.tileCompact,
           floatingCompact && styles.tileFloatingCompact,
           isStage && styles.tileStage,
+          immersive && styles.tileImmersive,
           isSpeaking && styles.tileSpeaking,
           !isStage && {
             width: floatingCompact ? floatingTileWidth : compact ? compactTileWidth : tileWidth,
           },
+          !isStage &&
+            !compact &&
+            !floatingCompact && {
+              height: gridTileHeight,
+              aspectRatio: undefined,
+            },
         ]}
       >
         {canRenderStream && streamUrl ? (
           <RTCView
             streamURL={streamUrl}
             style={styles.tileVideo}
-            objectFit={isStage || compact || tile.isScreenShare ? "contain" : "cover"}
+            objectFit="contain"
             mirror={tile.isScreenShare ? false : tile.isLocal}
+            {...iosRtcPipProps(shouldUseIosPip)}
           />
         ) : (
-          <View style={styles.tileFallback}>
-            <View style={styles.tileAvatar}>
-              <Text style={styles.tileAvatarText}>{initial}</Text>
+          tile.isWhiteboard ? (
+            whiteboard ? (
+              <WhiteboardPreview workspace={whiteboard} />
+            ) : (
+              <View style={styles.whiteboardFallback}>
+                <View style={[styles.whiteboardBadge, compact && styles.whiteboardBadgeCompact]}>
+                  <PenSquare size={compact ? 16 : 22} color="#d9f99d" />
+                </View>
+                <Text style={[styles.whiteboardTitle, compact && styles.whiteboardTitleCompact]}>
+                  Whiteboard
+                </Text>
+                <Text
+                  style={[styles.whiteboardSubtitle, compact && styles.whiteboardSubtitleCompact]}
+                  numberOfLines={2}
+                >
+                  {getWhiteboardActiveTabTitle(whiteboard)}
+                </Text>
+              </View>
+            )
+          ) : (
+            <View style={[styles.tileFallback, { backgroundColor: fallbackColor }]}>
+              <View style={[styles.tileAvatar, compact && styles.tileAvatarCompact]}>
+                <Text style={[styles.tileAvatarText, compact && styles.tileAvatarTextCompact]}>{initial}</Text>
+              </View>
             </View>
-          </View>
+          )
         )}
 
         {!isStage && tile.hasVideo ? (
@@ -978,56 +1340,109 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           </Pressable>
         ) : null}
 
-        <View style={[styles.tileFooter, compact && styles.tileFooterCompact]}>
+        {/* Mute badges - top right */}
+        <View style={[styles.tileStatusStack, compact && styles.tileStatusStackCompact]}>
+          {tile.audioMuted ? (
+            <View style={styles.tileMuteBadge}>
+              <MicOff size={compact ? 14 : 16} color="#d6f0a0" />
+            </View>
+          ) : null}
+          {tile.videoMuted && !tile.isScreenShare ? (
+            <View style={styles.tileMuteBadge}>
+              <CameraOff size={compact ? 14 : 16} color="#d6f0a0" />
+            </View>
+          ) : null}
+          {tile.isLocal && (micLocked || camLocked) ? (
+            <View style={styles.tileMuteBadge}>
+              <Lock size={compact ? 14 : 16} color="#d6f0a0" />
+            </View>
+          ) : null}
+        </View>
+
+        {/* Tile label - bottom left */}
+        <View
+          style={[
+            styles.tileLabelContainer,
+            compact && styles.tileLabelContainerCompact,
+            immersive && styles.tileLabelContainerImmersive,
+          ]}
+        >
           <Text style={[styles.tileLabel, compact && styles.tileLabelCompact]} numberOfLines={1}>
             {tile.label}
           </Text>
-          <View style={styles.tileBadges}>
-            {tile.audioMuted ? (
-              <MicOff size={compact ? 11 : 12} color={Colors.danger} />
-            ) : (
-              <Mic size={compact ? 11 : 12} color={Colors.accent} />
-            )}
-            {tile.videoMuted && !tile.isScreenShare ? (
-              <CameraOff size={compact ? 11 : 12} color={Colors.danger} />
-            ) : tile.hasVideo ? (
-              <Video size={compact ? 11 : 12} color={Colors.accent} />
-            ) : null}
-            {tile.isLocal && (micLocked || camLocked) ? (
-              <Lock size={compact ? 11 : 12} color={Colors.warning} />
-            ) : null}
-          </View>
         </View>
       </View>
     );
   };
 
   const canScreenShare = true;
+  const headerOpacity = chromeAnim;
+  const headerTranslateY = chromeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-18, 0],
+  });
+  const controlsOpacity = chromeAnim;
+  const controlsTranslateY = chromeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [56, 0],
+  });
+  const animatedBodyPaddingTop = chromeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [10, 60],
+  });
+  const animatedBodyPaddingBottom = chromeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 104],
+  });
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
-      <View style={styles.container}>
-        {/* UI Toggle Overlay */}
-        <Pressable
-          style={styles.screenOverlay}
-          onPress={handleScreenClick}
-        />
+    <SafeAreaView
+      style={[styles.safeArea, fullscreenTileId && styles.safeAreaFullscreen]}
+      edges={fullscreenTileId ? ["top"] : ["top", "left", "right", "bottom"]}
+    >
+      <View style={[styles.container, fullscreenTileId && styles.containerFullscreen]}>
+        <Animated.View
+          pointerEvents={isUIHidden || isSystemPipMode ? "none" : "auto"}
+          style={[
+            styles.headerFloating,
+            fullscreenTileId && styles.headerFloatingHidden,
+            {
+              opacity: fullscreenTileId || isSystemPipMode ? 0 : headerOpacity,
+              transform: [{ translateY: fullscreenTileId || isSystemPipMode ? -100 : headerTranslateY }],
+            },
+          ]}
+        >
+          <View style={styles.headerContent}>
+            {/* Left: Call Info */}
+            <View style={styles.headerInfo}>
+              <Text style={styles.headerTitle} numberOfLines={1}>
+                {roomTitle || "Meet"}
+              </Text>
+              {roomIsPrivate && (
+                <View style={styles.headerPrivateBadge}>
+                  <Lock size={10} color={Colors.text} />
+                  <Text style={styles.headerPrivateText}>Private</Text>
+                </View>
+              )}
+            </View>
 
-        {/* Floating Header - conditionally hidden */}
-        {!isUIHidden && (
-          <View style={styles.headerFloating}>
+            {/* Right: Actions */}
             <View style={styles.headerActions}>
-              <View style={styles.qualityBadge}>
-                <Text style={styles.qualityBadgeText}>{qualityLabel}</Text>
+              {/* Quality Badge */}
+              <View style={[styles.qualityBadge, { borderColor: qualityColor }]}>
+                {React.createElement(qualityIcon, { size: 14, color: qualityColor })}
+                <Text style={[styles.qualityBadgeText, { color: qualityColor }]}>
+                  {qualityLabel}
+                </Text>
               </View>
               <Pressable style={styles.headerButton} onPress={handleToggleSpeaker}>
-                {isSpeakerOn ? <Volume2 size={16} color={Colors.text} /> : <Smartphone size={16} color={Colors.text} />}
+                {isSpeakerOn ? <Volume2 size={18} color={Colors.text} /> : <Smartphone size={18} color={Colors.text} />}
               </Pressable>
               <Pressable style={styles.headerButton} onPress={handleSwitchCamera}>
-                <RefreshCcw size={16} color={Colors.text} />
+                <RefreshCcw size={18} color={Colors.text} />
               </Pressable>
               <Pressable style={styles.headerButton} onPress={() => setShowDrawer((value) => !value)}>
-                <Users size={16} color={Colors.text} />
+                <Users size={18} color={Colors.text} />
                 {isCreator && knockRequests.length > 0 ? (
                   <View style={styles.notifBadge}>
                     <Text style={styles.notifText}>{knockRequests.length}</Text>
@@ -1036,7 +1451,7 @@ export function GroupMeetScreen({ navigation, route }: Props) {
               </Pressable>
             </View>
           </View>
-        )}
+        </Animated.View>
 
         {error && joinStatus !== "rejected" ? (
           <View style={styles.errorBanner}>
@@ -1044,197 +1459,257 @@ export function GroupMeetScreen({ navigation, route }: Props) {
           </View>
         ) : null}
 
-        <View style={[styles.body, isUIHidden && styles.bodyUIHidden]}>
-          {loadingMedia || joinStatus === "connecting" ? (
-            <View style={styles.centerState}>
-              <ActivityIndicator color={Colors.primary} />
-              <Text style={styles.stateTitle}>Meetga ulanmoqda...</Text>
-            </View>
-          ) : joinStatus === "waiting" ? (
-            <View style={styles.centerState}>
-              <UserPlus size={40} color={Colors.warning} />
-              <Text style={styles.stateTitle}>Tasdiq kutilmoqda</Text>
-              <Text style={styles.stateText}>Creator sizni meetga qo'shishini kuting.</Text>
-              <Pressable style={styles.secondaryAction} onPress={() => void handleLeave()}>
-                <Text style={styles.secondaryActionText}>Bekor qilish</Text>
-              </Pressable>
-            </View>
-          ) : joinStatus === "rejected" ? (
-            <View style={styles.centerState}>
-              <X size={40} color={Colors.danger} />
-              <Text style={styles.stateTitle}>Meetga kiritilmadingiz</Text>
-              <Text style={styles.stateText}>{error || "Creator sorovni rad etdi."}</Text>
-              <Pressable style={styles.secondaryAction} onPress={() => navigation.goBack()}>
-                <Text style={styles.secondaryActionText}>Yopish</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <>
-              {hasSpotlight ? (
-                <View style={[styles.spotlightWrap, fullscreenTileId ? styles.spotlightWrapFullscreen : null]}>
-                  <View style={styles.spotlightStageWrap}>
-                    {activeStageTile ? renderTile(activeStageTile, { isStage: true }) : null}
-                    <View style={styles.stageActionRow}>
-                      {activeStageTile?.hasVideo ? (
-                        <Pressable
-                          style={styles.stageActionButton}
-                          onPress={() => handleToggleTileFullscreen(activeStageTile)}
-                        >
-                          {fullscreenTileId ? (
-                            <Minimize2 size={16} color="#fff" />
-                          ) : (
-                            <Maximize2 size={16} color="#fff" />
-                          )}
-                        </Pressable>
-                      ) : null}
-                    </View>
-                    {fullscreenTileId && sideTiles.length > 0 ? (
-                      <ScrollView
-                        style={styles.floatingRailTop}
-                        contentContainerStyle={styles.floatingRailContent}
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        bounces={false}
-                      >
-                        {sideTiles.map((tile) => (
-                          <View key={`floating-${tile.tileId}`}>
-                            {renderTile(tile, { compact: true, floatingCompact: true })}
-                          </View>
-                        ))}
-                      </ScrollView>
-                    ) : null}
-                  </View>
+        <Animated.View
+          style={[
+            styles.body,
+            fullscreenTileId && styles.bodyFullscreen,
+            {
+              paddingTop: fullscreenTileId ? 0 : animatedBodyPaddingTop,
+              paddingBottom: fullscreenTileId ? 0 : animatedBodyPaddingBottom,
+            },
+          ]}
+        >
+          <TouchableWithoutFeedback onPress={handleToggleChrome}>
+            <View style={styles.bodyTouchArea}>
+              {loadingMedia || joinStatus === "connecting" ? (
+                <View style={styles.centerState}>
+                  <ActivityIndicator color={Colors.primary} />
+                  <Text style={styles.stateTitle}>Meetga ulanmoqda...</Text>
+                </View>
+              ) : joinStatus === "waiting" ? (
+                <View style={styles.centerState}>
+                  <UserPlus size={40} color={Colors.warning} />
+                  <Text style={styles.stateTitle}>Tasdiq kutilmoqda</Text>
+                  <Text style={styles.stateText}>Creator sizni meetga qo'shishini kuting.</Text>
+                  <Pressable style={styles.secondaryAction} onPress={() => void handleLeave()}>
+                    <Text style={styles.secondaryActionText}>Bekor qilish</Text>
+                  </Pressable>
+                </View>
+              ) : joinStatus === "rejected" ? (
+                <View style={styles.centerState}>
+                  <X size={40} color={Colors.danger} />
+                  <Text style={styles.stateTitle}>Meetga kiritilmadingiz</Text>
+                  <Text style={styles.stateText}>{error || "Creator sorovni rad etdi."}</Text>
+                  <Pressable style={styles.secondaryAction} onPress={() => navigation.goBack()}>
+                    <Text style={styles.secondaryActionText}>Yopish</Text>
+                  </Pressable>
                 </View>
               ) : (
-                <ScrollView contentContainerStyle={styles.gridContent} showsVerticalScrollIndicator={false} bounces={false}>
-                  {gridRows.map((row, rowIndex) => {
-                    const isCenteredLastRow =
-                      (callTiles.length === 3 || callTiles.length === 5) &&
-                      row.length === 1 &&
-                      rowIndex === gridRows.length - 1;
-
-                    return (
-                      <View
-                        key={`grid-row-${rowIndex}`}
-                        style={[styles.gridRow, isCenteredLastRow ? styles.gridRowCentered : null]}
-                      >
-                        {row.map((tile) => (
-                          <Pressable key={tile.tileId} onPress={() => handleSelectTile(tile.tileId)}>
-                            {renderTile(tile)}
-                          </Pressable>
-                        ))}
+                <>
+                  {hasSpotlight ? (
+                    <View style={[styles.spotlightWrap, fullscreenTileId ? styles.spotlightWrapFullscreen : null]}>
+                      <View style={styles.spotlightStageWrap}>
+                        {activeStageTile
+                          ? renderTile(activeStageTile, {
+                              isStage: true,
+                              immersive: Boolean(fullscreenTileId && !activeStageTile.isScreenShare),
+                            })
+                          : null}
+                        <View style={styles.stageActionRow}>
+                          {activeStageTile?.hasVideo ? (
+                            <Pressable
+                              style={styles.stageActionButton}
+                              onPress={() => handleToggleTileFullscreen(activeStageTile)}
+                            >
+                              {fullscreenTileId ? (
+                                <Minimize2 size={16} color="#fff" />
+                              ) : (
+                                <Maximize2 size={16} color="#fff" />
+                              )}
+                            </Pressable>
+                          ) : null}
+                        </View>
+                        {fullscreenTileId && !isPresenterMode && mobileCompactTiles.length > 0 ? (
+                          <ScrollView
+                            style={styles.mobileImmersiveRail}
+                            contentContainerStyle={styles.mobileImmersiveRailContent}
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            bounces={false}
+                          >
+                            {mobileCompactTiles.map((tile) => (
+                              <View key={`floating-${tile.tileId}`}>
+                                {renderTile(tile, { compact: true, floatingCompact: true })}
+                              </View>
+                            ))}
+                          </ScrollView>
+                        ) : null}
+                        {fullscreenTileId && isPresenterMode && floatingParticipantTiles.length > 0 ? (
+                          <View style={[styles.floatingParticipantsContainer, isUIHidden && styles.floatingParticipantsHidden]}>
+                            {floatingParticipantTiles.map((tile) => (
+                              <Pressable
+                                key={`presenter-${tile.tileId}`}
+                                style={styles.floatingParticipantTile}
+                                onPress={() => handleSelectTile(tile.tileId)}
+                              >
+                                {renderTile(tile, { compact: true, floatingCompact: true })}
+                              </Pressable>
+                            ))}
+                          </View>
+                        ) : null}
                       </View>
-                    );
-                  })}
-                </ScrollView>
-              )}
-            </>
-          )}
-        </View>
+                    </View>
+                  ) : (
+                    <ScrollView contentContainerStyle={styles.gridContent} showsVerticalScrollIndicator={false} bounces={false}>
+                      {gridRows.map((row, rowIndex) => {
+                        const isCenteredLastRow =
+                          (callTiles.length === 3 || callTiles.length === 5) &&
+                          row.length === 1 &&
+                          rowIndex === gridRows.length - 1;
 
-        {!isUIHidden && (
-          <ScrollView
-            horizontal
-            style={styles.controlsScroll}
-            contentContainerStyle={styles.controls}
-            showsHorizontalScrollIndicator={false}
-            bounces={false}
-          >
-          <Pressable
-            style={[
-              styles.controlButton,
-              !isMicOn ? styles.controlButtonOff : null,
-              micLocked && styles.controlButtonDisabled,
-            ]}
-            onPress={() => void handleToggleMic()}
-            disabled={micLocked}
-          >
-            {isMicOn ? (
-              <Mic size={controlIconSize} color="#f5f5f5" />
-            ) : (
-              <MicOff size={controlIconSize} color="#7b241f" />
-            )}
-            {micLocked ? (
-              <Lock
-                size={controlLockSize}
-                color={isMicOn ? "#fff" : "#7b241f"}
-                style={styles.controlLock}
-              />
-            ) : null}
-          </Pressable>
-          <Pressable
-            style={[
-              styles.controlButton,
-              !isCamOn ? styles.controlButtonOff : null,
-              camLocked && styles.controlButtonDisabled,
-            ]}
-            onPress={() => void handleToggleCam()}
-            disabled={camLocked}
-          >
-            {isCamOn ? (
-              <CameraIcon size={controlIconSize} color="#f5f5f5" />
-            ) : (
-              <CameraOff size={controlIconSize} color="#7b241f" />
-            )}
-            {camLocked ? (
-              <Lock
-                size={controlLockSize}
-                color={isCamOn ? "#fff" : "#7b241f"}
-                style={styles.controlLock}
-              />
-            ) : null}
-          </Pressable>
-          {canScreenShare ? (
-            <Pressable
-              style={[styles.controlButton, isScreenSharing ? styles.controlButtonAccent : null]}
-              onPress={() => void handleToggleScreenShare()}
-            >
-              {isScreenSharing ? (
-                <Monitor size={controlIconSize} color={Colors.warning} />
-              ) : (
-                <MonitorOff size={controlIconSize} color="#f5f5f5" />
+                        return (
+                          <View
+                            key={`grid-row-${rowIndex}`}
+                            style={[
+                              styles.gridRow,
+                              isPortraitStackLayout ? styles.gridRowStacked : null,
+                              isCenteredLastRow ? styles.gridRowCentered : null,
+                            ]}
+                          >
+                            {row.map((tile) => (
+                              <Pressable key={tile.tileId} onPress={() => handleSelectTile(tile.tileId)}>
+                                {renderTile(tile)}
+                              </Pressable>
+                            ))}
+                          </View>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                </>
               )}
-            </Pressable>
-          ) : null}
-          <View style={styles.controlDivider} />
-          <Pressable
-            style={styles.controlButton}
-            onPress={() => setShowMenuDialog((p) => !p)}
-          >
-            <MoreVertical size={controlIconSize} color="#f5f5f5" />
-          </Pressable>
-          <View style={styles.controlDivider} />
-          <Pressable style={[styles.controlButton, styles.controlButtonDanger]} onPress={() => void handleLeave()}>
-            <PhoneOff size={controlIconSize} color="#fff" />
-          </Pressable>
-
-          {/* Three dots menu */}
-          {showMenuDialog && (
-            <View style={styles.menuOverlay}>
-              <Pressable style={styles.menuBackdrop} onPress={() => setShowMenuDialog(false)} />
-              <View style={styles.menuDialog}>
-                <Pressable
-                  style={styles.menuItem}
-                  onPress={() => {
-                    void handleCopy();
-                    setShowMenuDialog(false);
-                  }}
-                >
-                  {copied ? <Check size={18} color="#fff" /> : <Copy size={18} color="#fff" />}
-                  <Text style={styles.menuItemText}>
-                    {copied ? "Copied!" : "Copy link"}
-                  </Text>
-                </Pressable>
-              </View>
             </View>
-          )}
-          </ScrollView>
-        )}
+          </TouchableWithoutFeedback>
+        </Animated.View>
 
-        {showDrawer ? (
+        <Animated.View
+          pointerEvents={isUIHidden || isSystemPipMode ? "none" : "auto"}
+          style={[
+            styles.controlsWrap,
+            fullscreenTileId && styles.controlsWrapHidden,
+            {
+              opacity: fullscreenTileId || isSystemPipMode ? 0 : controlsOpacity,
+              transform: [{ translateY: fullscreenTileId || isSystemPipMode ? 100 : controlsTranslateY }],
+            },
+          ]}
+        >
+          <BlurView intensity={28} tint="dark" style={styles.controlsChrome}>
+            <View style={styles.controls}>
+              {/* Mic Button */}
+              <Pressable
+                style={[
+                  styles.controlButton,
+                  styles.controlButtonStandard,
+                  !isMicOn ? styles.controlButtonOff : null,
+                  micLocked && styles.controlButtonDisabled,
+                ]}
+                onPress={() => void handleToggleMic()}
+                disabled={micLocked}
+              >
+                {isMicOn ? (
+                  <Mic size={controlIconSize} color="#f5f5f5" />
+                ) : (
+                  <MicOff size={controlIconSize} color="#7b241f" />
+                )}
+                {micLocked ? (
+                  <Lock
+                    size={controlLockSize}
+                    color={isMicOn ? "#fff" : "#7b241f"}
+                    style={styles.controlLock}
+                  />
+                ) : null}
+              </Pressable>
+
+              {/* Cam Button */}
+              <Pressable
+                style={[
+                  styles.controlButton,
+                  styles.controlButtonStandard,
+                  !isCamOn ? styles.controlButtonOff : null,
+                  camLocked && styles.controlButtonDisabled,
+                ]}
+                onPress={() => void handleToggleCam()}
+                disabled={camLocked}
+              >
+                {isCamOn ? (
+                  <CameraIcon size={controlIconSize} color="#f5f5f5" />
+                ) : (
+                  <CameraOff size={controlIconSize} color="#7b241f" />
+                )}
+                {camLocked ? (
+                  <Lock
+                    size={controlLockSize}
+                    color={isCamOn ? "#fff" : "#7b241f"}
+                    style={styles.controlLock}
+                  />
+                ) : null}
+              </Pressable>
+
+              {/* Screen Share Button */}
+              {canScreenShare ? (
+                <Pressable
+                  style={[
+                    styles.controlButton,
+                    styles.controlButtonStandard,
+                    isScreenSharing ? styles.controlButtonAccent : null,
+                  ]}
+                  onPress={() => void handleToggleScreenShare()}
+                >
+                  {isScreenSharing ? (
+                    <Monitor size={controlIconSize} color={Colors.warning} />
+                  ) : (
+                    <MonitorOff size={controlIconSize} color="#f5f5f5" />
+                  )}
+                </Pressable>
+              ) : null}
+
+              {/* More Button */}
+              <Pressable
+                style={[styles.controlButton, styles.controlButtonStandard]}
+                onPress={() => setShowMenuDialog((p) => !p)}
+              >
+                <MoreVertical size={controlIconSize} color="#f5f5f5" />
+              </Pressable>
+
+              <View style={styles.controlDivider} />
+
+              {/* Hangup Button - wider like frontend */}
+              <Pressable
+                style={[styles.controlButton, styles.controlButtonDanger, styles.controlButtonWide]}
+                onPress={() => void handleLeave()}
+              >
+                <PhoneOff size={controlIconSize} color="#fff" />
+              </Pressable>
+            </View>
+          </BlurView>
+        </Animated.View>
+
+        {/* Menu Dialog - rendered outside controls to appear on top */}
+        {showMenuDialog && !isSystemPipMode ? (
+          <View style={styles.menuOverlay} pointerEvents="box-none">
+            <Pressable style={styles.menuBackdrop} onPress={() => setShowMenuDialog(false)} />
+            <View style={styles.menuDialog}>
+              <Pressable
+                style={styles.menuItem}
+                onPress={() => {
+                  void handleCopy();
+                  setShowMenuDialog(false);
+                }}
+              >
+                {copied ? <Check size={18} color="#fff" /> : <Copy size={18} color="#fff" />}
+                <Text style={styles.menuItemText}>
+                  {copied ? "Copied!" : "Copy link"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        {showDrawer && !isSystemPipMode ? (
           <View style={styles.drawerOverlay} pointerEvents="box-none">
             <Pressable style={styles.drawerBackdrop} onPress={() => setShowDrawer(false)} />
             <View style={styles.drawerPanel}>
+              <View style={styles.sheetHandle} />
               <View style={styles.drawerHeader}>
                 <Text style={styles.drawerTitle}>A'zolar ({participantsCount})</Text>
                 <Pressable style={styles.drawerClose} onPress={() => setShowDrawer(false)}>
@@ -1243,6 +1718,22 @@ export function GroupMeetScreen({ navigation, route }: Props) {
               </View>
 
               <ScrollView contentContainerStyle={styles.drawerBody} showsVerticalScrollIndicator={false} bounces={false}>
+                <View style={styles.linkCard}>
+                  <View style={styles.linkTextWrap}>
+                    <Text style={styles.linkTitle}>Meet link</Text>
+                    <Text style={styles.linkValue} numberOfLines={2}>
+                      {joinUrl}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[styles.linkCopyButton, copied ? styles.linkCopyButtonActive : null]}
+                    onPress={() => void handleCopy()}
+                  >
+                    {copied ? <Check size={14} color="#fff" /> : <Copy size={14} color="#fff" />}
+                    <Text style={styles.linkCopyButtonText}>{copied ? "Copied" : "Copy"}</Text>
+                  </Pressable>
+                </View>
+
                 {isCreator ? (
                   <View style={styles.privacyCard}>
                     <View style={styles.privacyTextWrap}>
@@ -1410,7 +1901,13 @@ export function GroupMeetScreen({ navigation, route }: Props) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#0d0f14" },
+  safeAreaFullscreen: {
+    backgroundColor: "#000",
+  },
   container: { flex: 1, backgroundColor: "#0d0f14" },
+  containerFullscreen: {
+    backgroundColor: "#000",
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -1436,21 +1933,30 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(122,162,255,0.16)",
   },
   privateBadgeText: { color: Colors.text, fontSize: 12, fontWeight: "700" },
-  headerActions: { flexDirection: "row", alignItems: "center", gap: 10 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   qualityBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    height: 36,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    backgroundColor: "rgba(32,32,36,0.88)",
   },
-  qualityBadgeText: { color: Colors.text, fontSize: 11, fontWeight: "700" },
+  qualityBadgeText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
   headerButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(32,32,36,0.88)",
   },
   notifBadge: {
     position: "absolute",
@@ -1473,8 +1979,15 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(194, 73, 73, 0.16)",
   },
   errorBannerText: { color: "#ffd7d7", fontSize: 12 },
-  body: { flex: 1, paddingHorizontal: 8, paddingTop: 60 },
-  bodyUIHidden: { paddingTop: 0 },
+  body: {
+    flex: 1,
+    paddingHorizontal: 0,
+  },
+  bodyFullscreen: {
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  bodyTouchArea: { flex: 1 },
   centerState: {
     flex: 1,
     alignItems: "center",
@@ -1493,12 +2006,26 @@ const styles = StyleSheet.create({
   },
   secondaryActionText: { color: Colors.text, fontWeight: "700" },
   spotlightWrap: { flex: 1 },
-  spotlightWrapFullscreen: { paddingBottom: 4 },
-  spotlightStageWrap: { flex: 1, position: "relative" },
+  spotlightWrapFullscreen: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 100,
+  },
+  spotlightStageWrap: {
+    flex: 1,
+    position: "relative",
+    margin: 0,
+    padding: 0,
+    width: "100%",
+    height: "100%",
+  },
   stageActionRow: {
     position: "absolute",
-    top: 12,
-    right: 12,
+    bottom: 20,
+    right: 20,
     zIndex: 20,
     flexDirection: "row",
   },
@@ -1512,40 +2039,125 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
   floatingRail: { position: "absolute", left: 0, right: 0, bottom: 12 },
-  floatingRailTop: { position: "absolute", left: 0, right: 0, top: 60 },
-  floatingRailContent: { paddingHorizontal: 12, gap: 10 },
-  gridContent: { paddingBottom: 24, gap: 10 },
-  gridRow: { flexDirection: "row", gap: 10 },
+  mobileImmersiveRail: {
+    position: "absolute",
+    top: 18,
+    left: 16,
+    right: 16,
+    zIndex: 7,
+    maxHeight: 180,
+  },
+  mobileImmersiveRailContent: {
+    gap: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  floatingParticipantsContainer: {
+    position: "absolute",
+    top: 72,
+    right: 12,
+    zIndex: 9,
+    gap: 6,
+  },
+  floatingParticipantsHidden: {
+    opacity: 0,
+  },
+  floatingParticipantTile: {
+    width: 100,
+    height: 100,
+  },
+  gridContent: { paddingBottom: 32, gap: 10 },
+  gridRow: { flexDirection: "row", gap: 10, justifyContent: "center" },
+  gridRowStacked: { flexDirection: "column", alignItems: "center" },
   gridRowCentered: { justifyContent: "center" },
   tile: {
-    borderRadius: 24,
+    borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "#161a22",
+    backgroundColor: "#1e2127",
     aspectRatio: 0.78,
     position: "relative",
   },
   tileCompact: { aspectRatio: 0.76 },
   tileFloatingCompact: { aspectRatio: 0.72 },
-  tileStage: { width: "100%", height: "100%", aspectRatio: undefined },
+  tileStage: {
+    width: "100%",
+    height: "100%",
+    aspectRatio: undefined,
+    borderRadius: 0,
+  },
+  tileImmersive: {
+    borderRadius: 0,
+    margin: 0,
+    padding: 0,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   tileVideo: { width: "100%", height: "100%" },
   tileFallback: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#161a22",
   },
-  tileAvatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+  whiteboardFallback: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
+    gap: 10,
+    paddingHorizontal: 20,
+    backgroundColor: "#101722",
   },
-  tileAvatarText: { color: "#fff", fontSize: 28, fontWeight: "800" },
+  whiteboardBadge: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(163, 230, 53, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(163, 230, 53, 0.28)",
+  },
+  whiteboardBadgeCompact: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  whiteboardTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  whiteboardTitleCompact: {
+    fontSize: 14,
+  },
+  whiteboardSubtitle: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  whiteboardSubtitleCompact: {
+    fontSize: 11,
+  },
+  tileAvatar: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  tileAvatarCompact: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  tileAvatarText: { color: "#fff", fontSize: 26, fontWeight: "700" },
+  tileAvatarTextCompact: { fontSize: 20 },
   tileExpandButton: {
     position: "absolute",
-    top: 10,
+    bottom: 10,
     right: 10,
     width: 30,
     height: 30,
@@ -1558,59 +2170,151 @@ const styles = StyleSheet.create({
   tileSpeaking: {
     borderWidth: 3,
     borderColor: Colors.primary,
+    shadowColor: Colors.primary,
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
   },
-  tileFooter: {
+  tileStatusStack: {
     position: "absolute",
-    left: 10,
-    right: 10,
-    bottom: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,0,0,0.42)",
+    top: 12,
+    right: 12,
+    zIndex: 3,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: 8,
   },
-  tileFooterCompact: { paddingHorizontal: 8, paddingVertical: 6 },
-  tileLabel: { flex: 1, color: "#fff", fontSize: 13, fontWeight: "700" },
-  tileLabelCompact: { fontSize: 11 },
-  tileBadges: { flexDirection: "row", alignItems: "center", gap: 6 },
-  controlsScroll: { maxHeight: 92 },
-  controls: {
-    paddingHorizontal: 14,
-    paddingBottom: 18,
-    gap: 12,
-    alignItems: "center",
+  tileStatusStackCompact: {
+    top: 8,
+    right: 8,
+    gap: 6,
   },
-  controlButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+  tileMuteBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#262a33",
+    backgroundColor: "rgba(32, 72, 10, 0.76)",
   },
-  controlButtonOff: { backgroundColor: "#f7dad7" },
-  controlButtonAccent: { backgroundColor: "rgba(227, 176, 71, 0.22)" },
+  tileLabelContainer: {
+    position: "absolute",
+    bottom: 10,
+    left: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    maxWidth: "78%",
+  },
+  tileLabelContainerCompact: {
+    bottom: 8,
+    left: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  tileLabelContainerImmersive: {
+    bottom: 18,
+    left: 12,
+  },
+  tileLabel: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  tileLabelCompact: { fontSize: 11 },
+  controlsWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10060,
+    alignItems: "center",
+    paddingBottom: 12,
+    paddingHorizontal: 12,
+  },
+  controlsWrapHidden: {
+    opacity: 0,
+    pointerEvents: "none",
+  },
+  controlsChrome: {
+    borderRadius: 24,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(24,24,27,0.65)",
+    shadowColor: "#000",
+    shadowOpacity: 0.32,
+    shadowRadius: 32,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 10,
+  },
+  controls: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  controlButton: {
+    height: 48,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    flexShrink: 0,
+  },
+  controlButtonStandard: {
+    width: 52,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(54,54,56,0.98)",
+  },
+  controlButtonOff: {
+    backgroundColor: "rgba(247,200,204,0.96)",
+    borderColor: "rgba(244,114,182,0.16)",
+  },
+  controlButtonAccent: {
+    backgroundColor: "rgba(54,54,56,0.98)",
+    borderColor: "rgba(250,166,26,0.18)",
+  },
   controlButtonDisabled: { opacity: 0.65 },
-  controlButtonDanger: { backgroundColor: Colors.danger },
-  controlDivider: { width: 1, height: 28, backgroundColor: "rgba(255,255,255,0.14)" },
-  controlLock: { position: "absolute", right: 13, bottom: 13 },
+  controlButtonDanger: {
+    width: 52,
+    borderRadius: 16,
+    backgroundColor: "#d64a3a",
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  controlButtonWide: {
+    width: 52,
+  },
+  controlDivider: {
+    width: 1,
+    height: 34,
+    marginHorizontal: 4,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 999,
+  },
+  controlLock: { position: "absolute", right: 9, bottom: 9 },
   drawerOverlay: {
     ...StyleSheet.absoluteFillObject,
-    flexDirection: "row",
     justifyContent: "flex-end",
+    zIndex: 10070,
   },
   drawerBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.34)" },
   drawerPanel: {
-    width: "82%",
-    maxWidth: 380,
-    height: "100%",
+    width: "100%",
+    maxHeight: "78%",
     backgroundColor: "#11151d",
-    borderLeftWidth: 1,
-    borderLeftColor: "rgba(255,255,255,0.08)",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.08)",
+    paddingTop: 8,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 42,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    marginBottom: 8,
   },
   drawerHeader: {
     flexDirection: "row",
@@ -1632,6 +2336,30 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.06)",
   },
   drawerBody: { padding: 16, gap: 16, paddingBottom: 32 },
+  linkCard: {
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "#161a22",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  linkTextWrap: { flex: 1, minWidth: 0, gap: 4 },
+  linkTitle: { color: "#fff", fontSize: 14, fontWeight: "700" },
+  linkValue: { color: "rgba(255,255,255,0.68)", fontSize: 12, lineHeight: 18 },
+  linkCopyButton: {
+    minWidth: 82,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  linkCopyButtonActive: { backgroundColor: Colors.accent },
+  linkCopyButtonText: { color: "#fff", fontSize: 12, fontWeight: "700" },
   privacyCard: {
     padding: 14,
     borderRadius: 18,
@@ -1705,34 +2433,78 @@ const styles = StyleSheet.create({
   },
   memberActionButtonSuccess: { backgroundColor: Colors.accent },
   memberActionButtonDanger: { backgroundColor: Colors.danger },
-
-  // UI Toggle Overlay
-  screenOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 1,
-    backgroundColor: "transparent",
-  },
-
-  // Floating Header
+  // Floating Header - matches frontend TopBar
   headerFloating: {
     position: "absolute",
-    top: 10,
+    top: 0,
     left: 0,
     right: 0,
-    zIndex: 100,
+    zIndex: 10050,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 10,
+    backgroundColor: "transparent",
+  },
+  headerFloatingHidden: {
+    opacity: 0,
+    pointerEvents: "none",
+  },
+  headerContent: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 12,
-    backgroundColor: "transparent",
+    justifyContent: "space-between",
+  },
+  headerInfo: {
+    flexDirection: "column",
+    minWidth: 0,
+    flex: 1,
+  },
+  headerTitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  headerSubtitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 2,
+  },
+  headerSubtitle: {
+    color: "rgba(255,255,255,0.64)",
+    fontSize: 11,
+    fontFamily: "monospace",
+  },
+  headerPrivateBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(122,162,255,0.16)",
+  },
+  headerPrivateText: {
+    color: Colors.text,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  headerChrome: {
+    borderRadius: 16,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(17,21,29,0.72)",
   },
 
   // Menu Dialog
   menuOverlay: {
     ...StyleSheet.absoluteFillObject,
-    zIndex: 200,
+    zIndex: 10080,
     justifyContent: "flex-end",
     alignItems: "center",
     paddingBottom: 100,

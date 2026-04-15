@@ -6,7 +6,6 @@ import {
   useState,
 } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   Animated,
   Easing,
@@ -63,6 +62,7 @@ import { AvatarPreviewModal } from "./components/AvatarPreviewModal";
 import { ChatBody } from "./components/ChatBody";
 import { ChatHeader } from "./components/ChatHeader";
 import { ChatInfoDrawer } from "./components/ChatInfoDrawer";
+import { ChatMenuModal } from "./components/ChatMenuModal";
 import { MessageContextMenuOverlay } from "./components/MessageContextMenuOverlay";
 import { OutgoingCallModal } from "./components/OutgoingCallModal";
 import { useChatConversationMeta } from "./hooks/useChatConversationMeta";
@@ -754,6 +754,7 @@ export function ChatScreen({ navigation, route }: Props) {
     queryClient,
     navigation,
   });
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
 
   const handleEditGroupFromMenu = useCallback(() => {
     dismissKeyboard();
@@ -764,89 +765,10 @@ export function ChatScreen({ navigation, route }: Props) {
     dismissKeyboard();
     closeDockAndKeyboard(200);
     void Haptics.selectionAsync().catch(() => {});
-
-    const currentChatIsGroup = Boolean(currentChat?.isGroup);
-    const infoLabel = currentChatIsGroup
-      ? "Guruh ma'lumotlari"
-      : "Foydalanuvchi ma'lumotlari";
-    const destructiveLabel = isGroupOwnerLeaving
-      ? "Guruhni tark etish"
-      : "Suhbatni o'chirish";
-
-    if (Platform.OS === "ios") {
-      const options = [
-        "Bekor qilish",
-        infoLabel,
-        ...(canEditGroup ? ["Guruhni tahrirlash"] : []),
-        destructiveLabel,
-      ];
-      const cancelButtonIndex = 0;
-      const infoButtonIndex = 1;
-      const editButtonIndex = canEditGroup ? 2 : -1;
-      const destructiveButtonIndex = options.length - 1;
-
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options,
-          cancelButtonIndex,
-          destructiveButtonIndex,
-          userInterfaceStyle: "dark",
-        },
-        (buttonIndex) => {
-          if (buttonIndex === infoButtonIndex) {
-            handleOpenInfo();
-            return;
-          }
-
-          if (buttonIndex === editButtonIndex) {
-            handleEditGroupFromMenu();
-            return;
-          }
-
-          if (buttonIndex === destructiveButtonIndex) {
-            handleDeleteOrLeave();
-          }
-        },
-      );
-      return;
-    }
-
-    Alert.alert(
-      currentChatIsGroup ? "Guruh amallari" : "Suhbat amallari",
-      undefined,
-      [
-        {
-          text: infoLabel,
-          onPress: () => handleOpenInfo(),
-        },
-        ...(canEditGroup
-          ? [
-              {
-                text: "Guruhni tahrirlash",
-                onPress: handleEditGroupFromMenu,
-              },
-            ]
-          : []),
-        {
-          text: destructiveLabel,
-          style: "destructive",
-          onPress: handleDeleteOrLeave,
-        },
-        {
-          text: "Bekor qilish",
-          style: "cancel",
-        },
-      ],
-    );
+    setHeaderMenuOpen(true);
   }, [
-    canEditGroup,
     closeDockAndKeyboard,
-    currentChat?.isGroup,
     dismissKeyboard,
-    handleDeleteOrLeave,
-    handleEditGroupFromMenu,
-    handleOpenInfo,
-    isGroupOwnerLeaving,
   ]);
 
   const infoPagePanResponder = useMemo(
@@ -1830,6 +1752,26 @@ export function ChatScreen({ navigation, route }: Props) {
       </Animated.View>
 
       {Platform.OS !== "ios" ? messageMenuOverlayContent : null}
+      <ChatMenuModal
+        styles={styles}
+        visible={headerMenuOpen}
+        currentChatIsGroup={Boolean(currentChat?.isGroup)}
+        canEditGroup={canEditGroup}
+        isGroupOwnerLeaving={isGroupOwnerLeaving}
+        onClose={() => setHeaderMenuOpen(false)}
+        onOpenInfo={() => {
+          setHeaderMenuOpen(false);
+          handleOpenInfo();
+        }}
+        onEditGroup={() => {
+          setHeaderMenuOpen(false);
+          handleEditGroupFromMenu();
+        }}
+        onDeleteOrLeave={() => {
+          setHeaderMenuOpen(false);
+          handleDeleteOrLeave();
+        }}
+      />
       <ChatInfoDrawer
         styles={styles}
         mounted={infoPageMounted}

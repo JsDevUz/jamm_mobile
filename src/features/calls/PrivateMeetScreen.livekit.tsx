@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -17,6 +17,7 @@ import {
   Camera as CameraIcon,
   Mic,
   MicOff,
+  Minimize2,
   Monitor,
   MonitorOff,
   PhoneOff,
@@ -45,6 +46,7 @@ import type { RootStackParamList } from "../../navigation/types";
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
 import { getEntityId } from "../../utils/chat";
+import { enterMeetPip, iosRtcPipProps, setMeetPipEnabled } from "./meet-pip";
 
 type Props = NativeStackScreenProps<RootStackParamList, "PrivateMeet">;
 
@@ -85,6 +87,8 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   const [roomTitle, setRoomTitle] = useState(title || "Private meet");
   const [roomIsPrivate, setRoomIsPrivate] = useState(true);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isLocalPrimary, setIsLocalPrimary] = useState(false);
+  const [isSystemPipMode, setIsSystemPipMode] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const livekitRoomRef = useRef<Room | null>(null);
@@ -557,11 +561,31 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
     }
   }, [connectLivekitRoom, syncLivekitState]);
 
-  const handleSwitchCamera = useCallback(() => {
-    switchLivekitCamera(livekitRoomRef.current);
-  }, []);
+  const handleSwitchCamera = useCallback(async () => {
+    const room = livekitRoomRef.current || (await connectLivekitRoom());
+    if (!room) {
+      return;
+    }
+
+    const switched = switchLivekitCamera(room);
+    if (!switched) {
+      Alert.alert("Kamera", "Kamerani almashtirib bo'lmadi.");
+      return;
+    }
+
+    setTimeout(() => syncLivekitState(room), 120);
+    setTimeout(() => syncLivekitState(room), 420);
+  }, [connectLivekitRoom, syncLivekitState]);
 
   const handleToggleScreenShare = useCallback(async () => {
+    if (Platform.OS === "ios") {
+      Alert.alert(
+        "Screen share hozircha tayyor emas",
+        "iPhone uchun Broadcast Extension ulanishi kerak. Hozircha mobile iOS build'da screen share ishlamaydi.",
+      );
+      return;
+    }
+
     const room = livekitRoomRef.current || (await connectLivekitRoom());
     if (!room) {
       return;
@@ -586,58 +610,127 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
   };
 
   const remoteInitial = useMemo(() => remoteDisplayName.slice(0, 1).toUpperCase(), [remoteDisplayName]);
-  const localPreviewStream = isScreenSharing ? screenStream || localStream : localStream;
-  const remotePreviewStream = remoteScreenStream || remoteStream;
-  const remoteUsesScreenShare = Boolean(remoteScreenStream);
-  const localPreviewMirror = !isScreenSharing;
-  const stageStream = remotePreviewStream || (isScreenSharing ? screenStream : null);
-  const stageUsesLocalScreenShare = !remotePreviewStream && Boolean(isScreenSharing && screenStream);
-  const localTileShowsScreen = Boolean(isScreenSharing && remotePreviewStream && screenStream);
-  const localTileStream = isScreenSharing
-    ? remotePreviewStream
-      ? screenStream || localStream
-      : localStream
-    : localPreviewStream;
-  const localTileMirror = localTileShowsScreen ? false : localPreviewMirror;
-  const localTileUsesContain = localTileShowsScreen;
+  const localCameraVisible = Boolean(localStream && isCamOn && hasLiveVideoTrack(localStream));
+  const remoteCameraVisible = Boolean(remoteStream && hasLiveVideoTrack(remoteStream));
+  const remoteHasAnyVideo = Boolean(remoteCameraVisible || remoteScreenStream);
+  const canAutoEnterPip = callStatus === "Ulandi";
+  const swapAvailable = Boolean(localCameraVisible && remoteHasAnyVideo);
+  const mainShowsLocal = isLocalPrimary && localCameraVisible;
+  const miniShowsRemote = mainShowsLocal;
+  const stageStream = mainShowsLocal
+    ? localStream
+    : remoteScreenStream || remoteStream || (isScreenSharing ? screenStream : null);
+  const stageUsesContain = Boolean((!mainShowsLocal && remoteScreenStream) || (mainShowsLocal && isScreenSharing));
+  const stageMirror = mainShowsLocal;
+  const pipStream = miniShowsRemote
+    ? remoteScreenStream || remoteStream
+    : localStream;
+  const pipUsesContain = Boolean(miniShowsRemote && remoteScreenStream);
+  const pipMirror = miniShowsRemote ? false : true;
   const canScreenShare = Platform.OS === "android" || Platform.OS === "ios";
+  const stagePipProps = iosRtcPipProps(
+    Boolean(
+      Platform.OS === "ios" &&
+        stageStream &&
+        ((!mainShowsLocal && remoteHasAnyVideo) || (mainShowsLocal && isScreenSharing)),
+    ),
+  );
+  const miniPipProps = iosRtcPipProps(Boolean(Platform.OS === "ios" && pipStream && miniShowsRemote));
+
+  const handleSwapFeeds = useCallback(() => {
+    if (!swapAvailable) {
+      return;
+    }
+
+    setIsLocalPrimary((previous) => !previous);
+  }, [swapAvailable]);
+
+  const handleEnterPip = useCallback(() => {
+    if (!canAutoEnterPip) {
+      return;
+    }
+
+    void enterMeetPip(remoteScreenStream ? 16 : 9, remoteScreenStream ? 9 : 16);
+  }, [canAutoEnterPip, remoteScreenStream]);
+
+  useEffect(() => {
+    void setMeetPipEnabled(canAutoEnterPip);
+
+    return () => {
+      void setMeetPipEnabled(false);
+    };
+  }, [canAutoEnterPip]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      const isBackgrounded = state === "inactive" || state === "background";
+      setIsSystemPipMode(isBackgrounded);
+
+      if (isBackgrounded && canAutoEnterPip) {
+        void enterMeetPip(remoteScreenStream ? 16 : 9, remoteScreenStream ? 9 : 16);
+      }
+    });
+
+    return () => subscription.remove();
+  }, [canAutoEnterPip, remoteScreenStream]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "left", "right", "bottom"]}>
       <View style={styles.container}>
-        <View style={styles.header}>
-          <View style={styles.headerTextWrap}>
-            <Text style={styles.title} numberOfLines={1}>
-              {roomTitle || "Private meet"}
-            </Text>
-            <View style={styles.statusRow}>
-              <Text style={styles.subtitle} numberOfLines={1}>
-                {callStatus}
+        {!isSystemPipMode ? (
+          <View style={styles.header}>
+            <View style={styles.headerTextWrap}>
+              <Text style={styles.title} numberOfLines={1}>
+                {roomTitle || "Private meet"}
               </Text>
-              {callStatus === "Ulandi" ? (
-                <View style={styles.durationBadge}>
-                  <Timer size={12} color={Colors.text} />
-                  <Text style={styles.durationText}>{formatDuration(elapsedSeconds)}</Text>
-                </View>
-              ) : null}
-              {roomIsPrivate ? (
-                <View style={styles.privateBadge}>
-                  <Shield size={12} color={Colors.text} />
-                  <Text style={styles.privateBadgeText}>Private</Text>
-                </View>
-              ) : null}
+              <View style={styles.statusRow}>
+                <Text style={styles.subtitle} numberOfLines={1}>
+                  {callStatus}
+                </Text>
+                {callStatus === "Ulandi" ? (
+                  <View style={styles.durationBadge}>
+                    <Timer size={12} color={Colors.text} />
+                    <Text style={styles.durationText}>{formatDuration(elapsedSeconds)}</Text>
+                  </View>
+                ) : null}
+                {roomIsPrivate ? (
+                  <View style={styles.privateBadge}>
+                    <Shield size={12} color={Colors.text} />
+                    <Text style={styles.privateBadgeText}>Private</Text>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+            <View style={styles.headerActions}>
+              <Pressable
+                style={[styles.headerButton, styles.headerButtonSecondary]}
+                onPress={handleEnterPip}
+                disabled={!canAutoEnterPip}
+              >
+                <Minimize2
+                  size={18}
+                  color={canAutoEnterPip ? "#fff" : "rgba(255,255,255,0.42)"}
+                />
+              </Pressable>
+              <Pressable
+                style={[styles.headerButton, styles.headerButtonSecondary]}
+                onPress={handleSwitchCamera}
+              >
+                <RefreshCcw size={18} color="#fff" />
+              </Pressable>
             </View>
           </View>
-        </View>
+        ) : null}
 
         <View style={styles.stage}>
           {stageStream ? (
             <RTCView
               streamURL={stageStream.toURL()}
               style={styles.remoteVideo}
-              objectFit={remoteUsesScreenShare || stageUsesLocalScreenShare ? "contain" : "cover"}
-              mirror={stageUsesLocalScreenShare ? false : undefined}
+              objectFit={stageUsesContain ? "contain" : "cover"}
+              mirror={stageMirror}
               zOrder={0}
+              {...stagePipProps}
             />
           ) : (
             <View style={styles.remotePlaceholder}>
@@ -645,7 +738,7 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
                 <ActivityIndicator color={Colors.primary} />
               ) : (
                 <>
-                  {remoteUser.avatar ? (
+                  {!mainShowsLocal && remoteUser.avatar ? (
                     <PersistentCachedImage
                       remoteUri={remoteUser.avatar}
                       style={styles.remoteAvatarImage}
@@ -653,14 +746,21 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
                     />
                   ) : (
                     <View style={styles.remoteAvatar}>
-                      <Text style={styles.remoteAvatarText}>{remoteInitial}</Text>
+                      <Text style={styles.remoteAvatarText}>
+                        {mainShowsLocal
+                          ? displayName.slice(0, 1).toUpperCase()
+                          : remoteInitial}
+                      </Text>
                     </View>
                   )}
                   <Text style={styles.remoteName} numberOfLines={1}>
-                    {remoteDisplayName}
+                    {mainShowsLocal ? `${displayName} (Sen)` : remoteDisplayName}
                   </Text>
-                  {remoteScreenStream ? (
+                  {!mainShowsLocal && remoteScreenStream ? (
                     <Text style={styles.remotePlaceholderText}>Ekran ulashmoqda</Text>
+                  ) : null}
+                  {mainShowsLocal && !isCamOn ? (
+                    <Text style={styles.remotePlaceholderText}>Kamera o‘chiq</Text>
                   ) : null}
                   <Text style={styles.remotePlaceholderText}>{callStatus}</Text>
                 </>
@@ -668,28 +768,57 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
             </View>
           )}
 
-          {localTileStream ? (
-            <View style={styles.localTile}>
-              <View style={styles.localVideoFrame}>
-                <RTCView
-                  streamURL={localTileStream.toURL()}
-                  style={styles.localVideo}
-                  objectFit={localTileUsesContain ? "contain" : "cover"}
-                  mirror={localTileMirror}
-                  zOrder={1}
-                />
+          {!isSystemPipMode ? (
+            <Pressable
+              style={styles.localTile}
+              onPress={handleSwapFeeds}
+              disabled={!swapAvailable}
+            >
+              <View style={styles.localTileClip} renderToHardwareTextureAndroid needsOffscreenAlphaCompositing>
+                {pipStream ? (
+                  <View style={styles.localVideoFrame}>
+                    <RTCView
+                      streamURL={pipStream.toURL()}
+                      style={styles.localVideo}
+                      objectFit={pipUsesContain ? "contain" : "cover"}
+                      mirror={pipMirror}
+                      zOrder={1}
+                      {...miniPipProps}
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.localPlaceholder}>
+                    <View style={styles.localPlaceholderAvatar}>
+                      <Text style={styles.localPlaceholderAvatarText}>
+                        {miniShowsRemote
+                          ? remoteInitial
+                          : displayName.slice(0, 1).toUpperCase()}
+                      </Text>
+                    </View>
+                    <Text style={styles.localPlaceholderText} numberOfLines={1}>
+                      {miniShowsRemote ? remoteDisplayName : `${displayName} (Sen)`}
+                    </Text>
+                    <Text style={styles.localPlaceholderHint} numberOfLines={1}>
+                      {miniShowsRemote
+                        ? remoteScreenStream
+                          ? "Ekran"
+                          : remoteCameraVisible
+                            ? "Video"
+                            : "Kamera o‘chiq"
+                        : isCamOn
+                          ? "Video"
+                          : "Kamera o‘chiq"}
+                    </Text>
+                  </View>
+                )}
               </View>
-            </View>
+            </Pressable>
           ) : null}
         </View>
 
-        <ScrollView
-          horizontal
-          style={styles.controlsScroll}
-          contentContainerStyle={styles.controls}
-          showsHorizontalScrollIndicator={false}
-          bounces={false}
-        >
+        {!isSystemPipMode ? (
+          <View style={styles.controlsWrap}>
+          <View style={styles.controls}>
           <Pressable
             style={[styles.controlButton, !isMicOn && styles.controlButtonMuted]}
             onPress={() => void handleToggleMic()}
@@ -714,16 +843,15 @@ export function PrivateMeetScreen({ navigation, route }: Props) {
               )}
             </Pressable>
           ) : null}
-          <Pressable style={styles.controlButton} onPress={handleSwitchCamera}>
-            <RefreshCcw size={20} color="#fff" />
-          </Pressable>
           <Pressable
             style={[styles.controlButton, styles.controlButtonDanger]}
             onPress={() => void handleHangup()}
           >
             <PhoneOff size={20} color="#fff" />
           </Pressable>
-        </ScrollView>
+          </View>
+          </View>
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -740,6 +868,24 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   headerTextWrap: { flex: 1, minWidth: 0 },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: 12,
+  },
+  headerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerButtonSecondary: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
   title: { color: "#fff", fontSize: 18, fontWeight: "700" },
   subtitle: { color: "rgba(255,255,255,0.7)", fontSize: 13, marginTop: 4 },
   statusRow: {
@@ -804,19 +950,64 @@ const styles = StyleSheet.create({
     width: 122,
     height: 164,
     borderRadius: 24,
-    overflow: "hidden",
     backgroundColor: "#0d0f14",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    elevation: 10,
+    overflow: "hidden",
   },
-  localVideoFrame: { flex: 1 },
-  localVideo: { flex: 1, width: "100%", height: "100%" },
-  controlsScroll: { maxHeight: 92 },
-  controls: {
-    paddingHorizontal: 12,
+  localTileClip: {
+    flex: 1,
+    borderRadius: 24,
+    overflow: "hidden",
+    backgroundColor: "#0d0f14",
+  },
+  localVideoFrame: {
+    flex: 1,
+    overflow: "hidden",
+    borderRadius: 24,
+    backgroundColor: "#0d0f14",
+  },
+  localVideo: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    borderRadius: 24,
+  },
+  localPlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "#12161d",
+  },
+  localPlaceholderAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  localPlaceholderAvatarText: { color: "#fff", fontSize: 18, fontWeight: "800" },
+  localPlaceholderText: { color: "#fff", fontSize: 12, fontWeight: "700" },
+  localPlaceholderHint: { color: "rgba(255,255,255,0.65)", fontSize: 11 },
+  controlsWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
     paddingBottom: 18,
+  },
+  controls: {
+    flexDirection: "row",
     gap: 12,
     alignItems: "center",
+    justifyContent: "center",
   },
   controlButton: {
     width: 54,

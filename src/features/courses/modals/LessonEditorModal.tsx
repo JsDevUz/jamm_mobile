@@ -4,11 +4,12 @@ import {
   Alert,
   Pressable,
   ScrollView,
+  StyleSheet,
   Text,
   View,
 } from "react-native";
 import type { DocumentPickerAsset } from "expo-document-picker";
-import { Upload } from "lucide-react-native";
+import { CirclePlay, FileVideo, Link2, Sparkles, Upload } from "lucide-react-native";
 import { DraggableBottomSheet } from "../../../components/DraggableBottomSheet";
 import { TextInput } from "../../../components/TextInput";
 import { useI18n } from "../../../i18n";
@@ -51,6 +52,7 @@ export function LessonEditorModal({
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const isEditing = Boolean(lesson);
 
   useEffect(() => {
     if (!visible) {
@@ -203,68 +205,285 @@ export function LessonEditorModal({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <TextInput
-          value={title}
-          onChangeText={setTitle}
-          placeholder={t("addLesson.lessonName")}
-          placeholderTextColor={Colors.subtleText}
-          style={styles.fieldInput}
-        />
-        <TextInput
-          value={description}
-          onChangeText={setDescription}
-          placeholder={t("addLesson.description")}
-          placeholderTextColor={Colors.subtleText}
-          style={[styles.fieldInput, styles.textArea]}
-          multiline
-        />
-
-        <View style={styles.accessRow}>
-          {[
-            { id: "upload", label: t("addLesson.uploadTab") },
-            { id: "url", label: "URL" },
-          ].map((option) => (
-            <Pressable
-              key={option.id}
-              style={[styles.accessChip, mode === option.id && styles.accessChipActive]}
-              onPress={() => setMode(option.id as LessonMediaMode)}
-            >
-              <Text
-                style={[
-                  styles.accessChipText,
-                  mode === option.id && styles.accessChipTextActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </Pressable>
-          ))}
+        <View style={modalStyles.heroCard}>
+          <View style={modalStyles.heroIconWrap}>
+            <Sparkles size={18} color={Colors.primary} />
+          </View>
+          <View style={modalStyles.heroCopy}>
+            <Text style={modalStyles.heroTitle}>
+              {isEditing ? "Darsni yangilang" : "Yangi dars yarating"}
+            </Text>
+            <Text style={modalStyles.heroText}>
+              Nom, tavsif va video manbasini kiriting. Draft saqlab keyinroq publish qilishingiz
+              ham mumkin.
+            </Text>
+          </View>
         </View>
 
-        {mode === "url" ? (
+        <View style={modalStyles.fieldGroup}>
+          <Text style={modalStyles.fieldLabel}>{t("addLesson.lessonName")}</Text>
           <TextInput
-            value={videoUrl}
-            onChangeText={setVideoUrl}
-            placeholder="https://..."
+            value={title}
+            onChangeText={setTitle}
+            placeholder={t("addLesson.lessonName")}
             placeholderTextColor={Colors.subtleText}
             style={styles.fieldInput}
           />
+        </View>
+
+        <View style={modalStyles.fieldGroup}>
+          <Text style={modalStyles.fieldLabel}>{t("addLesson.description")}</Text>
+          <Text style={modalStyles.fieldHint}>
+            Qisqa va tushunarli yozing, o‘quvchi dars mazmunini tez tushunsin.
+          </Text>
+          <TextInput
+            value={description}
+            onChangeText={setDescription}
+            placeholder={t("addLesson.description")}
+            placeholderTextColor={Colors.subtleText}
+            style={[styles.fieldInput, styles.textArea]}
+            multiline
+          />
+        </View>
+
+        <View style={modalStyles.fieldGroup}>
+          <Text style={modalStyles.fieldLabel}>Video manbasi</Text>
+          <View style={modalStyles.modeRow}>
+            {[
+              {
+                id: "upload",
+                label: t("addLesson.uploadTab"),
+                icon: FileVideo,
+                hint: "Fayl yuklash",
+              },
+              {
+                id: "url",
+                label: "URL",
+                icon: Link2,
+                hint: "Havola biriktirish",
+              },
+            ].map((option) => {
+              const Icon = option.icon;
+              const isActive = mode === option.id;
+
+              return (
+                <Pressable
+                  key={option.id}
+                  style={[modalStyles.modeCard, isActive && modalStyles.modeCardActive]}
+                  onPress={() => setMode(option.id as LessonMediaMode)}
+                >
+                  <View
+                    style={[modalStyles.modeIconWrap, isActive && modalStyles.modeIconWrapActive]}
+                  >
+                    <Icon size={16} color={isActive ? "#fff" : Colors.primary} />
+                  </View>
+                  <View style={modalStyles.modeCopy}>
+                    <Text style={[modalStyles.modeTitle, isActive && modalStyles.modeTitleActive]}>
+                      {option.label}
+                    </Text>
+                    <Text style={modalStyles.modeHint}>{option.hint}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        {mode === "url" ? (
+          <View style={modalStyles.fieldGroup}>
+            <Text style={modalStyles.fieldLabel}>Video URL</Text>
+            <TextInput
+              value={videoUrl}
+              onChangeText={setVideoUrl}
+              placeholder="https://..."
+              placeholderTextColor={Colors.subtleText}
+              style={styles.fieldInput}
+            />
+          </View>
         ) : (
-          <Pressable style={styles.mediaPicker} onPress={() => void handlePickVideo()}>
-            <Upload size={16} color={Colors.primary} />
-            <Text style={styles.mediaPickerText}>
-              {selectedFile ? selectedFile.name : t("addLesson.fileLabel")}
-            </Text>
-          </Pressable>
+          <View style={modalStyles.fieldGroup}>
+            <Text style={modalStyles.fieldLabel}>{t("addLesson.fileLabel")}</Text>
+            <Pressable style={modalStyles.uploadCard} onPress={() => void handlePickVideo()}>
+              <View style={modalStyles.uploadIconWrap}>
+                <Upload size={18} color={Colors.primary} />
+              </View>
+              <View style={modalStyles.uploadCopy}>
+                <Text style={modalStyles.uploadTitle}>
+                  {selectedFile ? "Video tanlandi" : "Video faylni tanlang"}
+                </Text>
+                <Text style={modalStyles.uploadText}>
+                  {selectedFile
+                    ? selectedFile.name
+                    : "MP4, MOV yoki boshqa video faylni qurilmadan yuklang"}
+                </Text>
+              </View>
+            </Pressable>
+          </View>
         )}
 
         {selectedFile ? (
-          <View style={styles.fileInfoCard}>
-            <Text style={styles.fileInfoTitle}>{selectedFile.name}</Text>
-            <Text style={styles.fileInfoMeta}>{formatFileSize(selectedFile.size)}</Text>
+          <View style={modalStyles.fileCard}>
+            <View style={modalStyles.fileCardIcon}>
+              <CirclePlay size={18} color={Colors.primary} />
+            </View>
+            <View style={modalStyles.fileCardCopy}>
+              <Text style={styles.fileInfoTitle} numberOfLines={1}>
+                {selectedFile.name}
+              </Text>
+              <Text style={styles.fileInfoMeta}>{formatFileSize(selectedFile.size)}</Text>
+            </View>
           </View>
         ) : null}
       </ScrollView>
     </DraggableBottomSheet>
   );
 }
+
+const modalStyles = StyleSheet.create({
+  heroCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: Colors.primarySoft,
+    borderWidth: 1,
+    borderColor: "rgba(43, 160, 156, 0.22)",
+  },
+  heroIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: "rgba(43, 160, 156, 0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  heroTitle: {
+    color: Colors.text,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  heroText: {
+    color: Colors.subtleText,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  fieldGroup: {
+    gap: 8,
+  },
+  fieldLabel: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  fieldHint: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  modeRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  modeCard: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+  },
+  modeCardActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primarySoft,
+  },
+  modeIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: "rgba(43, 160, 156, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modeIconWrapActive: {
+    backgroundColor: Colors.primary,
+  },
+  modeCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  modeTitle: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  modeTitleActive: {
+    color: Colors.primary,
+  },
+  modeHint: {
+    color: Colors.subtleText,
+    fontSize: 11,
+  },
+  uploadCard: {
+    minHeight: 88,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.input,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  uploadIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: "rgba(43, 160, 156, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  uploadCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  uploadTitle: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  uploadText: {
+    color: Colors.subtleText,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  fileCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: Colors.input,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  fileCardIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "rgba(43, 160, 156, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fileCardCopy: {
+    flex: 1,
+    gap: 2,
+  },
+});

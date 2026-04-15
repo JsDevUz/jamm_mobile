@@ -620,9 +620,11 @@ const styles = StyleSheet.create({
   tabsRow: {
     position: "relative",
     paddingHorizontal: 16,
-    gap: 20,
+    flexGrow: 1,
+    justifyContent: "space-between",
   },
   tabButton: {
+    flex: 1,
     minHeight: 54,
     alignItems: "center",
     justifyContent: "center",

@@ -1425,6 +1425,52 @@ function FeedPostCard({
   );
 }
 
+function FeedSkeletonCard({ withImage = false }: { withImage?: boolean }) {
+  return (
+    <View style={styles.postCard}>
+      <View style={styles.postTopRow}>
+        <View style={[styles.feedSkeletonBlock, styles.feedSkeletonAvatar]} />
+        <View style={styles.postMeta}>
+          <View style={styles.postHeader}>
+            <View style={styles.postHeaderMain}>
+              <View style={[styles.feedSkeletonBlock, styles.feedSkeletonAuthor]} />
+              <View style={[styles.feedSkeletonBlock, styles.feedSkeletonDot]} />
+              <View style={[styles.feedSkeletonBlock, styles.feedSkeletonUsername]} />
+            </View>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.feedSkeletonTextStack}>
+        <View style={[styles.feedSkeletonBlock, styles.feedSkeletonLineFull]} />
+        <View style={[styles.feedSkeletonBlock, styles.feedSkeletonLineFull]} />
+        <View style={[styles.feedSkeletonBlock, styles.feedSkeletonLineMedium]} />
+      </View>
+
+      {withImage ? <View style={[styles.feedSkeletonBlock, styles.feedSkeletonImage]} /> : null}
+
+      <View style={styles.postActions}>
+        <View style={styles.actionRow}>
+          <View style={[styles.feedSkeletonBlock, styles.feedSkeletonAction]} />
+          <View style={[styles.feedSkeletonBlock, styles.feedSkeletonAction]} />
+          <View style={[styles.feedSkeletonBlock, styles.feedSkeletonAction]} />
+        </View>
+        <View style={[styles.feedSkeletonBlock, styles.feedSkeletonTime]} />
+      </View>
+    </View>
+  );
+}
+
+function FeedInitialSkeleton() {
+  return (
+    <View>
+      <FeedSkeletonCard withImage />
+      <FeedSkeletonCard />
+      <FeedSkeletonCard withImage />
+    </View>
+  );
+}
+
 export function FeedScreen({ navigation }: Props) {
   const { t } = useI18n();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
@@ -2065,10 +2111,7 @@ export function FeedScreen({ navigation }: Props) {
       contentContainerStyle={styles.feedListContent}
       ListEmptyComponent={
         !feedCacheHydrated || query.isLoading ? (
-          <View style={styles.emptyState}>
-            <ActivityIndicator color={Colors.primary} />
-            <Text style={styles.emptyText}>{t("common.loading")}</Text>
-          </View>
+          <FeedInitialSkeleton />
         ) : query.isError ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIcon}>
@@ -2416,6 +2459,57 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     gap: 12,
+  },
+  feedSkeletonBlock: {
+    backgroundColor: Colors.input,
+    opacity: 0.8,
+  },
+  feedSkeletonAvatar: {
+    width: 25,
+    height: 25,
+    borderRadius: 999,
+  },
+  feedSkeletonAuthor: {
+    width: 92,
+    height: 16,
+    borderRadius: 8,
+  },
+  feedSkeletonDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  feedSkeletonUsername: {
+    width: 76,
+    height: 14,
+    borderRadius: 8,
+  },
+  feedSkeletonTextStack: {
+    gap: 10,
+  },
+  feedSkeletonLineFull: {
+    width: "100%",
+    height: 14,
+    borderRadius: 8,
+  },
+  feedSkeletonLineMedium: {
+    width: "72%",
+    height: 14,
+    borderRadius: 8,
+  },
+  feedSkeletonImage: {
+    marginHorizontal: -16,
+    aspectRatio: 16 / 15,
+  },
+  feedSkeletonAction: {
+    width: 52,
+    height: 14,
+    borderRadius: 8,
+  },
+  feedSkeletonTime: {
+    width: 92,
+    height: 12,
+    borderRadius: 8,
   },
   postTopRow: {
     flexDirection: "row",

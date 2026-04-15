@@ -8,6 +8,21 @@ let audioSessionStartPromise: Promise<void> | null = null;
 
 export const isLiveKitNativeEnabled = Boolean(LIVEKIT_URL);
 
+const resolveLivekitUrl = async (preferredUrl?: string) => {
+  const normalizedPreferredUrl = String(preferredUrl || "").trim();
+  if (normalizedPreferredUrl) {
+    return normalizedPreferredUrl;
+  }
+
+  const config = await livekitApi.getConfig();
+  const configUrl = String(config?.url || "").trim();
+  if (configUrl) {
+    return configUrl;
+  }
+
+  throw new Error("LiveKit URL topilmadi. Server konfiguratsiyasini tekshiring.");
+};
+
 export const ensureLivekitAudioSession = async () => {
   if (audioSessionStartPromise) {
     return audioSessionStartPromise;
@@ -51,10 +66,12 @@ export const fetchLivekitConnection = async (roomId: string, participantName?: s
     canSubscribe: true,
   });
 
+  const resolvedUrl = await resolveLivekitUrl(payload.url || LIVEKIT_URL);
+
   return {
     roomId: payload.roomId,
     token: payload.token,
-    url: payload.url || LIVEKIT_URL,
+    url: resolvedUrl,
     participantIdentity: payload.participantIdentity,
     participantName: payload.participantName,
   };
@@ -94,8 +111,33 @@ export const switchLivekitCamera = (room: Room | null) => {
   const localTrack = publication?.track as
     | ({
         mediaStreamTrack?: MediaStreamTrack & { _switchCamera?: () => void };
+        mediaStream?: MediaStream;
       } & Record<string, unknown>)
     | undefined;
 
-  localTrack?.mediaStreamTrack?._switchCamera?.();
+  const primaryTrack = localTrack?.mediaStreamTrack;
+  const streamTrack = localTrack?.mediaStream?.getVideoTracks?.()?.[0] as
+    | (MediaStreamTrack & { _switchCamera?: () => void })
+    | undefined;
+  const participantStreamTrack = getParticipantStream(
+    room?.localParticipant,
+    Track.Source.Camera,
+  )?.getVideoTracks?.()?.[0] as
+    | (MediaStreamTrack & { _switchCamera?: () => void })
+    | undefined;
+
+  const candidateTracks = [primaryTrack, streamTrack, participantStreamTrack].filter(
+    (track, index, list): track is MediaStreamTrack & { _switchCamera?: () => void } =>
+      Boolean(track) && list.indexOf(track) === index,
+  );
+
+  let switched = false;
+  candidateTracks.forEach((track) => {
+    if (typeof track._switchCamera === "function") {
+      track._switchCamera();
+      switched = true;
+    }
+  });
+
+  return switched;
 };
