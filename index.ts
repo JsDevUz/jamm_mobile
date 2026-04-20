@@ -1,8 +1,14 @@
 import "./src/lib/dom-exception-polyfill";
 import { registerRootComponent } from "expo";
+import Constants from "expo-constants";
 
-const { registerGlobals } = require("@livekit/react-native");
-registerGlobals();
+const isExpoGo =
+  Constants.executionEnvironment === "storeClient" || Constants.appOwnership === "expo";
+
+if (!isExpoGo) {
+  const { registerGlobals } = require("@livekit/react-native");
+  registerGlobals();
+}
 
 const App = require("./App").default;
 
