@@ -19,7 +19,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useVideoPlayer, VideoView } from "expo-video";
-import { WebView } from "react-native-webview";
+import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import {
   ArrowLeft,
   AlertCircle,
@@ -100,6 +100,117 @@ function getYouTubeId(url?: string | null) {
   const match = url.match(regExp);
 
   return match && match[2]?.length === 11 ? match[2] : null;
+}
+
+function buildYouTubePlayerHtml(videoId: string) {
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+
+      #player {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="player"></div>
+    <script>
+      (function () {
+        var currentState = -1;
+        var player = null;
+        var tickTimer = null;
+
+        function post(payload) {
+          if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) {
+            return;
+          }
+          window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+        }
+
+        function readMetrics() {
+          if (!player || typeof player.getCurrentTime !== "function") {
+            return;
+          }
+
+          var duration = Number(player.getDuration && player.getDuration()) || 0;
+          var currentTime = Number(player.getCurrentTime && player.getCurrentTime()) || 0;
+          var loadedFraction =
+            Number(player.getVideoLoadedFraction && player.getVideoLoadedFraction()) || 0;
+
+          post({
+            type: "time",
+            currentTime: currentTime,
+            duration: duration,
+            loadedFraction: loadedFraction,
+            state: currentState,
+          });
+        }
+
+        function ensureTicking() {
+          if (tickTimer) {
+            clearInterval(tickTimer);
+          }
+          tickTimer = setInterval(readMetrics, 1000);
+        }
+
+        window.onYouTubeIframeAPIReady = function () {
+          player = new YT.Player("player", {
+            videoId: ${JSON.stringify(videoId)},
+            playerVars: {
+              playsinline: 1,
+              rel: 0,
+              modestbranding: 1,
+              controls: 1,
+              fs: 1,
+            },
+            events: {
+              onReady: function () {
+                post({ type: "ready" });
+                ensureTicking();
+                readMetrics();
+              },
+              onStateChange: function (event) {
+                currentState = Number(event && event.data);
+                post({ type: "state", state: currentState });
+                readMetrics();
+              },
+              onError: function (event) {
+                post({
+                  type: "error",
+                  code: Number(event && event.data) || 0,
+                });
+              },
+            },
+          });
+        };
+
+        window.addEventListener("beforeunload", function () {
+          if (tickTimer) {
+            clearInterval(tickTimer);
+          }
+        });
+      })();
+    </script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+  </body>
+</html>`;
 }
 import useAuthStore from "../../store/auth-store";
 import { Colors } from "../../theme/colors";
@@ -913,6 +1024,16 @@ function CoursesScreenContent({
   const videoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pauseOnNextSourceLoadRef = useRef(true);
   const offlineTooltipSuppressPressRef = useRef(false);
+  const latestPlaybackMetricsRef = useRef({
+    progressPercent: 0,
+    lastPositionSeconds: 0,
+    lessonDurationSeconds: 0,
+  });
+  const lastPlayingLessonKeyRef = useRef<string | null>(null);
+  const attendanceSessionLoggedRef = useRef<string>("");
+  const attendanceLastSentPayloadRef = useRef<Record<string, string>>({});
+  const attendanceInFlightPayloadRef = useRef(new Set<string>());
+  const attendanceLastFlushedBucketRef = useRef<Record<string, number>>({});
   const adminPaneBackdropOpacity = useMemo(
     () =>
       adminPaneTranslateX.interpolate({
@@ -1271,6 +1392,7 @@ function CoursesScreenContent({
     ) ||
     currentCourseLessons[0] ||
     null;
+  const currentLessonKey = String(currentLesson?._id || currentLesson?.urlSlug || "").trim();
   const currentLessonIndex = Math.max(
     0,
     currentCourseLessons.findIndex(
@@ -1468,6 +1590,68 @@ function CoursesScreenContent({
     [isApprovedMember, isOwner],
   );
   const canAccessCurrentLesson = canOpenLesson(currentLesson);
+  const canTrackOwnAttendance = Boolean(
+    currentCourse?._id &&
+      currentLessonKey &&
+      currentLesson &&
+      canAccessCurrentLesson,
+  );
+  const applyLocalLessonAttendance = useCallback(
+    (
+      lessonId: string,
+      patch: {
+        status?: string;
+        progressPercent?: number;
+        watchCount?: number;
+        lastPositionSeconds?: number;
+        maxPositionSeconds?: number;
+        lessonDurationSeconds?: number;
+        firstWatchedAt?: string | null;
+        lastWatchedAt?: string | null;
+      },
+    ) => {
+      if (!selectedCourseId) {
+        return;
+      }
+
+      let nextCourseSnapshot: Course | null = null;
+      queryClient.setQueryData<Course | undefined>(
+        ["course", selectedCourseId],
+        (previousCourse) => {
+          if (!previousCourse) {
+            return previousCourse;
+          }
+
+          const nextLessons = (previousCourse.lessons || []).map((lesson) => {
+            const normalizedLessonId = String(lesson._id || lesson.urlSlug || "");
+            if (normalizedLessonId !== lessonId) {
+              return lesson;
+            }
+
+            return {
+              ...lesson,
+              selfAttendance: {
+                ...(lesson.selfAttendance || {}),
+                ...patch,
+              },
+            };
+          });
+
+          const nextCourse = {
+            ...previousCourse,
+            lessons: nextLessons,
+          };
+          nextCourseSnapshot = nextCourse;
+          return nextCourse;
+        },
+      );
+
+      if (nextCourseSnapshot) {
+        void upsertCourseDetailCache(nextCourseSnapshot).catch(() => undefined);
+      }
+    },
+    [queryClient, selectedCourseId],
+  );
   const lessonMaterials = materialsQuery.data?.items || currentLesson?.materials || [];
   const linkedTests = testsQuery.data?.items || currentLesson?.linkedTests || [];
   const homeworkAssignments =
@@ -1503,12 +1687,13 @@ function CoursesScreenContent({
     [activeMediaItem?.videoUrl, currentLesson?.videoUrl],
   );
   const isYouTubeLesson = Boolean(youtubeVideoId);
-  const youtubeEmbedUrl = youtubeVideoId
-    ? `https://www.youtube.com/embed/${youtubeVideoId}?playsinline=1&rel=0&modestbranding=1&fs=1&controls=1`
-    : "";
   const youtubeWatchUrl = youtubeVideoId
     ? `https://www.youtube.com/watch?v=${youtubeVideoId}`
     : "";
+  const youtubePlayerHtml = useMemo(
+    () => (youtubeVideoId ? buildYouTubePlayerHtml(youtubeVideoId) : ""),
+    [youtubeVideoId],
+  );
   const currentLessonHasMedia = Boolean(lessonMediaItems.length);
   const canAttemptProtectedPlayback = Boolean(
     currentLesson &&
@@ -1673,6 +1858,185 @@ function CoursesScreenContent({
   );
   const publishedLessonsCount = Math.max(0, currentCourseLessons.length - draftLessonsCount);
   const attendanceData = attendanceQuery.data as CourseLessonAttendanceResponse | undefined;
+
+  useEffect(() => {
+    latestPlaybackMetricsRef.current = {
+      progressPercent: overallProgressPercent,
+      lastPositionSeconds: overallCurrentTime,
+      lessonDurationSeconds: totalLessonDuration,
+    };
+  }, [overallCurrentTime, overallProgressPercent, totalLessonDuration]);
+
+  const flushOwnAttendance = useCallback(
+    async ({
+      lessonId = currentLessonKey,
+      force = false,
+      watchIncrement = 0,
+    }: {
+      lessonId?: string | null;
+      force?: boolean;
+      watchIncrement?: number;
+    } = {}) => {
+      const normalizedLessonId = String(lessonId || "").trim();
+      const courseId = String(currentCourse?._id || "").trim();
+      if (!courseId || !normalizedLessonId || !canTrackOwnAttendance) {
+        return;
+      }
+
+      const metrics = latestPlaybackMetricsRef.current;
+      const progressPercent = Math.max(
+        0,
+        Math.min(100, Number(metrics.progressPercent || 0)),
+      );
+      const lastPositionSeconds = Math.max(
+        0,
+        Math.floor(Number(metrics.lastPositionSeconds || 0)),
+      );
+      const lessonDurationSeconds = Math.max(
+        0,
+        Math.floor(Number(metrics.lessonDurationSeconds || 0)),
+      );
+      const normalizedWatchIncrement = Math.max(
+        0,
+        Math.min(1, Number(watchIncrement || 0)),
+      );
+
+      const shouldSendProgress = progressPercent > 0;
+      const shouldSendPosition = lastPositionSeconds > 0;
+      const shouldSendWatchIncrement = normalizedWatchIncrement > 0;
+
+      if (
+        !shouldSendProgress &&
+        !shouldSendPosition &&
+        !shouldSendWatchIncrement
+      ) {
+        return;
+      }
+
+      if (!force && progressPercent < 10 && !shouldSendWatchIncrement) {
+        return;
+      }
+
+      const requestPayload = {
+        progressPercent: Number(progressPercent.toFixed(2)),
+        lastPositionSeconds: shouldSendPosition ? lastPositionSeconds : undefined,
+        lessonDurationSeconds:
+          lessonDurationSeconds > 0 ? lessonDurationSeconds : undefined,
+        watchIncrement: shouldSendWatchIncrement ? 1 : 0,
+      };
+      const payloadKey = JSON.stringify(requestPayload);
+      const inFlightKey = `${courseId}:${normalizedLessonId}:${payloadKey}`;
+
+      if (
+        attendanceInFlightPayloadRef.current.has(inFlightKey) ||
+        (!shouldSendWatchIncrement &&
+          attendanceLastSentPayloadRef.current[normalizedLessonId] === payloadKey)
+      ) {
+        return;
+      }
+
+      attendanceInFlightPayloadRef.current.add(inFlightKey);
+      try {
+        const response = await coursesApi.markOwnLessonAttendance(
+          courseId,
+          normalizedLessonId,
+          requestPayload,
+        );
+        if (!shouldSendWatchIncrement) {
+          attendanceLastSentPayloadRef.current[normalizedLessonId] = payloadKey;
+        }
+        applyLocalLessonAttendance(normalizedLessonId, response || requestPayload);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        attendanceInFlightPayloadRef.current.delete(inFlightKey);
+      }
+    },
+    [
+      applyLocalLessonAttendance,
+      canTrackOwnAttendance,
+      currentCourse?._id,
+      currentLessonKey,
+    ],
+  );
+
+  useEffect(() => {
+    if (!canTrackOwnAttendance || !currentLessonKey) {
+      lastPlayingLessonKeyRef.current = null;
+      return;
+    }
+
+    if (isLessonVideoPlaying) {
+      lastPlayingLessonKeyRef.current = currentLessonKey;
+      const sessionKey = `${String(currentCourse?._id || "")}:${currentLessonKey}`;
+      if (attendanceSessionLoggedRef.current !== sessionKey) {
+        attendanceSessionLoggedRef.current = sessionKey;
+        void flushOwnAttendance({
+          lessonId: currentLessonKey,
+          force: true,
+          watchIncrement: 1,
+        });
+      }
+      return;
+    }
+
+    const previousLessonKey = lastPlayingLessonKeyRef.current;
+    if (previousLessonKey) {
+      lastPlayingLessonKeyRef.current = null;
+      void flushOwnAttendance({
+        lessonId: previousLessonKey,
+        force: true,
+      });
+    }
+  }, [
+    canTrackOwnAttendance,
+    currentCourse?._id,
+    currentLessonKey,
+    flushOwnAttendance,
+    isLessonVideoPlaying,
+  ]);
+
+  useEffect(() => {
+    if (
+      !canTrackOwnAttendance ||
+      !currentLessonKey ||
+      !isLessonVideoPlaying ||
+      overallCurrentTime < 10
+    ) {
+      return;
+    }
+
+    const currentBucket = Math.floor(overallCurrentTime / 10);
+    const lastBucket = Number(
+      attendanceLastFlushedBucketRef.current[currentLessonKey] ?? -1,
+    );
+    if (currentBucket <= lastBucket) {
+      return;
+    }
+
+    attendanceLastFlushedBucketRef.current[currentLessonKey] = currentBucket;
+    void flushOwnAttendance({
+      lessonId: currentLessonKey,
+      force: false,
+    });
+  }, [
+    canTrackOwnAttendance,
+    currentLessonKey,
+    flushOwnAttendance,
+    isLessonVideoPlaying,
+    overallCurrentTime,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (currentLessonKey) {
+        void flushOwnAttendance({
+          lessonId: currentLessonKey,
+          force: true,
+        });
+      }
+    };
+  }, [currentLessonKey, flushOwnAttendance]);
 
   useEffect(() => {
     if (
@@ -2523,6 +2887,125 @@ function CoursesScreenContent({
     setPlaybackRetryNonce((value) => value + 1);
   };
 
+  const handleYouTubeMessage = useCallback(
+    (event: WebViewMessageEvent) => {
+      let payload:
+        | {
+            type?: string;
+            state?: number;
+            currentTime?: number;
+            duration?: number;
+            loadedFraction?: number;
+            code?: number;
+          }
+        | null = null;
+
+      try {
+        payload = JSON.parse(String(event.nativeEvent?.data || ""));
+      } catch {
+        return;
+      }
+
+      if (!payload?.type) {
+        return;
+      }
+
+      if (payload.type === "ready") {
+        setPlaybackError("");
+        return;
+      }
+
+      if (payload.type === "time") {
+        const duration = Math.max(0, Number(payload.duration || 0));
+        const currentTime = Math.max(0, Number(payload.currentTime || 0));
+        const loadedFraction = Math.max(0, Math.min(1, Number(payload.loadedFraction || 0)));
+
+        setMediaDuration(duration);
+        setMediaCurrentTime(currentTime);
+        setMediaBufferedPosition(duration * loadedFraction);
+        if (currentTime > 0) {
+          clearVideoStartTimer();
+          setIsLessonVideoStarting(false);
+        }
+        return;
+      }
+
+      if (payload.type === "error") {
+        const code = Number(payload.code || 0);
+        setIsLessonVideoPlaying(false);
+        clearVideoStartTimer();
+        setIsLessonVideoStarting(false);
+        setPlaybackError(
+          code ? `YouTube videoni ochib bo'lmadi (${code}).` : "YouTube videoni ochib bo'lmadi.",
+        );
+        return;
+      }
+
+      if (payload.type !== "state") {
+        return;
+      }
+
+      const state = Number(payload.state);
+      if (state === 1) {
+        setPlaybackError("");
+        setIsLessonVideoPlaying(true);
+        clearVideoStartTimer();
+        setIsLessonVideoStarting(false);
+        return;
+      }
+
+      if (state === 3) {
+        setPlaybackError("");
+        setIsLessonVideoStarting(true);
+        return;
+      }
+
+      if (state === 2 || state === -1 || state === 5) {
+        setIsLessonVideoPlaying(false);
+        setIsLessonVideoStarting(false);
+        return;
+      }
+
+      if (state === 0) {
+        const duration = Math.max(
+          0,
+          Number(latestPlaybackMetricsRef.current.lessonDurationSeconds || mediaDuration || 0),
+        );
+        if (duration > 0) {
+          setMediaDuration(duration);
+          setMediaCurrentTime(duration);
+          setMediaBufferedPosition(duration);
+          latestPlaybackMetricsRef.current = {
+            progressPercent: 100,
+            lastPositionSeconds: duration,
+            lessonDurationSeconds: duration,
+          };
+        }
+        setIsLessonVideoPlaying(false);
+        setIsLessonVideoStarting(false);
+        clearVideoStartTimer();
+        void flushOwnAttendance({
+          lessonId: currentLessonKey,
+          force: true,
+        });
+
+        const nextLesson = currentCourseLessons[currentLessonIndex + 1];
+        if (nextLesson && canOpenLesson(nextLesson)) {
+          setSelectedLessonId(nextLesson._id || nextLesson.urlSlug || null);
+        }
+      }
+    },
+    [
+      canOpenLesson,
+      clearVideoStartTimer,
+      currentCourseLessons,
+      currentLessonIndex,
+      currentLessonKey,
+      flushOwnAttendance,
+      mediaDuration,
+    ],
+  );
+
   const handleOpenLessonInJammWeb = useCallback(async () => {
     const url = resolveJammWebCourseLessonUrl(currentCourse, currentLesson);
     await Linking.openURL(url).catch(() => {
@@ -2836,11 +3319,8 @@ function CoursesScreenContent({
             ) : (
               <WebView
                 source={{
-                  uri: youtubeEmbedUrl,
-                  headers: {
-                    Referer: APP_BASE_URL,
-                    Origin: APP_BASE_URL,
-                  },
+                  html: youtubePlayerHtml,
+                  baseUrl: APP_BASE_URL,
                 }}
                 style={fullscreenMode ? styles.videoViewFullscreen : styles.videoView}
                 originWhitelist={["*"]}
@@ -2851,8 +3331,10 @@ function CoursesScreenContent({
                 domStorageEnabled
                 setSupportMultipleWindows={false}
                 applicationNameForUserAgent="JammMobile"
+                onMessage={handleYouTubeMessage}
                 onLoadStart={() => {
                   setPlaybackError("");
+                  setIsLessonVideoStarting(true);
                 }}
                 startInLoadingState
                 renderLoading={() => (
@@ -2874,8 +3356,10 @@ function CoursesScreenContent({
                 onShouldStartLoadWithRequest={(request) => {
                   const nextUrl = String(request?.url || "");
                   if (
+                    nextUrl.startsWith(APP_BASE_URL) ||
                     nextUrl.startsWith("https://www.youtube.com/embed/") ||
                     nextUrl.startsWith("https://www.youtube.com/watch") ||
+                    nextUrl.startsWith("https://www.youtube.com/iframe_api") ||
                     nextUrl.startsWith("https://m.youtube.com/") ||
                     nextUrl.startsWith("https://www.youtube-nocookie.com/") ||
                     nextUrl.startsWith("about:blank")

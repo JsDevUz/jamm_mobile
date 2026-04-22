@@ -73,6 +73,12 @@ export type CourseLessonAttendanceMember = {
   userAvatar?: string;
   status?: "present" | "late" | "absent" | string;
   progressPercent?: number;
+  watchCount?: number;
+  lastPositionSeconds?: number;
+  maxPositionSeconds?: number;
+  lessonDurationSeconds?: number;
+  firstWatchedAt?: string | null;
+  lastWatchedAt?: string | null;
   source?: "auto" | "manual" | string;
   markedAt?: string | null;
 };
@@ -152,6 +158,7 @@ export type CourseLesson = {
   homework?: {
     assignments?: CourseHomeworkAssignment[];
   };
+  selfAttendance?: CourseLessonAttendanceMember | null;
   attendanceSummary?: {
     present?: number;
     late?: number;

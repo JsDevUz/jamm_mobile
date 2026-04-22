@@ -1102,6 +1102,29 @@ export const coursesApi = {
         body: JSON.stringify({ status }),
       },
     ),
+  markOwnLessonAttendance: (
+    courseId: string,
+    lessonId: string,
+    payload: {
+      progressPercent?: number;
+      lastPositionSeconds?: number;
+      lessonDurationSeconds?: number;
+      watchIncrement?: number;
+    },
+  ) =>
+    request<{
+      status?: "present" | "late" | "absent" | string;
+      progressPercent?: number;
+      watchCount?: number;
+      lastPositionSeconds?: number;
+      maxPositionSeconds?: number;
+      lessonDurationSeconds?: number;
+      firstWatchedAt?: string | null;
+      lastWatchedAt?: string | null;
+    }>(`/courses/${courseId}/lessons/${lessonId}/attendance/self`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getLessonHomework: (courseId: string, lessonId: string) =>
     request<CourseLessonHomeworkResponse>(
       `/courses/${courseId}/lessons/${lessonId}/homework`,

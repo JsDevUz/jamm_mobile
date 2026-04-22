@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -51,6 +51,7 @@ function formatTime(seconds: number) {
 }
 
 export function ArenaTestPlayerScreen({ navigation, route }: Props) {
+  const insets = useSafeAreaInsets();
   const seededTest = route.params.test ?? null;
   const testId = String(route.params.testId || seededTest?._id || "");
   const shareShortCode = route.params.shareShortCode || null;
@@ -354,7 +355,10 @@ export function ArenaTestPlayerScreen({ navigation, route }: Props) {
           </View>
         ) : result ? (
           <ScrollView
-            contentContainerStyle={styles.resultContent}
+            contentContainerStyle={[
+              styles.resultContent,
+              { paddingBottom: Math.max(insets.bottom + 120, 144) },
+            ]}
             showsVerticalScrollIndicator={false}
           >
             <Text style={styles.resultTitle}>Test yakunlandi!</Text>
